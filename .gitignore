@@ -1,0 +1,70 @@
+# Build directories
+build/
+bin/
+obj/
+
+# Compiled object files and libraries
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+a.out
+
+# Shared libraries
+*.so
+*.dylib
+*.dll
+
+# Debug and IDE files
+*.pdb
+*.ilk
+*.idb
+*.suo
+.vscode/
+.vs/
+.idea/
+
+# Coverage and profiling
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Tags and generated files
+tags
+*.generated
+
+# Makefile user overrides
+Makefile.user
+
+# README/build artifacts
+dist/
+
+# Ignore editor backups
+*.bak
+
+# Node/npm (if any frontend tooling accidentally present)
+node_modules/
+npm-debug.log
+
+# Ignore Visual Studio Code workspace storage
+.vscode/*
+!.vscode/settings.json
