@@ -13,6 +13,7 @@ HHOOK kbHook;
 volatile BOOL g_run = TRUE;
 volatile BOOL g_h = FALSE, g_l = FALSE, g_j = FALSE, g_k = FALSE;
 volatile BOOL g_exit = FALSE;
+volatile BOOL g_dragging = FALSE;      // true when left button is held down (A pressed)
 
 // Accumulators for fractional movement so small dt still moves smoothly
 double accX = 0.0, accY = 0.0;
@@ -20,6 +21,7 @@ double accX = 0.0, accY = 0.0;
 // Helper: send relative mouse move using SendInput
 static void send_relative_move(int dx, int dy) {
     INPUT inp;
+    ZeroMemory(&inp, sizeof(inp));
     inp.type = INPUT_MOUSE;
     inp.mi.dx = dx;
     inp.mi.dy = dy;
@@ -30,7 +32,7 @@ static void send_relative_move(int dx, int dy) {
     SendInput(1, &inp, sizeof(inp));
 }
 
-// Click helper (left/right)
+// Click helper (left/right click - press+release)
 static void send_click(BOOL left) {
     INPUT in[2];
     ZeroMemory(in, sizeof(in));
@@ -43,6 +45,28 @@ static void send_click(BOOL left) {
         in[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
     }
     SendInput(2, in, sizeof(INPUT));
+}
+
+// Press-and-hold left button (start dragging)
+static void send_left_down(void) {
+    if (g_dragging) return; // already down
+    INPUT in;
+    ZeroMemory(&in, sizeof(in));
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    SendInput(1, &in, sizeof(in));
+    g_dragging = TRUE;
+}
+
+// Release left button (stop dragging)
+static void send_left_up(void) {
+    if (!g_dragging) return;
+    INPUT in;
+    ZeroMemory(&in, sizeof(in));
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(1, &in, sizeof(in));
+    g_dragging = FALSE;
 }
 
 // Movement thread: runs while program runs, moves cursor according to pressed flags
@@ -108,16 +132,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
 
-        // // Always allow ESC to quit
-        // if (k->vkCode == VK_ESCAPE) {
-        //     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-        //         // signal exit
-        //         g_exit = TRUE;
-        //         PostQuitMessage(0);
-        //         return 1; // swallow ESC so the app exits cleanly
-        //     }
-        // }
-
         // only act when Caps Lock is ON (same as your original)
         if (GetKeyState(VK_CAPITAL) & 1) {
             if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
@@ -127,9 +141,15 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     case 'J': g_j = TRUE;  return 1;
                     case 'K': g_k = TRUE;  return 1;
 
+                    // A becomes a drag-modifier: press -> left down, release -> left up
                     case 'A':
-                        send_click(TRUE);
+                        // only send left-down once when the key becomes pressed
+                        if (!g_dragging) {
+                            send_left_down();
+                        }
                         return 1;
+
+                    // keep S as a simple right-click (press+release)
                     case 'S':
                         send_click(FALSE);
                         return 1;
@@ -140,6 +160,13 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     case 'L': g_l = FALSE; return 1;
                     case 'J': g_j = FALSE; return 1;
                     case 'K': g_k = FALSE; return 1;
+
+                    case 'A':
+                        // release left button when A is released
+                        if (g_dragging) {
+                            send_left_up();
+                        }
+                        return 1;
                 }
             }
         }
@@ -169,8 +196,11 @@ int main(void) {
         DispatchMessage(&msg);
     }
 
-    // cleanup
+    // cleanup - ensure we release left button if still down
     g_exit = TRUE;
+    if (g_dragging) {
+        send_left_up();
+    }
     WaitForSingleObject(hThread, 2000);
     CloseHandle(hThread);
     UnhookWindowsHookEx(kbHook);
