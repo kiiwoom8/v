@@ -131,48 +131,72 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
+        BOOL capsOn = (GetKeyState(VK_CAPITAL) & 1) != 0;
 
-        // only act when Caps Lock is ON (same as your original)
-        if (GetKeyState(VK_CAPITAL) & 1) {
-            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-                switch (k->vkCode) {
-                    case 'H': g_h = TRUE;  return 1;
-                    case 'L': g_l = TRUE;  return 1;
-                    case 'J': g_j = TRUE;  return 1;
-                    case 'K': g_k = TRUE;  return 1;
+        // Key down
+        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+            switch (k->vkCode) {
+                case 'H':
+                    if (capsOn) { g_h = TRUE; return 1; }
+                    break;
+                case 'L':
+                    if (capsOn) { g_l = TRUE; return 1; }
+                    break;
+                case 'J':
+                    if (capsOn) { g_j = TRUE; return 1; }
+                    break;
+                case 'K':
+                    if (capsOn) { g_k = TRUE; return 1; }
+                    break;
 
-                    // A becomes a drag-modifier: press -> left down, release -> left up
-                    case 'A':
-                        // only send left-down once when the key becomes pressed
-                        if (!g_dragging) {
-                            send_left_down();
-                        }
+                case 'A':
+                    // only start drag if caps is on
+                    if (capsOn) {
+                        if (!g_dragging) send_left_down();
                         return 1;
+                    }
+                    break;
 
-                    // keep S as a simple right-click (press+release)
-                    case 'S':
+                case 'S':
+                    if (capsOn) {
                         send_click(FALSE);
                         return 1;
-                }
-            } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-                switch (k->vkCode) {
-                    case 'H': g_h = FALSE; return 1;
-                    case 'L': g_l = FALSE; return 1;
-                    case 'J': g_j = FALSE; return 1;
-                    case 'K': g_k = FALSE; return 1;
+                    }
+                    break;
+            }
+        }
+        // Key up - ALWAYS clear the internal flags so they can't get stuck.
+        else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+            switch (k->vkCode) {
+                case 'H':
+                    if (g_h) { g_h = FALSE; return 1; }
+                    break;
+                case 'L':
+                    if (g_l) { g_l = FALSE; return 1; }
+                    break;
+                case 'J':
+                    if (g_j) { g_j = FALSE; return 1; }
+                    break;
+                case 'K':
+                    if (g_k) { g_k = FALSE; return 1; }
+                    break;
 
-                    case 'A':
-                        // release left button when A is released
-                        if (g_dragging) {
-                            send_left_up();
-                        }
-                        return 1;
+                case 'A': {
+                    // If we started the drag (g_dragging==TRUE) then release it now.
+                    BOOL wasDragging = g_dragging;
+                    if (wasDragging) send_left_up();
+                    if (wasDragging) return 1;
+                    break;
                 }
+
+                // No need to specially handle 'S' on keyup (it was a press+release on keydown).
             }
         }
     }
+
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
+
 
 int main(void) {
     kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
