@@ -1,13 +1,18 @@
-// mouse_control_windows_hook.c
+// mouse_control_windows_hook_accel.c
 // Compile (MinGW):
-// gcc mouse_control_windows_hook.c -o mouse_control -lgdi32 -luser32
+// gcc mouse_control_windows_hook_accel.c -o mouse_control -lgdi32 -luser32
 
 #include <windows.h>
 #include <stdio.h>
 #include <math.h>
 
-#define BASE_SPEED_PX_PER_SEC  600.0   // base speed when key held (adjust)
-#define THREAD_SLEEP_MS        1       // minimal sleep fallback
+#define BASE_SPEED_PX_PER_SEC  200.0   // starting slow speed (px/s) - adjust
+#define MAX_SPEED_PX_PER_SEC   1500.0  // max speed after full accel (px/s) - adjust
+#define ACCEL_TIME_SEC         0.65    // how many seconds to reach (almost) max speed
+#define ACCEL_CURVE            1.8     // >1: slower start, faster late; <1: fast start
+#define VELOCITY_SMOOTHING     0.12    // 0..1, bigger = snappier changes (0.12 is gentle)
+#define THREAD_SLEEP_MS_ACTIVE 1       // sleep while moving
+#define THREAD_SLEEP_MS_IDLE   6       // sleep when idle
 
 HHOOK kbHook;
 volatile BOOL g_run = TRUE;
@@ -18,21 +23,17 @@ volatile BOOL g_dragging = FALSE;      // true when left button is held down (A 
 // Accumulators for fractional movement so small dt still moves smoothly
 double accX = 0.0, accY = 0.0;
 
-// Helper: send relative mouse move using SendInput
+// Helpers -------------------------------------------------------------------
 static void send_relative_move(int dx, int dy) {
     INPUT inp;
     ZeroMemory(&inp, sizeof(inp));
     inp.type = INPUT_MOUSE;
     inp.mi.dx = dx;
     inp.mi.dy = dy;
-    inp.mi.mouseData = 0;
     inp.mi.dwFlags = MOUSEEVENTF_MOVE; // relative move
-    inp.mi.time = 0;
-    inp.mi.dwExtraInfo = 0;
     SendInput(1, &inp, sizeof(inp));
 }
 
-// Click helper (left/right click - press+release)
 static void send_click(BOOL left) {
     INPUT in[2];
     ZeroMemory(in, sizeof(in));
@@ -47,9 +48,8 @@ static void send_click(BOOL left) {
     SendInput(2, in, sizeof(INPUT));
 }
 
-// Press-and-hold left button (start dragging)
 static void send_left_down(void) {
-    if (g_dragging) return; // already down
+    if (g_dragging) return;
     INPUT in;
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
@@ -58,7 +58,6 @@ static void send_left_down(void) {
     g_dragging = TRUE;
 }
 
-// Release left button (stop dragging)
 static void send_left_up(void) {
     if (!g_dragging) return;
     INPUT in;
@@ -69,65 +68,77 @@ static void send_left_up(void) {
     g_dragging = FALSE;
 }
 
-// Movement thread: runs while program runs, moves cursor according to pressed flags
+// Movement thread -----------------------------------------------------------
 DWORD WINAPI MovementThread(LPVOID lpv) {
     LARGE_INTEGER freq, prev, now;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&prev);
 
-    // current velocity smoothing (for ease-in/out if you want)
-    double velX = 0.0, velY = 0.0;
-    const double smoothing = 0.15; // 0..1, bigger = snappier; smaller = smoother
+    double velX = 0.0, velY = 0.0;      // current smoothed velocities (px/s)
+    double holdTimeX = 0.0, holdTimeY = 0.0; // seconds keys have been held
 
     while (!g_exit) {
         QueryPerformanceCounter(&now);
         double dt = (double)(now.QuadPart - prev.QuadPart) / (double)freq.QuadPart;
-        if (dt <= 0) dt = 1.0 / 1000.0;
+        if (dt <= 0.0) dt = 1.0/1000.0;
         prev = now;
 
-        // desired velocity based on keys
-        double desiredX = 0.0, desiredY = 0.0;
-        if (g_h) desiredX -= BASE_SPEED_PX_PER_SEC;
-        if (g_l) desiredX += BASE_SPEED_PX_PER_SEC;
-        if (g_j) desiredY += BASE_SPEED_PX_PER_SEC;
-        if (g_k) desiredY -= BASE_SPEED_PX_PER_SEC;
+        // direction signs (-1,0,1)
+        int signX = (g_l ? 1 : 0) - (g_h ? 1 : 0);
+        int signY = (g_j ? 1 : 0) - (g_k ? 1 : 0); // j -> down (+y), k -> up (-y)
 
-        // smooth velocity toward desired (simple low-pass)
-        velX += (desiredX - velX) * smoothing;
-        velY += (desiredY - velY) * smoothing;
+        // update hold timers (used to compute current target speed)
+        if (signX != 0) holdTimeX += dt; else holdTimeX = 0.0;
+        if (signY != 0) holdTimeY += dt; else holdTimeY = 0.0;
 
-        // compute movement this tick (may be fractional)
+        // compute multiplier [0..1] for how far through accel we are
+        double tX = holdTimeX / ACCEL_TIME_SEC;
+        if (tX < 0.0) tX = 0.0;
+        if (tX > 1.0) tX = 1.0;
+        double tY = holdTimeY / ACCEL_TIME_SEC;
+        if (tY < 0.0) tY = 0.0;
+        if (tY > 1.0) tY = 1.0;
+
+        // ease curve (pow) to shape ramp-up. ACCEL_CURVE >1 makes a gentle start.
+        double easeX = pow(tX, ACCEL_CURVE);
+        double easeY = pow(tY, ACCEL_CURVE);
+
+        // current target speeds (px/s) for each axis
+        double targetSpeedX = (double)signX * (BASE_SPEED_PX_PER_SEC + (MAX_SPEED_PX_PER_SEC - BASE_SPEED_PX_PER_SEC) * easeX);
+        double targetSpeedY = (double)signY * (BASE_SPEED_PX_PER_SEC + (MAX_SPEED_PX_PER_SEC - BASE_SPEED_PX_PER_SEC) * easeY);
+
+        // smooth current velocity toward target velocity for nice easing
+        velX += (targetSpeedX - velX) * VELOCITY_SMOOTHING;
+        velY += (targetSpeedY - velY) * VELOCITY_SMOOTHING;
+
+        // compute movement this tick (px)
         double moveX = velX * dt;
         double moveY = velY * dt;
 
-        // accumulate fractional parts and convert to ints
+        // accumulate fractional and send integer deltas
         accX += moveX;
         accY += moveY;
         int dx = (int)round(accX);
         int dy = (int)round(accY);
 
         if (dx != 0 || dy != 0) {
-            // subtract the integer part we consumed
             accX -= dx;
             accY -= dy;
-
-            // send the relative motion
             send_relative_move(dx, dy);
         }
 
-        // If no keys pressed, yield/sleep a bit to avoid busy-loop
-        if (!g_h && !g_l && !g_j && !g_k) {
-            Sleep(5);
+        // release CPU differently when idle/active
+        if (signX == 0 && signY == 0) {
+            Sleep(THREAD_SLEEP_MS_IDLE);
         } else {
-            // for active movement we sleep very shortly to keep high frame rate
-            // you can tune Sleep(0) / Sleep(1) depending on CPU usage and smoothness
-            Sleep(1);
+            Sleep(THREAD_SLEEP_MS_ACTIVE);
         }
     }
 
     return 0;
 }
 
+// Keyboard hook -------------------------------------------------------------
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
@@ -150,7 +161,6 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     break;
 
                 case 'A':
-                    // only start drag if caps is on
                     if (capsOn) {
                         if (!g_dragging) send_left_down();
                         return 1;
@@ -182,14 +192,11 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     break;
 
                 case 'A': {
-                    // If we started the drag (g_dragging==TRUE) then release it now.
                     BOOL wasDragging = g_dragging;
                     if (wasDragging) send_left_up();
                     if (wasDragging) return 1;
                     break;
                 }
-
-                // No need to specially handle 'S' on keyup (it was a press+release on keydown).
             }
         }
     }
@@ -197,7 +204,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
 
-
+// Main ----------------------------------------------------------------------
 int main(void) {
     kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     if (!kbHook) {
@@ -205,7 +212,6 @@ int main(void) {
         return 1;
     }
 
-    // start movement thread
     HANDLE hThread = CreateThread(NULL, 0, MovementThread, NULL, 0, NULL);
     if (!hThread) {
         fprintf(stderr, "Failed to create movement thread.\n");
@@ -220,11 +226,9 @@ int main(void) {
         DispatchMessage(&msg);
     }
 
-    // cleanup - ensure we release left button if still down
+    // cleanup
     g_exit = TRUE;
-    if (g_dragging) {
-        send_left_up();
-    }
+    if (g_dragging) send_left_up();
     WaitForSingleObject(hThread, 2000);
     CloseHandle(hThread);
     UnhookWindowsHookEx(kbHook);
