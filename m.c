@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#define BASE_SPEED_PX_PER_SEC  200.0   // starting slow speed (px/s) - adjust
+#define BASE_SPEED_PX_PER_SEC  500.0   // starting slow speed (px/s) - adjust
 #define MAX_SPEED_PX_PER_SEC   1500.0  // max speed after full accel (px/s) - adjust
 #define ACCEL_TIME_SEC         0.65    // how many seconds to reach (almost) max speed
 #define ACCEL_CURVE            1.8     // >1: slower start, faster late; <1: fast start
