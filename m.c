@@ -77,6 +77,8 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
     double velX = 0.0, velY = 0.0;      // current smoothed velocities (px/s)
     double holdTimeX = 0.0, holdTimeY = 0.0; // seconds keys have been held
 
+    int prevSignX = 0, prevSignY = 0; // track previous sign to detect transition to 0
+
     while (!g_exit) {
         QueryPerformanceCounter(&now);
         double dt = (double)(now.QuadPart - prev.QuadPart) / (double)freq.QuadPart;
@@ -86,6 +88,21 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
         // direction signs (-1,0,1)
         int signX = (g_l ? 1 : 0) - (g_h ? 1 : 0);
         int signY = (g_j ? 1 : 0) - (g_k ? 1 : 0); // j -> down (+y), k -> up (-y)
+
+        // If an axis just became idle (non-zero -> zero), immediately clear velocity + accumulator.
+        // This prevents the "coast" caused by smoothing and fractional accumulators.
+        if (prevSignX != 0 && signX == 0) {
+            velX = 0.0;
+            accX = 0.0;
+            holdTimeX = 0.0;
+        }
+        if (prevSignY != 0 && signY == 0) {
+            velY = 0.0;
+            accY = 0.0;
+            holdTimeY = 0.0;
+        }
+        prevSignX = signX;
+        prevSignY = signY;
 
         // update hold timers (used to compute current target speed)
         if (signX != 0) holdTimeX += dt; else holdTimeX = 0.0;
@@ -137,6 +154,7 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
 
     return 0;
 }
+
 
 // Keyboard hook -------------------------------------------------------------
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
