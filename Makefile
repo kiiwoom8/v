@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -std=c11
-LDFLAGS = -lgdi32
+LDFLAGS = -mwindows -lgdi32 -luser32 -ladvapi32 -lwtsapi32
 SRCS = m.c
 TARGET = mouse_control_windows.exe
 
