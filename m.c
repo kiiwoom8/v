@@ -1,5 +1,5 @@
-// agent_with_resume.c
-// Compile: gcc agent_with_resume.c -o mouse_agent -lgdi32 -luser32 -ladvapi32 -lwtsapi32
+// agent_with_resume_fixed.c
+// Compile: gcc agent_with_resume_fixed.c -o mouse_agent -lgdi32 -luser32 -ladvapi32 -lwtsapi32
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -47,6 +47,10 @@ BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
 #define THREAD_SLEEP_MS_ACTIVE 1
 #define THREAD_SLEEP_MS_IDLE   6
 
+// New tuning constants to protect against long dt / resume spikes
+#define MAX_SIM_STEP_SEC       0.05   // simulate in steps of at most 50 ms
+#define SUSPEND_RESET_SEC      0.50   // if dt > 0.5s, treat as suspend/resume and reset state
+
 volatile BOOL g_h = FALSE, g_l = FALSE, g_j = FALSE, g_k = FALSE;
 volatile BOOL g_exit = FALSE;
 volatile BOOL g_dragging = FALSE;
@@ -66,7 +70,7 @@ static void send_relative_move(int dx, int dy) {
     SendInput(1, &inp, sizeof(inp));
 }
 
-static void send_click(BOOL left) { /* same as you had */ 
+static void send_click(BOOL left) { /* same as you had */
     INPUT in[2];
     ZeroMemory(in, sizeof(in));
     in[0].type = in[1].type = INPUT_MOUSE;
@@ -78,7 +82,7 @@ static void send_click(BOOL left) { /* same as you had */
 static void send_left_down(void) { if (g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTDOWN; SendInput(1,&in,sizeof(in)); g_dragging = TRUE; }
 static void send_left_up(void)   { if (!g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTUP; SendInput(1,&in,sizeof(in)); g_dragging = FALSE; }
 
-// MovementThread (unchanged) - paste your MovementThread implementation here
+// MovementThread (improved robustness to long dt / resume)
 DWORD WINAPI MovementThread(LPVOID lpv) {
     (void)lpv;
     LARGE_INTEGER freq, prev, now;
@@ -92,45 +96,79 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
     while (!g_exit) {
         QueryPerformanceCounter(&now);
         double dt = (double)(now.QuadPart - prev.QuadPart) / (double)freq.QuadPart;
-        if (dt <= 0.0) dt = 1.0/1000.0;
+        if (dt <= 0.0) dt = 1.0/1000.0; // safety minimum
         prev = now;
 
+        // If dt is extremely large, it's likely the system suspended / resumed or we were paused.
+        // Reset transient state to avoid huge cursor jumps.
+        if (dt > SUSPEND_RESET_SEC) {
+            velX = velY = 0.0;
+            accX = accY = 0.0;
+            holdTimeX = holdTimeY = 0.0;
+            prevSignX = prevSignY = 0;
+            // avoid sending any movement on this iteration
+            Sleep(THREAD_SLEEP_MS_IDLE);
+            continue;
+        }
+
+        // Break up dt into smaller simulation steps so smoothing & integration behave predictably,
+        // even if the scheduling caused a longer-than-normal dt (but below the suspend threshold).
+        double remaining = dt;
+        double accumDX = 0.0, accumDY = 0.0;
+
+        // read the current sign once per outer loop (keys may change asynchronously, but volatile reads are cheap)
         int signX = (g_l ? 1 : 0) - (g_h ? 1 : 0);
         int signY = (g_j ? 1 : 0) - (g_k ? 1 : 0);
 
+        // If a direction was released since last frame, clear velocity & accumulator for that axis
         if (prevSignX != 0 && signX == 0) { velX = 0.0; accX = 0.0; holdTimeX = 0.0; }
         if (prevSignY != 0 && signY == 0) { velY = 0.0; accY = 0.0; holdTimeY = 0.0; }
         prevSignX = signX; prevSignY = signY;
 
-        if (signX != 0) holdTimeX += dt; else holdTimeX = 0.0;
-        if (signY != 0) holdTimeY += dt; else holdTimeY = 0.0;
+        while (remaining > 0.0) {
+            double step = remaining > MAX_SIM_STEP_SEC ? MAX_SIM_STEP_SEC : remaining;
+            remaining -= step;
 
-        double tX = holdTimeX / ACCEL_TIME_SEC; if (tX < 0.0) tX = 0.0; if (tX > 1.0) tX = 1.0;
-        double tY = holdTimeY / ACCEL_TIME_SEC; if (tY < 0.0) tY = 0.0; if (tY > 1.0) tY = 1.0;
+            // update hold times in small steps for smooth acceleration
+            if (signX != 0) holdTimeX += step; else holdTimeX = 0.0;
+            if (signY != 0) holdTimeY += step; else holdTimeY = 0.0;
 
-        double easeX = pow(tX, ACCEL_CURVE);
-        double easeY = pow(tY, ACCEL_CURVE);
+            double tX = holdTimeX / ACCEL_TIME_SEC; if (tX < 0.0) tX = 0.0; if (tX > 1.0) tX = 1.0;
+            double tY = holdTimeY / ACCEL_TIME_SEC; if (tY < 0.0) tY = 0.0; if (tY > 1.0) tY = 1.0;
 
-        double targetSpeedX = (double)signX * (BASE_SPEED_PX_PER_SEC + (MAX_SPEED_PX_PER_SEC - BASE_SPEED_PX_PER_SEC) * easeX);
-        double targetSpeedY = (double)signY * (BASE_SPEED_PX_PER_SEC + (MAX_SPEED_PX_PER_SEC - BASE_SPEED_PX_PER_SEC) * easeY);
+            double easeX = pow(tX, ACCEL_CURVE);
+            double easeY = pow(tY, ACCEL_CURVE);
 
-        velX += (targetSpeedX - velX) * VELOCITY_SMOOTHING;
-        velY += (targetSpeedY - velY) * VELOCITY_SMOOTHING;
+            double targetSpeedX = (double)signX * (BASE_SPEED_PX_PER_SEC + (MAX_SPEED_PX_PER_SEC - BASE_SPEED_PX_PER_SEC) * easeX);
+            double targetSpeedY = (double)signY * (BASE_SPEED_PX_PER_SEC + (MAX_SPEED_PX_PER_SEC - BASE_SPEED_PX_PER_SEC) * easeY);
 
-        double moveX = velX * dt;
-        double moveY = velY * dt;
+            // velocity smoothing applied per small step
+            velX += (targetSpeedX - velX) * VELOCITY_SMOOTHING;
+            velY += (targetSpeedY - velY) * VELOCITY_SMOOTHING;
 
-        accX += moveX;
-        accY += moveY;
-        int dx = (int)round(accX);
-        int dy = (int)round(accY);
+            double moveX = velX * step;
+            double moveY = velY * step;
 
-        if (dx != 0 || dy != 0) {
-            accX -= dx;
-            accY -= dy;
-            send_relative_move(dx, dy);
+            accX += moveX;
+            accY += moveY;
+
+            // accumulate integer movement to send after finishing steps
+            int dx = (int)round(accX);
+            int dy = (int)round(accY);
+            if (dx != 0 || dy != 0) {
+                accX -= dx;
+                accY -= dy;
+                accumDX += dx;
+                accumDY += dy;
+            }
         }
 
+        // send a single relative move for the whole dt iteration (if any)
+        if ((int)accumDX != 0 || (int)accumDY != 0) {
+            send_relative_move((int)accumDX, (int)accumDY);
+        }
+
+        // sleep small amount depending on whether active movement requested
         if (signX == 0 && signY == 0) Sleep(THREAD_SLEEP_MS_IDLE);
         else Sleep(THREAD_SLEEP_MS_ACTIVE);
     }
@@ -189,10 +227,12 @@ void UninstallHook(void) {
         g_kbHook = NULL;
     }
     if (g_movementThread) {
+        // ask thread to stop and wait a bit for it
         g_exit = TRUE;
         WaitForSingleObject(g_movementThread, 2000);
         CloseHandle(g_movementThread);
         g_movementThread = NULL;
+        // reset flag for next start
         g_exit = FALSE;
     }
 }
@@ -209,12 +249,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
     case WM_POWERBROADCAST:
         if (wParam == PBT_APMRESUMESUSPEND || wParam == PBT_APMRESUMEAUTOMATIC) {
-            // system resumed -> reinstall hook
+            // system resumed -> reinstall hook and restart movement thread (clean start)
             UninstallHook();
             InstallHook();
         } else if (wParam == PBT_APMSUSPEND) {
-            // system suspending -> safe cleanup if you want
-            // (you might choose to UninstallHook() here)
+            // system suspending -> optional safe cleanup
+            // we don't aggressively uninstall here to keep it simple, but you could if desired:
+            // UninstallHook();
         }
         return TRUE;
 
