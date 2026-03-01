@@ -841,11 +841,22 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     char to_draw[128];
                     to_draw[0] = '\0';
 
-                    if (g_input_len > 0 && is_all_letters_input) {
+                    // --- START: modified behavior requested by user ---
+                    // When no input typed, show ONLY the first character/digit of the label
+                    if (g_input_len == 0) {
+                        // If label is alphabetical (L-length), show first letter
+                        if (L > 0) {
+                            to_draw[0] = lbl[0];
+                            to_draw[1] = '\0';
+                        } else {
+                            to_draw[0] = '\0';
+                        }
+                    }
+                    // When user typed something: keep existing "remainder" logic
+                    else if (g_input_len > 0 && is_all_letters_input) {
                         if (g_input_len <= L && strncmp(lbl, g_input, (size_t)g_input_len) == 0) {
                             // show remainder of alphabetical label
                             const char *rem = lbl + g_input_len;
-                            // Copy remainder (possibly empty) to to_draw
                             strncpy(to_draw, rem, sizeof(to_draw)-1);
                             to_draw[sizeof(to_draw)-1] = '\0';
                         } else {
@@ -867,13 +878,13 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             to_draw[sizeof(to_draw)-1] = '\0';
                         }
                     } else {
-                        // no input or mixed: draw full alpha label
+                        // mixed/other: draw full alpha label
                         strncpy(to_draw, lbl, sizeof(to_draw)-1);
                         to_draw[sizeof(to_draw)-1] = '\0';
                     }
+                    // --- END modification ---
 
-                    // DrawTextA with the remainder. If to_draw is empty (typed full label),
-                    // nothing is drawn for that cell — full-label actions are handled elsewhere.
+                    // DrawTextA with the chosen string. If to_draw is empty, nothing is drawn.
                     if (to_draw[0] != '\0') {
                         DrawTextA(hdc, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                     }
