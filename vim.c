@@ -306,7 +306,7 @@ static CRITICAL_SECTION g_lock;
 // forward declarations
 void create_overlay();
 void destroy_overlay();
-void perform_click_at(POINT pt);
+void perform_click_at(POINT pt, BOOL right);
 static int find_click_point_in_rect(RECT cell, POINT *outPt);
 
 // overlay program implementation from original main.c follows
@@ -490,7 +490,7 @@ static void click_by_index(HWND hwnd, long long v) {
         clickPt.y = cell.top + (hcell / 2);
     }
 
-    perform_click_at(clickPt);
+    perform_click_at(clickPt, FALSE);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -647,9 +647,56 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 if (is_all_letters) {
                     // If full-length label typed, try decode
-                    if (g_input_len == L) {
+                        if (g_input_len == L) {
                         long long idx = index_for_label(g_input, g_input_len, L, total);
-                        if (idx != -1) { click_by_index(hwnd, idx); return 0; }
+                        if (idx != -1) {
+                            BOOL shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                            // perform right-click if shift was held for the final letter
+                            RECT sr; GetWindowRect(hwnd, &sr);
+                            int screen_w = sr.right - sr.left;
+                            int screen_h = sr.bottom - sr.top;
+                            int cols, rows;
+                            long long total2;
+                            compute_grid(screen_w, screen_h, &cols, &rows, &total2);
+
+                            // reuse click_by_index logic, but perform the click ourselves
+                            long long v = idx;
+                            if (v >= 1) {
+                                RECT wr; GetWindowRect(hwnd, &wr);
+                                int sw = wr.right - wr.left;
+                                int sh = wr.bottom - wr.top;
+                                int ccols, crows; long long ttotal;
+                                compute_grid(sw, sh, &ccols, &crows, &ttotal);
+                                if (v <= ttotal) {
+                                    long long idx0 = v - 1;
+                                    int r0 = (int)(idx0 / ccols);
+                                    int c0 = (int)(idx0 % ccols);
+
+                                    int base_w = sw / ccols;
+                                    int extra_w = sw % ccols;
+                                    int base_h = sh / crows;
+                                    int extra_h = sh % crows;
+
+                                    int x = wr.left;
+                                    for (int i = 0; i < c0; ++i) x += base_w + (i < extra_w ? 1 : 0);
+                                    int wcell = base_w + (c0 < extra_w ? 1 : 0);
+                                    int y = wr.top;
+                                    for (int i = 0; i < r0; ++i) y += base_h + (i < extra_h ? 1 : 0);
+                                    int hcell = base_h + (r0 < extra_h ? 1 : 0);
+
+                                    RECT cell = { x, y, x + wcell, y + hcell };
+                                    destroy_overlay();
+                                    Sleep(25);
+                                    POINT clickPt;
+                                    if (!find_click_point_in_rect(cell, &clickPt)) {
+                                        clickPt.x = cell.left + (wcell / 2);
+                                        clickPt.y = cell.top + (hcell / 2);
+                                    }
+                                    perform_click_at(clickPt, shiftDown);
+                                    return 0;
+                                }
+                            }
+                        }
                         else {
                             // invalid full label -> clear
                             g_input_len = 0; g_input[0] = '\0';
@@ -815,16 +862,26 @@ void destroy_overlay() {
     if (g_font) { DeleteObject(g_font); g_font = NULL; }
 }
 
-void perform_click_at(POINT pt) {
+void perform_click_at(POINT pt, BOOL right) {
     SetCursorPos(pt.x, pt.y);
     Sleep(8);
-    INPUT events[2];
-    ZeroMemory(events, sizeof(events));
-    events[0].type = INPUT_MOUSE;
-    events[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-    events[1].type = INPUT_MOUSE;
-    events[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-    SendInput(2, events, sizeof(INPUT));
+    if (right) {
+        INPUT events[2];
+        ZeroMemory(events, sizeof(events));
+        events[0].type = INPUT_MOUSE;
+        events[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+        events[1].type = INPUT_MOUSE;
+        events[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+        SendInput(2, events, sizeof(INPUT));
+    } else {
+        INPUT events[2];
+        ZeroMemory(events, sizeof(events));
+        events[0].type = INPUT_MOUSE;
+        events[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        events[1].type = INPUT_MOUSE;
+        events[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        SendInput(2, events, sizeof(INPUT));
+    }
 }
 
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
