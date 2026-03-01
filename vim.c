@@ -84,7 +84,7 @@ static void send_click(BOOL left) {
 }
 
 static void send_left_down(void) { if (g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTDOWN; SendInput(1,&in,sizeof(in)); g_dragging = TRUE; }
-static void send_left_up(void)   { if (!g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTUP; SendInput(1,&in,sizeof(in)); g_dragging = FALSE; }
+static void send_left_up(void)   { if (!g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTUP; SendInput(1,&in,sizeof(INPUT)); g_dragging = FALSE; }
 
 DWORD WINAPI MovementThread(LPVOID lpv) {
     (void)lpv;
@@ -837,52 +837,50 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     lblR.left += 2; lblR.top += 2; lblR.right -= 2; lblR.bottom -= 2;
                     SetTextColor(hdc, RGB(255,255,255));
 
-                    // New: if input is letters and matches label prefix, draw only the remainder
+                    // New: show only the character at the current input position
+                    // for matching labels (i.e., first, second, third character)
                     char to_draw[128];
                     to_draw[0] = '\0';
 
-                    // --- START: modified behavior requested by user ---
-                    // When no input typed, show ONLY the first character/digit of the label
                     if (g_input_len == 0) {
-                        // If label is alphabetical (L-length), show first letter
+                        // initial state: show first character of alpha label.
                         if (L > 0) {
                             to_draw[0] = lbl[0];
                             to_draw[1] = '\0';
+                        }
+                    } else if (is_all_letters_input) {
+                        // If typed prefix matches this label up to g_input_len,
+                        // and there is a next character, show exactly that single char.
+                        if (g_input_len < L && strncmp(lbl, g_input, (size_t)g_input_len) == 0) {
+                            to_draw[0] = lbl[g_input_len];
+                            to_draw[1] = '\0';
                         } else {
+                            // either doesn't match, or typed length >= label length -> show nothing
                             to_draw[0] = '\0';
                         }
-                    }
-                    // When user typed something: keep existing "remainder" logic
-                    else if (g_input_len > 0 && is_all_letters_input) {
-                        if (g_input_len <= L && strncmp(lbl, g_input, (size_t)g_input_len) == 0) {
-                            // show remainder of alphabetical label
-                            const char *rem = lbl + g_input_len;
-                            strncpy(to_draw, rem, sizeof(to_draw)-1);
-                            to_draw[sizeof(to_draw)-1] = '\0';
-                        } else {
-                            // not matching prefix -> draw full label
-                            strncpy(to_draw, lbl, sizeof(to_draw)-1);
-                            to_draw[sizeof(to_draw)-1] = '\0';
-                        }
-                    } else if (g_input_len > 0 && is_all_digits_input) {
-                        // numeric labels: build numeric label string
+                    } else if (is_all_digits_input) {
+                        // numeric labels - compute numeric string for idx
                         char numbuf[64];
                         int n = snprintf(numbuf, sizeof(numbuf), "%" PRId64, idx);
-                        if (n > 0 && n >= g_input_len && strncmp(numbuf, g_input, (size_t)g_input_len) == 0) {
-                            const char *rem = numbuf + g_input_len;
-                            strncpy(to_draw, rem, sizeof(to_draw)-1);
-                            to_draw[sizeof(to_draw)-1] = '\0';
-                        } else {
-                            // not matching prefix -> draw full numeric string
-                            strncpy(to_draw, numbuf, sizeof(to_draw)-1);
-                            to_draw[sizeof(to_draw)-1] = '\0';
+                        if (n > 0) {
+                            if (g_input_len == 0) {
+                                // initial: show first digit
+                                to_draw[0] = numbuf[0];
+                                to_draw[1] = '\0';
+                            } else if (g_input_len < n && strncmp(numbuf, g_input, (size_t)g_input_len) == 0) {
+                                // show next digit only
+                                to_draw[0] = numbuf[g_input_len];
+                                to_draw[1] = '\0';
+                            } else {
+                                to_draw[0] = '\0';
+                            }
                         }
                     } else {
-                        // mixed/other: draw full alpha label
+                        // mixed/other: fallback to existing behavior (draw full alpha label)
+                        // but only if visible (visibility logic already decides)
                         strncpy(to_draw, lbl, sizeof(to_draw)-1);
                         to_draw[sizeof(to_draw)-1] = '\0';
                     }
-                    // --- END modification ---
 
                     // DrawTextA with the chosen string. If to_draw is empty, nothing is drawn.
                     if (to_draw[0] != '\0') {
