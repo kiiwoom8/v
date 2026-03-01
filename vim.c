@@ -292,9 +292,15 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 
 // ------------------------------------------------------------------
 // overlay program definitions from original main.c
-#define DESIRED_CELL_PX 100
+
+// width desired cell (controls columns)
+#define DESIRED_CELL_PX 30
+// NEW: desired cell height for rows: reduce this to pack more rows.
+// Default 40 — tweak to taste (smaller -> more rows -> smaller labels)
+#define DESIRED_CELL_H 30
+
 #define INPUT_BUF 64
-#define DENSITY_MULT 4
+#define DENSITY_MULT 2
 #define OVERLAY_ALPHA 220
 
 static HWND g_mainWnd = NULL;
@@ -347,8 +353,9 @@ static HFONT create_font_for_cell(int cell_h) {
 }
 
 static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, long long *ptotal) {
+    // width uses DESIRED_CELL_PX, height uses DESIRED_CELL_H (so we can reduce height)
     int cols = max(1, screen_w / DESIRED_CELL_PX);
-    int rows = max(1, screen_h / DESIRED_CELL_PX);
+    int rows = max(1, screen_h / DESIRED_CELL_H);
     cols = cols * DENSITY_MULT;
     rows = rows * DENSITY_MULT;
     if (cols < 1) cols = 1;
@@ -772,22 +779,17 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int screen_w = client.right - client.left;
         int screen_h = client.bottom - client.top;
 
-        int cols = max(1, screen_w / DESIRED_CELL_PX);
-        int rows = max(1, screen_h / DESIRED_CELL_PX);
-        cols = cols * DENSITY_MULT;
-        rows = rows * DENSITY_MULT;
-        if (cols < 1) cols = 1;
-        if (rows < 1) rows = 1;
+        // use compute_grid so width/height logic is centralized
+        int cols, rows;
+        long long total;
+        compute_grid(screen_w, screen_h, &cols, &rows, &total);
 
         int base_w = screen_w / cols;
         int extra_w = screen_w % cols;
         int base_h = screen_h / rows;
         int extra_h = screen_h % rows;
 
-        long long total = (long long)cols * (long long)rows;
-        int L = compute_label_length(total);
-
-        int approx_cell_h = base_h + (0 < extra_h ? 1 : 0);
+        int approx_cell_h = base_h + (extra_h > 0 ? 1 : 0);
         if (g_font) { DeleteObject(g_font); g_font = NULL; }
         g_font = create_font_for_cell(approx_cell_h);
 
@@ -812,9 +814,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 RECT cell = { x, y, x + wcell, y + hcell };
 
                 ++idx;
-                label_for_index(idx, lbl, L);
+                label_for_index(idx, lbl, compute_label_length(total));
 
-                int visible = is_index_visible_for_input(idx, L, total);
+                int visible = is_index_visible_for_input(idx, compute_label_length(total), total);
 
                 // draw visible cells only; hidden ones are left as background to
                 // effectively disable their grid and let the user focus on the
