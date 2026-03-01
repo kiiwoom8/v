@@ -17,6 +17,7 @@
 #include <string.h>
 #include <math.h>
 #include <limits.h>
+#include <inttypes.h>
 
 /* Minimal WTS definitions used by the mouse agent to avoid depending
    on potentially incompatible system headers in MinGW. The real
@@ -298,6 +299,31 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 
 static HWND g_mainWnd = NULL;
 static HWND g_overlayWnd = NULL;
+static HWND g_capsWnd = NULL;
+static volatile BOOL g_capsThreadExit = FALSE;
+
+// caps marker window procedure: paint a red square with white '*'
+LRESULT CALLBACK CapsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rr; GetClientRect(hwnd, &rr);
+        HBRUSH rb = CreateSolidBrush(RGB(255,0,0));
+        FillRect(hdc, &rr, rb);
+        DeleteObject(rb);
+        SetTextColor(hdc, RGB(255,255,255));
+        HFONT fsmall = CreateFontA(12,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,VARIABLE_PITCH | FF_SWISS, "Segoe UI");
+        HFONT oldfs = (HFONT)SelectObject(hdc, fsmall);
+        DrawTextA(hdc, "*", -1, &rr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, oldfs);
+        DeleteObject(fsmall);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    default: return DefWindowProcA(hwnd, msg, wp, lp);
+    }
+}
 static HFONT g_font = NULL;
 static char g_input[INPUT_BUF];
 static int g_input_len = 0;
@@ -373,7 +399,7 @@ static long long numeric_unique_match(const char *s, int slen, long long total) 
     long long last_match_idx = -1;
     char tmp[64];
     for (long long i = 1; i <= total; ++i) {
-        int n = snprintf(tmp, sizeof(tmp), "%lld", i);
+        int n = snprintf(tmp, sizeof(tmp), "%" PRId64, (int64_t)i);
         if (n <= 0) continue;
         if (n >= slen) {
             if (strncmp(tmp, s, (size_t)slen) == 0) {
@@ -391,6 +417,7 @@ static long long numeric_unique_match(const char *s, int slen, long long total) 
 // Behavior controlled by KEEP_MATCHING macro: if KEEP_MATCHING==1, we SHOW only labels that match the typed prefix.
 // If KEEP_MATCHING==0, we HIDE labels that match the typed prefix (i.e. remove matching ones).
 static int is_index_visible_for_input(long long idx, int L, long long total) {
+    (void)total;
     // empty input -> show everything
     if (g_input_len == 0) return 1;
 
@@ -429,7 +456,7 @@ static int is_index_visible_for_input(long long idx, int L, long long total) {
     }
     if (is_all_digits) {
         char tmp[64];
-        int n = snprintf(tmp, sizeof(tmp), "%lld", idx);
+        int n = snprintf(tmp, sizeof(tmp), "%" PRId64, (int64_t)idx);
         if (n <= 0) return 1; // show by default
         int match = (n >= g_input_len && strncmp(tmp, g_input, (size_t)g_input_len) == 0);
 #if KEEP_MATCHING
@@ -804,6 +831,32 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             y += hcell;
         }
 
+        // update small caps marker window (separate topmost window) if present
+        if (g_capsWnd) {
+            BOOL caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+            if (caps) {
+                // position at top-left of primary monitor (slightly inset)
+                SetWindowPos(g_capsWnd, HWND_TOPMOST, 2, 2, 18, 18, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+                // paint the caps window content
+                HDC chdc = GetDC(g_capsWnd);
+                if (chdc) {
+                    HBRUSH rb = CreateSolidBrush(RGB(200,32,32));
+                    RECT rr = { 0, 0, 18, 18 };
+                    FillRect(chdc, &rr, rb);
+                    DeleteObject(rb);
+                    SetTextColor(chdc, RGB(255,255,255));
+                    HFONT fsmall = CreateFontA(12,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,VARIABLE_PITCH | FF_SWISS, "Segoe UI");
+                    HFONT oldfs = (HFONT)SelectObject(chdc, fsmall);
+                    DrawTextA(chdc, "*", -1, &rr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    SelectObject(chdc, oldfs);
+                    DeleteObject(fsmall);
+                    ReleaseDC(g_capsWnd, chdc);
+                }
+            } else {
+                ShowWindow(g_capsWnd, SW_HIDE);
+            }
+        }
+
         SelectObject(hdc, oldf);
         EndPaint(hwnd, &ps);
         return 0;
@@ -847,6 +900,8 @@ void create_overlay() {
     g_input_len = 0;
     g_input[0] = '\0';
 
+    // (caps marker created at program startup; do not recreate here)
+
     SetForegroundWindow(g_overlayWnd);
     SetFocus(g_overlayWnd);
 
@@ -860,6 +915,12 @@ void destroy_overlay() {
     UnregisterClassA("VimiumTiledOverlayClass", GetModuleHandle(NULL));
     g_overlayWnd = NULL;
     if (g_font) { DeleteObject(g_font); g_font = NULL; }
+    // destroy caps marker window if present
+    if (g_capsWnd) {
+        // don't destroy the global caps window here; just hide it so it can
+        // continue to be managed by the background caps monitor thread.
+        ShowWindow(g_capsWnd, SW_HIDE);
+    }
 }
 
 void perform_click_at(POINT pt, BOOL right) {
@@ -921,6 +982,23 @@ DWORD WINAPI ConsoleThread(LPVOID lp) {
     return 0;
 }
 
+DWORD WINAPI CapsMonitorThread(LPVOID lp) {
+    (void)lp;
+    while (!g_capsThreadExit) {
+        BOOL caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+        if (g_capsWnd) {
+            if (caps) {
+                SetWindowPos(g_capsWnd, HWND_TOPMOST, 2, 2, 18, 18, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+                InvalidateRect(g_capsWnd, NULL, TRUE);
+            } else {
+                ShowWindow(g_capsWnd, SW_HIDE);
+            }
+        }
+        Sleep(150);
+    }
+    return 0;
+}
+
 int main(void) {
     InitializeCriticalSection((CRITICAL_SECTION*)&g_lock);
 
@@ -944,6 +1022,31 @@ int main(void) {
     {
         DWORD tid;
         CreateThread(NULL, 0, MouseAgentThread, NULL, 0, &tid);
+    }
+
+    // create small caps marker window class and window early so it is always present
+    {
+        HINSTANCE hInst2 = GetModuleHandle(NULL);
+        WNDCLASSA mwc = {0};
+        mwc.lpfnWndProc = CapsWndProc;
+        mwc.hInstance = hInst2;
+        mwc.lpszClassName = "VimiumCapsMarkerClass";
+        RegisterClassA(&mwc);
+        g_capsWnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+                                    mwc.lpszClassName,
+                                    "CapsMarker",
+                                    WS_POPUP,
+                                    0, 0, 18, 18,
+                                    NULL, NULL, hInst2, NULL);
+        if (g_capsWnd) {
+            SetLayeredWindowAttributes(g_capsWnd, 0, 255, LWA_ALPHA);
+            ShowWindow(g_capsWnd, SW_HIDE);
+        }
+        // start caps monitor thread
+        {
+            DWORD ctid;
+            CreateThread(NULL, 0, CapsMonitorThread, NULL, 0, &ctid);
+        }
     }
 
     HINSTANCE hInst = GetModuleHandle(NULL);
@@ -989,6 +1092,14 @@ int main(void) {
         PostThreadMessage(tid, WM_QUIT, 0, 0);
         WaitForSingleObject(hThread, 500);
         CloseHandle(hThread);
+    }
+    // stop caps monitor and destroy caps window
+    if (g_capsWnd) {
+        g_capsThreadExit = TRUE;
+        Sleep(200);
+        DestroyWindow(g_capsWnd);
+        UnregisterClassA("VimiumCapsMarkerClass", hInst);
+        g_capsWnd = NULL;
     }
     UnregisterClassA("VimiumTiledMainClass", hInst);
     DeleteCriticalSection((CRITICAL_SECTION*)&g_lock);
