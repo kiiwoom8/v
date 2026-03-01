@@ -301,7 +301,7 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 
 #define INPUT_BUF 64
 #define DENSITY_MULT 2
-#define OVERLAY_ALPHA 200
+#define OVERLAY_ALPHA 150
 
 static HWND g_mainWnd = NULL;
 static HWND g_overlayWnd = NULL;
