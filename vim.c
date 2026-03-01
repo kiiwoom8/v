@@ -805,6 +805,17 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         long long idx = 0;
         int y = 0;
         char lbl[64];
+
+        // Precompute label length and input-type flags once for efficiency and consistent behavior
+        int L = compute_label_length(total);
+        int is_all_letters_input = 1;
+        int is_all_digits_input = 1;
+        for (int i = 0; i < g_input_len; ++i) {
+            char ch = g_input[i];
+            if (!(ch >= 'a' && ch <= 'z')) is_all_letters_input = 0;
+            if (!(ch >= '0' && ch <= '9')) is_all_digits_input = 0;
+        }
+
         for (int r = 0; r < rows; ++r) {
             int hcell = base_h + (r < extra_h ? 1 : 0);
             int x = 0;
@@ -814,9 +825,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 RECT cell = { x, y, x + wcell, y + hcell };
 
                 ++idx;
-                label_for_index(idx, lbl, compute_label_length(total));
+                label_for_index(idx, lbl, L);
 
-                int visible = is_index_visible_for_input(idx, compute_label_length(total), total);
+                int visible = is_index_visible_for_input(idx, L, total);
 
                 // draw visible cells only; hidden ones are left as background to
                 // effectively disable their grid and let the user focus on the
@@ -825,7 +836,47 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     RECT lblR = cell;
                     lblR.left += 2; lblR.top += 2; lblR.right -= 2; lblR.bottom -= 2;
                     SetTextColor(hdc, RGB(255,255,255));
-                    DrawTextA(hdc, lbl, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                    // New: if input is letters and matches label prefix, draw only the remainder
+                    char to_draw[128];
+                    to_draw[0] = '\0';
+
+                    if (g_input_len > 0 && is_all_letters_input) {
+                        if (g_input_len <= L && strncmp(lbl, g_input, (size_t)g_input_len) == 0) {
+                            // show remainder of alphabetical label
+                            const char *rem = lbl + g_input_len;
+                            // Copy remainder (possibly empty) to to_draw
+                            strncpy(to_draw, rem, sizeof(to_draw)-1);
+                            to_draw[sizeof(to_draw)-1] = '\0';
+                        } else {
+                            // not matching prefix -> draw full label
+                            strncpy(to_draw, lbl, sizeof(to_draw)-1);
+                            to_draw[sizeof(to_draw)-1] = '\0';
+                        }
+                    } else if (g_input_len > 0 && is_all_digits_input) {
+                        // numeric labels: build numeric label string
+                        char numbuf[64];
+                        int n = snprintf(numbuf, sizeof(numbuf), "%" PRId64, idx);
+                        if (n > 0 && n >= g_input_len && strncmp(numbuf, g_input, (size_t)g_input_len) == 0) {
+                            const char *rem = numbuf + g_input_len;
+                            strncpy(to_draw, rem, sizeof(to_draw)-1);
+                            to_draw[sizeof(to_draw)-1] = '\0';
+                        } else {
+                            // not matching prefix -> draw full numeric string
+                            strncpy(to_draw, numbuf, sizeof(to_draw)-1);
+                            to_draw[sizeof(to_draw)-1] = '\0';
+                        }
+                    } else {
+                        // no input or mixed: draw full alpha label
+                        strncpy(to_draw, lbl, sizeof(to_draw)-1);
+                        to_draw[sizeof(to_draw)-1] = '\0';
+                    }
+
+                    // DrawTextA with the remainder. If to_draw is empty (typed full label),
+                    // nothing is drawn for that cell — full-label actions are handled elsewhere.
+                    if (to_draw[0] != '\0') {
+                        DrawTextA(hdc, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    }
                 }
 
                 x += wcell;
@@ -1107,4 +1158,3 @@ int main(void) {
     DeleteCriticalSection((CRITICAL_SECTION*)&g_lock);
     return 0;
 }
-
