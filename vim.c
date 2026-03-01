@@ -294,7 +294,7 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 #define DESIRED_CELL_PX 100
 #define INPUT_BUF 64
 #define DENSITY_MULT 4
-#define OVERLAY_ALPHA 200
+#define OVERLAY_ALPHA 220
 
 static HWND g_mainWnd = NULL;
 static HWND g_overlayWnd = NULL;
@@ -890,6 +890,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == 1) {
             if (g_overlayWnd) destroy_overlay();
             else create_overlay();
+        } else if (wp == 2) {
+            PostQuitMessage(0);
         }
         return 0;
     case WM_DESTROY:
@@ -965,6 +967,10 @@ int main(void) {
         // silent: hotkey registration succeeded (no instructional print)
     }
 
+    // Register Ctrl+Alt+Q as a quit hotkey (id 2)
+    if (!RegisterHotKey(g_mainWnd, 2, MOD_CONTROL | MOD_ALT, 'Q')) {
+        fprintf(stderr, "Warning: RegisterHotKey Ctrl+Alt+Q failed. Hotkey may be in use.\n");
+    }
     DWORD tid;
     HANDLE hThread = CreateThread(NULL, 0, ConsoleThread, g_mainWnd, 0, &tid);
     if (!hThread) {
