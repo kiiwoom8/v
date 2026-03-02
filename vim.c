@@ -422,9 +422,9 @@ static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, lon
 }
 
 // ----------------- REDUCED-ALPHABET LABELING HELPERS -----------------
-// removed 'i' and 'y' from the alphabet to avoid confusion with j/v.
+// removed 'g', 'i' and 'y' from the alphabet to avoid confusion with q/j/v.
 static const char LABEL_ALPHABET[] = "abcdefghjklmnopqrstuvwxz";
-static const int LABEL_BASE = (int)(sizeof(LABEL_ALPHABET) - 1); // 24
+static const int LABEL_BASE = (int)(sizeof(LABEL_ALPHABET) - 1); // computed from string
 
 static int alphabet_index(char ch) {
     if (ch >= 'A' && ch <= 'Z') ch = (char)('a' + (ch - 'A'));
@@ -783,9 +783,16 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             } else if ((wp >= 'A' && wp <= 'Z')) {
                 char ch = (char)('a' + (wp - 'A'));
-                if (g_input_len < INPUT_BUF - 1) {
-                    g_input[g_input_len++] = ch;
-                    g_input[g_input_len] = '\0';
+                // Only append letter keys that exist in our reduced LABEL_ALPHABET.
+                // This avoids "breaking" the label matching when the user types i, y, g, etc.
+                if (alphabet_index(ch) >= 0) {
+                    if (g_input_len < INPUT_BUF - 1) {
+                        g_input[g_input_len++] = ch;
+                        g_input[g_input_len] = '\0';
+                        handled = TRUE;
+                    }
+                } else {
+                    // ignore invalid label letters (do not append) so labels keep working
                     handled = TRUE;
                 }
             }
