@@ -423,7 +423,7 @@ static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, lon
 
 // ----------------- REDUCED-ALPHABET LABELING HELPERS -----------------
 // removed 'g', 'i' and 'y' from the alphabet to avoid confusion with q/j/v.
-static const char LABEL_ALPHABET[] = "abcdefghjklmnopqrstuvwxz";
+static const char LABEL_ALPHABET[] = "abcdefghjklmnoprstuvwxz12";
 static const int LABEL_BASE = (int)(sizeof(LABEL_ALPHABET) - 1); // computed from string
 
 static int alphabet_index(char ch) {
