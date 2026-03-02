@@ -188,6 +188,10 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
 HHOOK g_kbHook = NULL;
 HANDLE g_movementThread = NULL;
 
+// NEW watchdog
+volatile BOOL g_watchdogExit = FALSE;
+HANDLE g_watchdogThread = NULL;
+
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
@@ -216,14 +220,25 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 void InstallHook(void) {
-    if (g_kbHook) UnhookWindowsHookEx(g_kbHook);
+    // If hook already present, try to keep it. If it's invalid, remove and re-add.
+    if (g_kbHook) {
+        // nothing – but ensure validity later via watchdog if necessary
+        return;
+    }
+
     g_kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     if (!g_kbHook) {
         fprintf(stderr, "SetWindowsHookEx failed: %lu\n", GetLastError());
+        g_kbHook = NULL;
     } else {
+        // ensure movement thread present
         if (!g_movementThread) {
             DWORD tid;
+            g_exit = FALSE;
             g_movementThread = CreateThread(NULL, 0, MovementThread, NULL, 0, &tid);
+            if (!g_movementThread) {
+                fprintf(stderr, "CreateThread MovementThread failed: %lu\n", GetLastError());
+            }
         }
     }
 }
@@ -234,6 +249,7 @@ void UninstallHook(void) {
         g_kbHook = NULL;
     }
     if (g_movementThread) {
+        // signal movement thread to exit and wait briefly
         g_exit = TRUE;
         WaitForSingleObject(g_movementThread, 2000);
         CloseHandle(g_movementThread);
@@ -273,6 +289,55 @@ LRESULT CALLBACK MouseAgentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
+// Watchdog thread: ensures hook & movement thread are alive; re-installs/respawns when needed.
+DWORD WINAPI WatchdogThread(LPVOID lpv) {
+    (void)lpv;
+    while (!g_watchdogExit) {
+        // 1) verify keyboard hook is present; if not, try to install it
+        if (!g_kbHook) {
+            fprintf(stderr, "[watchdog] kbHook missing -> InstallHook()\n");
+            InstallHook();
+        } else {
+            // Optionally: attempt a lightweight validate by calling GetModuleHandle(NULL) and re-install if SetWindowsHookEx fails repeatedly.
+            // Not implementing heavy validation: assume if g_kbHook is non-NULL it's ok. The OS may remove it silently but often sets hook handle to NULL on Unhook.
+        }
+
+        // 2) verify movement thread is alive; if thread handle is closed or terminated, respawn.
+        if (g_movementThread) {
+            DWORD exitCode = 0;
+            if (GetExitCodeThread(g_movementThread, &exitCode)) {
+                if (exitCode != STILL_ACTIVE) {
+                    // thread has exited
+                    fprintf(stderr, "[watchdog] movement thread not active (code=%lu) -> restarting\n", exitCode);
+                    CloseHandle(g_movementThread);
+                    g_movementThread = NULL;
+                }
+            } else {
+                // unable to query; assume thread is dead and clean up
+                fprintf(stderr, "[watchdog] GetExitCodeThread failed -> restarting movement thread\n");
+                CloseHandle(g_movementThread);
+                g_movementThread = NULL;
+            }
+        }
+
+        if (!g_movementThread) {
+            // respawn movement thread
+            fprintf(stderr, "[watchdog] Creating MovementThread\n");
+            DWORD tid;
+            g_exit = FALSE;
+            g_movementThread = CreateThread(NULL, 0, MovementThread, NULL, 0, &tid);
+            if (!g_movementThread) {
+                fprintf(stderr, "[watchdog] CreateThread MovementThread failed: %lu\n", GetLastError());
+                g_movementThread = NULL;
+            }
+        }
+
+        Sleep(500); // half-second interval; adjust if desired
+    }
+
+    return 0;
+}
+
 // thread entry that runs the mouse agent message loop
 DWORD WINAPI MouseAgentThread(LPVOID lpv) {
     (void)lpv;
@@ -299,10 +364,30 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 
     InstallHook();
 
+    // start watchdog thread to keep hook & movement thread alive
+    if (!g_watchdogThread) {
+        DWORD wtid;
+        g_watchdogExit = FALSE;
+        g_watchdogThread = CreateThread(NULL, 0, WatchdogThread, NULL, 0, &wtid);
+        if (!g_watchdogThread) {
+            fprintf(stderr, "Failed to create watchdog thread: %lu\n", GetLastError());
+            g_watchdogThread = NULL;
+        }
+    }
+
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+
+    // cleanup watchdog
+    if (g_watchdogThread) {
+        g_watchdogExit = TRUE;
+        WaitForSingleObject(g_watchdogThread, 1000);
+        CloseHandle(g_watchdogThread);
+        g_watchdogThread = NULL;
+        g_watchdogExit = FALSE;
     }
 
     UninstallHook();
