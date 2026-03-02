@@ -707,7 +707,8 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_input_len > 0) {
                 g_input_len--;
                 g_input[g_input_len] = '\0';
-                InvalidateRect(hwnd, NULL, TRUE);
+                // Force immediate redraw so labels update synchronously
+                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
             }
             return 0;
         } else if (wp == VK_RETURN) {
@@ -756,7 +757,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (visible_count == 1) { click_by_index(hwnd, last_idx); return 0; }
 
                 g_input_len = 0; g_input[0] = '\0';
-                InvalidateRect(hwnd, NULL, TRUE);
+                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
             }
             return 0;
         } else {
@@ -780,7 +781,8 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
 
             if (handled) {
-                InvalidateRect(hwnd, NULL, TRUE);
+                // Force immediate redraw so labels appear instantly (no top->bottom reveal)
+                RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
 
                 RECT sr; GetWindowRect(hwnd, &sr);
                 int screen_w = sr.right - sr.left;
@@ -839,7 +841,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         else {
                             // invalid full label -> clear
                             g_input_len = 0; g_input[0] = '\0';
-                            InvalidateRect(hwnd, NULL, TRUE);
+                            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
                             return 0;
                         }
                     }
@@ -857,7 +859,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     if (visible_count == 1) { click_by_index(hwnd, last_idx); return 0; }
                     // if none visible -> clear
-                    if (visible_count == 0) { g_input_len = 0; g_input[0] = '\0'; InvalidateRect(hwnd, NULL, TRUE); return 0; }
+                    if (visible_count == 0) { g_input_len = 0; g_input[0] = '\0'; RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW); return 0; }
 
                     return 0;
                 }
@@ -876,7 +878,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         if (is_index_visible_for_input(i, L, total)) { visible_count++; last_idx = i; if (visible_count > 1) break; }
                     }
                     if (visible_count == 1) { click_by_index(hwnd, last_idx); return 0; }
-                    if (visible_count == 0) { g_input_len = 0; g_input[0] = '\0'; InvalidateRect(hwnd, NULL, TRUE); return 0; }
+                    if (visible_count == 0) { g_input_len = 0; g_input[0] = '\0'; RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW); return 0; }
                 }
 
             }
@@ -884,6 +886,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
     }
     case WM_PAINT: {
+        // DOUBLE-BUFFERED PAINTING ------------------------------------------------
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT client; GetClientRect(hwnd, &client);
@@ -891,6 +894,17 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int screen_w = client.right - client.left;
         int screen_h = client.bottom - client.top;
 
+        if (screen_w <= 0 || screen_h <= 0) {
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        // create memory DC + bitmap
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP memBmp = CreateCompatibleBitmap(hdc, screen_w, screen_h);
+        HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+        // --- all drawing operations below use memDC instead of hdc ---
         // use compute_grid so width/height logic is centralized
         int cols, rows;
         long long total;
@@ -905,14 +919,14 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_font) { DeleteObject(g_font); g_font = NULL; }
         g_font = create_font_for_cell(approx_cell_h);
 
+        // background
         HBRUSH bg = CreateSolidBrush(RGB(0,0,0));
-        FillRect(hdc, &client, bg);
+        FillRect(memDC, &client, bg);
         DeleteObject(bg);
 
-        HFONT oldf = (HFONT)SelectObject(hdc, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT));
-        SetBkMode(hdc, TRANSPARENT);
-
-        SetTextColor(hdc, RGB(255,255,255));
+        HFONT oldf = (HFONT)SelectObject(memDC, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT));
+        SetBkMode(memDC, TRANSPARENT);
+        SetTextColor(memDC, RGB(255,255,255));
 
         long long idx = 0;
         int y = 0;
@@ -931,7 +945,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         char *drawChars = (char*)malloc((size_t)total);
         if (!drawChars) {
             // allocation failed; fall back to original on-the-fly behavior
-            // (we'll set drawChars to NULL so code below uses original logic)
         } else {
             memset(drawChars, 0, (size_t)total);
 
@@ -956,7 +969,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                         if (match) ch = lbl[g_input_len];
                     } else {
-                        // typed longer or equal -> no char to draw (handled elsewhere)
                         ch = '\0';
                     }
                 } else if (is_all_digits_input) {
@@ -972,8 +984,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                     }
                 } else {
-                    // mixed/other: draw full label (but we only have space to draw one char
-                    // in this optimized mode; draw first char as a fallback)
                     if (L > 0) ch = lbl[0];
                 }
                 drawChars[i-1] = ch;
@@ -990,7 +1000,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 RECT cell = { x, y, x + wcell, y + hcell };
 
                 ++idx;
-                // label_for_index(idx, lbl, L);   // moved into precompute
 
 #if PRECOMPUTE_DRAW
                 char to_draw_ch = 0;
@@ -1000,7 +1009,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     RECT lblR = cell;
                     lblR.left += 1; lblR.top += 1; lblR.right -= 1; lblR.bottom -= 1;
                     char to_draw[2] = { to_draw_ch, '\0' };
-                    DrawTextA(hdc, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawTextA(memDC, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 } else {
                     // Nothing to draw for this cell in optimized mode.
                 }
@@ -1012,7 +1021,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (visible) {
                     RECT lblR = cell;
                     lblR.left += 1; lblR.top += 1; lblR.right -= 1; lblR.bottom -= 1;
-                    SetTextColor(hdc, RGB(255,255,255));
+                    SetTextColor(memDC, RGB(255,255,255));
 
                     char to_draw[128];
                     to_draw[0] = '\0';
@@ -1049,7 +1058,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
 
                     if (to_draw[0] != '\0') {
-                        DrawTextA(hdc, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                        DrawTextA(memDC, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                     }
                 }
 #endif
@@ -1069,27 +1078,21 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (caps) {
                 // position at top-left of primary monitor (slightly inset)
                 SetWindowPos(g_capsWnd, HWND_TOPMOST, 2, 2, 18, 18, SWP_SHOWWINDOW | SWP_NOACTIVATE);
-                // paint the caps window content
-                HDC chdc = GetDC(g_capsWnd);
-                if (chdc) {
-                    HBRUSH rb = CreateSolidBrush(RGB(200,32,32));
-                    RECT rr = { 0, 0, 18, 18 };
-                    FillRect(chdc, &rr, rb);
-                    DeleteObject(rb);
-                    SetTextColor(chdc, RGB(255,255,255));
-                    HFONT fsmall = CreateFontA(12,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,DEFAULT_QUALITY,VARIABLE_PITCH | FF_SWISS, "Segoe UI");
-                    HFONT oldfs = (HFONT)SelectObject(chdc, fsmall);
-                    DrawTextA(chdc, "*", -1, &rr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    SelectObject(chdc, oldfs);
-                    DeleteObject(fsmall);
-                    ReleaseDC(g_capsWnd, chdc);
-                }
+                // paint the caps window content (we'll paint it normally via its own WM_PAINT)
             } else {
                 ShowWindow(g_capsWnd, SW_HIDE);
             }
         }
 
-        SelectObject(hdc, oldf);
+        // blit the fully rendered bitmap to the real DC in a single operation
+        BitBlt(hdc, 0, 0, screen_w, screen_h, memDC, 0, 0, SRCCOPY);
+
+        // cleanup
+        SelectObject(memDC, oldBmp);
+        DeleteObject(memBmp);
+        DeleteDC(memDC);
+        SelectObject(memDC, oldf); // redundant-safe; oldf already in memDC earlier
+
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -1137,7 +1140,8 @@ void create_overlay() {
     SetForegroundWindow(g_overlayWnd);
     SetFocus(g_overlayWnd);
 
-    InvalidateRect(g_overlayWnd, NULL, TRUE);
+    // Force immediate paint on creation so labels are present right away.
+    RedrawWindow(g_overlayWnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
     UpdateWindow(g_overlayWnd);
 }
 
