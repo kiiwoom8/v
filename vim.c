@@ -42,6 +42,14 @@ BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
 #pragma comment(lib, "Wtsapi32.lib")
 #endif
 
+// ----------------------------- NEW FONT KNOBS -----------------------------
+// Set LABEL_FONT_PX to a positive integer to force an exact pixel font height.
+// Otherwise set LABEL_FONT_PX to 0 and adjust LABEL_FONT_SCALE to scale the
+// default computed size (cell_h / 2).
+#define LABEL_FONT_PX 0        // 0 => use scale; >0 => exact pixel font height
+#define LABEL_FONT_SCALE 1.6f  // multiplier applied to (cell_h / 2)
+// -------------------------------------------------------------------------
+
 // ------------------------------------------------------------------
 // mouse agent constants / globals / helpers (from m.c)
 #define BASE_SPEED_PX_PER_SEC  500.0
@@ -307,8 +315,8 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 // Set FIXED_GRID to 1 to use a fixed grid with FIXED_COLS x FIXED_ROWS labels
 // regardless of screen resolution. Set to 0 to use original auto-sizing logic.
 #define FIXED_GRID 1
-#define FIXED_COLS 120
-#define FIXED_ROWS 60
+#define FIXED_COLS 160
+#define FIXED_ROWS 80
 // ----------------------------------------------------------------------
 
 static HWND g_mainWnd = NULL;
@@ -352,7 +360,19 @@ static int find_click_point_in_rect(RECT cell, POINT *outPt);
 // overlay program implementation from original main.c follows
 
 static HFONT create_font_for_cell(int cell_h) {
-    int font_px = max(8, cell_h / 2);
+    // compute default px from cell height like before, but allow scale or override
+    int default_px = max(8, cell_h / 2);
+    int font_px = default_px;
+
+#if LABEL_FONT_PX > 0
+    font_px = LABEL_FONT_PX;
+#else
+    // apply float scale, clamp to reasonable minimum
+    float scaled = (float)default_px * (float)(LABEL_FONT_SCALE);
+    if (scaled < 8.0f) scaled = 8.0f;
+    font_px = (int) (scaled + 0.5f);
+#endif
+
     return CreateFontA(
         -font_px, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -1195,10 +1215,10 @@ int main(void) {
         g_capsThreadExit = TRUE;
         Sleep(200);
         DestroyWindow(g_capsWnd);
-        UnregisterClassA("VimiumCapsMarkerClass", hInst);
+        UnregisterClassA("VimiumCapsMarkerClass", GetModuleHandle(NULL));
         g_capsWnd = NULL;
     }
-    UnregisterClassA("VimiumTiledMainClass", hInst);
+    UnregisterClassA("VimiumTiledMainClass", GetModuleHandle(NULL));
     DeleteCriticalSection((CRITICAL_SECTION*)&g_lock);
     return 0;
 }
