@@ -415,8 +415,8 @@ static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, lon
 }
 
 // ----------------- BASE36 LABELING HELPERS (REPLACED) -----------------
-static const char *LABEL_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
-static const int LABEL_BASE = 36; // letters then digits
+static const char *LABEL_ALPHABET = "abcdefghijklmnopqrstuvwxyz";
+static const int LABEL_BASE = 26; // letters then digits
 
 static int compute_label_length(long long total) {
     if (total <= 0) return 1;
