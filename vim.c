@@ -382,40 +382,129 @@ static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, lon
 #endif
 }
 
+// ----------------- BASE36 LABELING HELPERS (REPLACED) -----------------
+static const char *LABEL_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+static const int LABEL_BASE = 36; // letters then digits
+
 static int compute_label_length(long long total) {
-    long long cap = 26;
+    if (total <= 0) return 1;
     int L = 1;
-    while (cap < total) {
-        if (cap > (LLONG_MAX / 26)) break;
-        cap *= 26;
+    long double cap = (long double)LABEL_BASE;
+    while ((long double)total > cap) {
+        if (cap > 9.22e18L) break; // safety for huge totals
+        cap *= (long double)LABEL_BASE;
         L++;
     }
     return L;
 }
 
+// idx: 1-based index
 static void label_for_index(long long idx, char *buf, int L) {
+    if (!buf) return;
     long long v = idx - 1;
     buf[L] = '\0';
     for (int i = L - 1; i >= 0; --i) {
-        int d = (int)(v % 26);
-        buf[i] = 'a' + d;
-        v /= 26;
+        int d = (int)(v % LABEL_BASE);
+        buf[i] = LABEL_ALPHABET[d];
+        v /= LABEL_BASE;
     }
 }
 
+// return 1-based index or -1 on invalid
 static long long index_for_label(const char *s, int slen, int L, long long total) {
+    if (!s) return -1;
     if (slen != L) return -1;
     long long v = 0;
-    for (int i = 0; i < L; ++i) {
+    for (int i = 0; i < slen; ++i) {
         char ch = s[i];
-        if (ch < 'a' || ch > 'z') return -1;
-        v = v * 26 + (ch - 'a');
+        if (ch >= 'A' && ch <= 'Z') ch = (char)('a' + (ch - 'A'));
+        int found = -1;
+        if (ch >= 'a' && ch <= 'z') {
+            found = (int)(ch - 'a');
+        } else if (ch >= '0' && ch <= '9') {
+            found = 26 + (int)(ch - '0');
+        } else {
+            return -1;
+        }
+        v = v * LABEL_BASE + found;
         if (v < 0) return -1;
     }
     long long idx = v + 1;
     if (idx < 1 || idx > total) return -1;
     return idx;
 }
+
+// helper: check if input string consists only of valid label characters
+static int is_all_label_chars(const char *s, int slen) {
+    for (int i = 0; i < slen; ++i) {
+        char ch = s[i];
+        if (ch >= 'A' && ch <= 'Z') ch = (char)('a' + (ch - 'A'));
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) return 0;
+    }
+    return 1;
+}
+
+static int is_index_visible_for_input(long long idx, int L, long long total) {
+    (void)total;
+    if (g_input_len == 0) return 1;
+
+    // build label
+    char lbl[64];
+    if (L >= (int)sizeof(lbl)) return 0;
+    label_for_index(idx, lbl, L);
+
+    // if input is all label chars (letters+digits), treat it as label prefix
+    if (is_all_label_chars(g_input, g_input_len)) {
+        if (g_input_len > L) {
+            // typed longer than label -> cannot match
+#if KEEP_MATCHING
+            return 0;
+#else
+            return 1;
+#endif
+        }
+        // compare prefix (case-insensitive for letters)
+        for (int i = 0; i < g_input_len; ++i) {
+            char a = g_input[i];
+            char b = lbl[i];
+            if (a >= 'A' && a <= 'Z') a = (char)('a' + (a - 'A'));
+            if (b >= 'A' && b <= 'Z') b = (char)('a' + (b - 'A'));
+            if (a != b) {
+#if KEEP_MATCHING
+                return 0;
+#else
+                return 1;
+#endif
+            }
+        }
+#if KEEP_MATCHING
+        return 1;
+#else
+        return 0;
+#endif
+    }
+
+    // if input is all digits -> numeric matching (existing behavior)
+    int is_all_digits = 1;
+    for (int i = 0; i < g_input_len; ++i) {
+        if (!(g_input[i] >= '0' && g_input[i] <= '9')) { is_all_digits = 0; break; }
+    }
+    if (is_all_digits) {
+        char tmp[64];
+        int n = snprintf(tmp, sizeof(tmp), "%" PRId64, (int64_t)idx);
+        if (n <= 0) return 1; // show by default
+        int match = (n >= g_input_len && strncmp(tmp, g_input, (size_t)g_input_len) == 0);
+#if KEEP_MATCHING
+        return match ? 1 : 0;
+#else
+        return match ? 0 : 1;
+#endif
+    }
+
+    // mixed/invalid -> hide
+    return 0;
+}
+// --------------------------------------------------------------------
 
 static long long numeric_unique_match(const char *s, int slen, long long total) {
     if (slen <= 0) return -1;
@@ -437,65 +526,8 @@ static long long numeric_unique_match(const char *s, int slen, long long total) 
     return -1;
 }
 
-// New helper: determine visibility of an index given current g_input.
-// Behavior controlled by KEEP_MATCHING macro: if KEEP_MATCHING==1, we SHOW only labels that match the typed prefix.
-// If KEEP_MATCHING==0, we HIDE labels that match the typed prefix (i.e. remove matching ones).
-static int is_index_visible_for_input(long long idx, int L, long long total) {
-    (void)total;
-    // empty input -> show everything
-    if (g_input_len == 0) return 1;
-
-    // build english label
-    char lbl[64];
-    label_for_index(idx, lbl, L);
-
-    // check if input is all letters
-    int is_all_letters = 1;
-    for (int i = 0; i < g_input_len; ++i) {
-        char ch = g_input[i];
-        if (!(ch >= 'a' && ch <= 'z')) { is_all_letters = 0; break; }
-    }
-    if (is_all_letters) {
-        // compare typed prefix to label prefix
-        if (g_input_len > L) {
-            // typed longer than label length -> cannot match
-#if KEEP_MATCHING
-            return 0;
-#else
-            return 1;
-#endif
-        }
-        int match = (strncmp(lbl, g_input, (size_t)g_input_len) == 0);
-#if KEEP_MATCHING
-        return match ? 1 : 0;
-#else
-        return match ? 0 : 1;
-#endif
-    }
-
-    // check digits
-    int is_all_digits = 1;
-    for (int i = 0; i < g_input_len; ++i) {
-        if (!(g_input[i] >= '0' && g_input[i] <= '9')) { is_all_digits = 0; break; }
-    }
-    if (is_all_digits) {
-        char tmp[64];
-        int n = snprintf(tmp, sizeof(tmp), "%" PRId64, (int64_t)idx);
-        if (n <= 0) return 1; // show by default
-        int match = (n >= g_input_len && strncmp(tmp, g_input, (size_t)g_input_len) == 0);
-#if KEEP_MATCHING
-        return match ? 1 : 0;
-#else
-        return match ? 0 : 1;
-#endif
-    }
-
-    // mixed/invalid input: show nothing (safer)
-    return 0;
-}
-
 // --- add near the top with other forward decls ---
-static int find_click_point_in_rect(RECT cell, POINT *outPt);
+// static int find_click_point_in_rect(RECT cell, POINT *outPt);   // already declared above
 
 // --- replace the existing click_by_index with the version below ---
 static void click_by_index(HWND hwnd, long long v) {
@@ -624,12 +656,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 compute_grid(screen_w, screen_h, &cols, &rows, &total);
                 int L = compute_label_length(total);
 
-                int is_all_letters = 1;
-                for (int i = 0; i < g_input_len; ++i) {
-                    char ch = g_input[i];
-                    if (!(ch >= 'a' && ch <= 'z')) { is_all_letters = 0; break; }
-                }
-                if (is_all_letters) {
+                int is_all_label = is_all_label_chars(g_input, g_input_len);
+
+                if (is_all_label) {
                     long long idx = index_for_label(g_input, g_input_len, L, total);
                     if (idx != -1) {
                         click_by_index(hwnd, idx);
@@ -691,26 +720,15 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 compute_grid(screen_w, screen_h, &cols, &rows, &total);
                 int L = compute_label_length(total);
 
-                int is_all_letters = 1;
-                for (int i = 0; i < g_input_len; ++i) {
-                    char ch = g_input[i];
-                    if (!(ch >= 'a' && ch <= 'z')) { is_all_letters = 0; break; }
-                }
-                if (is_all_letters) {
+                int is_all_label = is_all_label_chars(g_input, g_input_len);
+
+                if (is_all_label) {
                     // If full-length label typed, try decode
-                        if (g_input_len == L) {
+                    if (g_input_len == L) {
                         long long idx = index_for_label(g_input, g_input_len, L, total);
                         if (idx != -1) {
                             BOOL shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-                            // perform right-click if shift was held for the final letter
-                            RECT sr; GetWindowRect(hwnd, &sr);
-                            int screen_w = sr.right - sr.left;
-                            int screen_h = sr.bottom - sr.top;
-                            int cols, rows;
-                            long long total2;
-                            compute_grid(screen_w, screen_h, &cols, &rows, &total2);
 
-                            // reuse click_by_index logic, but perform the click ourselves
                             long long v = idx;
                             if (v >= 1) {
                                 RECT wr; GetWindowRect(hwnd, &wr);
@@ -825,12 +843,10 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // Precompute label length and input-type flags once for efficiency and consistent behavior
         int L = compute_label_length(total);
-        int is_all_letters_input = 1;
+        int is_all_label_input = is_all_label_chars(g_input, g_input_len);
         int is_all_digits_input = 1;
         for (int i = 0; i < g_input_len; ++i) {
-            char ch = g_input[i];
-            if (!(ch >= 'a' && ch <= 'z')) is_all_letters_input = 0;
-            if (!(ch >= '0' && ch <= '9')) is_all_digits_input = 0;
+            if (!(g_input[i] >= '0' && g_input[i] <= '9')) { is_all_digits_input = 0; break; }
         }
 
         for (int r = 0; r < rows; ++r) {
@@ -862,12 +878,12 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     to_draw[0] = '\0';
 
                     if (g_input_len == 0) {
-                        // initial state: show first character of alpha label.
+                        // initial state: show first character of label.
                         if (L > 0) {
                             to_draw[0] = lbl[0];
                             to_draw[1] = '\0';
                         }
-                    } else if (is_all_letters_input) {
+                    } else if (is_all_label_input) {
                         // If typed prefix matches this label up to g_input_len,
                         // and there is a next character, show exactly that single char.
                         if (g_input_len < L && strncmp(lbl, g_input, (size_t)g_input_len) == 0) {
@@ -895,7 +911,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             }
                         }
                     } else {
-                        // mixed/other: fallback to existing behavior (draw full alpha label)
+                        // mixed/other: fallback to existing behavior (draw full label)
                         // but only if visible (visibility logic already decides)
                         strncpy(to_draw, lbl, sizeof(to_draw)-1);
                         to_draw[sizeof(to_draw)-1] = '\0';
