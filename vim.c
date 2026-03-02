@@ -84,7 +84,7 @@ static void send_click(BOOL left) {
 }
 
 static void send_left_down(void) { if (g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTDOWN; SendInput(1,&in,sizeof(in)); g_dragging = TRUE; }
-static void send_left_up(void)   { if (!g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTUP; SendInput(1,&in,sizeof(INPUT)); g_dragging = FALSE; }
+static void send_left_up(void)   { if (!g_dragging) return; INPUT in; ZeroMemory(&in, sizeof(in)); in.type = INPUT_MOUSE; in.mi.dwFlags = MOUSEEVENTF_LEFTUP; SendInput(1,&in,sizeof(in)); g_dragging = FALSE; }
 
 DWORD WINAPI MovementThread(LPVOID lpv) {
     (void)lpv;
@@ -301,7 +301,15 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 
 #define INPUT_BUF 64
 #define DENSITY_MULT 2
-#define OVERLAY_ALPHA 190
+#define OVERLAY_ALPHA 180
+
+// ------------------------ NEW FIXED GRID CONFIG ------------------------
+// Set FIXED_GRID to 1 to use a fixed grid with FIXED_COLS x FIXED_ROWS labels
+// regardless of screen resolution. Set to 0 to use original auto-sizing logic.
+#define FIXED_GRID 1
+#define FIXED_COLS 120
+#define FIXED_ROWS 60
+// ----------------------------------------------------------------------
 
 static HWND g_mainWnd = NULL;
 static HWND g_overlayWnd = NULL;
@@ -353,6 +361,14 @@ static HFONT create_font_for_cell(int cell_h) {
 }
 
 static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, long long *ptotal) {
+#if FIXED_GRID
+    int cols = FIXED_COLS >= 1 ? FIXED_COLS : 1;
+    int rows = FIXED_ROWS >= 1 ? FIXED_ROWS : 1;
+    *pcols = cols;
+    *prows = rows;
+    *ptotal = (long long)cols * (long long)rows;
+    return;
+#else
     // width uses DESIRED_CELL_PX, height uses DESIRED_CELL_H (so we can reduce height)
     int cols = max(1, screen_w / DESIRED_CELL_PX);
     int rows = max(1, screen_h / DESIRED_CELL_H);
@@ -363,6 +379,7 @@ static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, lon
     *pcols = cols;
     *prows = rows;
     *ptotal = (long long)cols * (long long)rows;
+#endif
 }
 
 static int compute_label_length(long long total) {
@@ -834,7 +851,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 // remaining labels.
                 if (visible) {
                     RECT lblR = cell;
-                    lblR.left += 2; lblR.top += 2; lblR.right -= 2; lblR.bottom -= 2;
+                    // --- REDUCED PADDING: previously used +=2/-=2, now use 1 ---
+                    // set to 0 for absolutely no padding if desired
+                    lblR.left += 1; lblR.top += 1; lblR.right -= 1; lblR.bottom -= 1;
                     SetTextColor(hdc, RGB(255,255,255));
 
                     // New: show only the character at the current input position
