@@ -321,7 +321,7 @@ DWORD WINAPI MouseAgentThread(LPVOID lpv) {
 
 #define INPUT_BUF 64
 #define DENSITY_MULT 2
-#define OVERLAY_ALPHA 180
+#define OVERLAY_ALPHA 220
 
 // ------------------------ NEW FIXED GRID CONFIG ------------------------
 // Set FIXED_GRID to 1 to use a fixed grid with FIXED_COLS x FIXED_ROWS labels
