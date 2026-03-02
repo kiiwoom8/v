@@ -363,11 +363,18 @@ static char g_input[INPUT_BUF];
 static int g_input_len = 0;
 static CRITICAL_SECTION g_lock;
 
+// New: cached overlay bitmap so we can show overlay instantly
+static HBITMAP g_cachedBitmap = NULL;
+static int g_cached_w = 0;
+static int g_cached_h = 0;
+static CRITICAL_SECTION g_cache_lock;
+
 // forward declarations
 void create_overlay();
 void destroy_overlay();
 void perform_click_at(POINT pt, BOOL right);
 static int find_click_point_in_rect(RECT cell, POINT *outPt);
+static void render_overlay_cache(void);
 
 // overlay program implementation from original main.c follows
 
@@ -886,7 +893,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
     }
     case WM_PAINT: {
-        // DOUBLE-BUFFERED PAINTING ------------------------------------------------
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT client; GetClientRect(hwnd, &client);
@@ -899,7 +905,21 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        // create memory DC + bitmap
+        // FIX: use cached bitmap ONLY when input is empty
+        EnterCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+        if (g_cachedBitmap && g_cached_w == screen_w && g_cached_h == screen_h && g_input_len == 0) {
+            HDC srcDC = CreateCompatibleDC(hdc);
+            HBITMAP old = (HBITMAP)SelectObject(srcDC, g_cachedBitmap);
+            BitBlt(hdc, 0, 0, screen_w, screen_h, srcDC, 0, 0, SRCCOPY);
+            SelectObject(srcDC, old);
+            DeleteDC(srcDC);
+            LeaveCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        LeaveCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+
+        // No appropriate cache or user typed something -> render live (so labels update)
         HDC memDC = CreateCompatibleDC(hdc);
         HBITMAP memBmp = CreateCompatibleBitmap(hdc, screen_w, screen_h);
         HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
@@ -1103,8 +1123,90 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 }
 
+void render_overlay_cache(void) {
+    // Build a cached bitmap for the overlay in the initial (empty-input) state.
+    // This is called at startup so that the overlay can be shown instantly later.
+    int screen_w = GetSystemMetrics(SM_CXSCREEN);
+    int screen_h = GetSystemMetrics(SM_CYSCREEN);
+    if (screen_w <= 0 || screen_h <= 0) return;
+
+    // prepare DCs
+    HDC screen = GetDC(NULL);
+    HDC memDC = CreateCompatibleDC(screen);
+    HBITMAP memBmp = CreateCompatibleBitmap(screen, screen_w, screen_h);
+    HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+    RECT client = {0,0,screen_w,screen_h};
+    // background
+    HBRUSH bg = CreateSolidBrush(RGB(0,0,0));
+    FillRect(memDC, &client, bg);
+    DeleteObject(bg);
+
+    // compute grid and draw the first-char-only representation (fast)
+    int cols, rows;
+    long long total;
+    compute_grid(screen_w, screen_h, &cols, &rows, &total);
+
+    int base_w = screen_w / cols;
+    int extra_w = screen_w % cols;
+    int base_h = screen_h / rows;
+    int extra_h = screen_h % rows;
+
+    int approx_cell_h = base_h + (extra_h > 0 ? 1 : 0);
+    HFONT fnt = create_font_for_cell(approx_cell_h);
+    HFONT oldf = (HFONT)SelectObject(memDC, fnt ? fnt : GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(memDC, TRANSPARENT);
+    SetTextColor(memDC, RGB(255,255,255));
+
+    long long idx = 0;
+    int y = 0;
+    char lbl[64];
+    int L = compute_label_length(total);
+
+    for (int r = 0; r < rows; ++r) {
+        int hcell = base_h + (r < extra_h ? 1 : 0);
+        int x = 0;
+        for (int c = 0; c < cols; ++c) {
+            int wcell = base_w + (c < extra_w ? 1 : 0);
+            RECT cell = { x, y, x + wcell, y + hcell };
+            ++idx;
+            label_for_index(idx, lbl, L);
+            if (L > 0) {
+                RECT lblR = cell;
+                lblR.left += 1; lblR.top += 1; lblR.right -= 1; lblR.bottom -= 1;
+                char to_draw[2] = { lbl[0], '\0' };
+                DrawTextA(memDC, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            x += wcell;
+        }
+        y += hcell;
+    }
+
+    // finalize cache (store memBmp)
+    EnterCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+    if (g_cachedBitmap) { DeleteObject(g_cachedBitmap); g_cachedBitmap = NULL; }
+    g_cachedBitmap = (HBITMAP)CopyImage(memBmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+    g_cached_w = screen_w; g_cached_h = screen_h;
+    LeaveCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+
+    // cleanup
+    SelectObject(memDC, oldBmp);
+    DeleteObject(memBmp);
+    SelectObject(memDC, oldf);
+    DeleteObject(fnt);
+    DeleteDC(memDC);
+    ReleaseDC(NULL, screen);
+}
+
 void create_overlay() {
-    if (g_overlayWnd) return;
+    if (g_overlayWnd) {
+        // already exists: show immediately (fast because of cache)
+        SetWindowPos(g_overlayWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SetLayeredWindowAttributes(g_overlayWnd, 0, (BYTE)OVERLAY_ALPHA, LWA_ALPHA);
+        SetForegroundWindow(g_overlayWnd);
+        SetFocus(g_overlayWnd);
+        return;
+    }
 
     HINSTANCE hInst = GetModuleHandle(NULL);
     WNDCLASSA wc = {0};
@@ -1121,7 +1223,7 @@ void create_overlay() {
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         wc.lpszClassName,
         "Vimium Tiled Overlay",
-        WS_POPUP | WS_VISIBLE,
+        WS_POPUP, // start hidden and show below, or visible immediately if desired
         0, 0, sx, sy,
         NULL, NULL, hInst, NULL
     );
@@ -1135,13 +1237,13 @@ void create_overlay() {
     g_input_len = 0;
     g_input[0] = '\0';
 
-    // (caps marker created at program startup; do not recreate here)
-
+    // Show the overlay topmost. Because we pre-rendered a cached bitmap,
+    // WM_PAINT will quickly blit cached content and the overlay appears instantly.
+    SetWindowPos(g_overlayWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetForegroundWindow(g_overlayWnd);
     SetFocus(g_overlayWnd);
 
-    // Force immediate paint on creation so labels are present right away.
-    RedrawWindow(g_overlayWnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    // Let Windows issue a paint. We avoid expensive re-render here.
     UpdateWindow(g_overlayWnd);
 }
 
@@ -1151,10 +1253,8 @@ void destroy_overlay() {
     UnregisterClassA("VimiumTiledOverlayClass", GetModuleHandle(NULL));
     g_overlayWnd = NULL;
     if (g_font) { DeleteObject(g_font); g_font = NULL; }
-    // destroy caps marker window if present
+    // hide caps marker
     if (g_capsWnd) {
-        // don't destroy the global caps window here; just hide it so it can
-        // continue to be managed by the background caps monitor thread.
         ShowWindow(g_capsWnd, SW_HIDE);
     }
 }
@@ -1237,6 +1337,7 @@ DWORD WINAPI CapsMonitorThread(LPVOID lp) {
 
 int main(void) {
     InitializeCriticalSection((CRITICAL_SECTION*)&g_lock);
+    InitializeCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
 
     HMODULE shcore = LoadLibraryA("shcore.dll");
     if (shcore) {
@@ -1300,6 +1401,9 @@ int main(void) {
         return 1;
     }
 
+    // Build overlay cache now so showing it later is instant.
+    render_overlay_cache();
+
     if (!RegisterHotKey(g_mainWnd, 1, MOD_SHIFT, 'F')) {
         fprintf(stderr, "Warning: RegisterHotKey failed. Hotkey may be in use.\n");
     } else {
@@ -1337,7 +1441,14 @@ int main(void) {
         UnregisterClassA("VimiumCapsMarkerClass", GetModuleHandle(NULL));
         g_capsWnd = NULL;
     }
+    // free cached bitmap
+    EnterCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+    if (g_cachedBitmap) { DeleteObject(g_cachedBitmap); g_cachedBitmap = NULL; }
+    g_cached_w = g_cached_h = 0;
+    LeaveCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
+
     UnregisterClassA("VimiumTiledMainClass", GetModuleHandle(NULL));
+    DeleteCriticalSection((CRITICAL_SECTION*)&g_cache_lock);
     DeleteCriticalSection((CRITICAL_SECTION*)&g_lock);
     return 0;
 }
