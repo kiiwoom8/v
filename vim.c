@@ -50,6 +50,18 @@ BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
 #define LABEL_FONT_SCALE 1.6f  // multiplier applied to (cell_h / 2)
 // -------------------------------------------------------------------------
 
+// ----------------------- NEW PERFORMANCE / BEHAVIOR KNOBS ------------------
+// MIN_LABEL_ACTIVATE: when typing alphabetic label characters, try to
+// auto-activate if the typed prefix uniquely identifies a label and its
+// length is at least this. Set to 2 to allow clicking after typing twice.
+#define MIN_LABEL_ACTIVATE 2
+
+// PRECOMPUTE_DRAW: when set to 1 we do a single pre-pass to compute what
+// single-character to draw for each cell (or none). This avoids repeated
+// label_for_index/is_index_visible_for_input double work and speeds up drawing.
+#define PRECOMPUTE_DRAW 1
+// -------------------------------------------------------------------------
+
 // ------------------------------------------------------------------
 // mouse agent constants / globals / helpers (from m.c)
 #define BASE_SPEED_PX_PER_SEC  500.0
@@ -526,6 +538,38 @@ static int is_index_visible_for_input(long long idx, int L, long long total) {
 }
 // --------------------------------------------------------------------
 
+// find if a label-prefix (alphabetic/digits) uniquely identifies a single index.
+// returns 1-based index if unique, -1 otherwise.
+static long long prefix_unique_label_idx(const char *s, int slen, int L, long long total) {
+    if (slen <= 0) return -1;
+    long long matches = 0;
+    long long last_idx = -1;
+    char lbl[64];
+    if (L >= (int)sizeof(lbl)) return -1;
+    for (long long i = 1; i <= total; ++i) {
+        label_for_index(i, lbl, L);
+        // compare prefix case-insensitive for letters
+        int ok = 1;
+        if (slen > L) { ok = 0; }
+        else {
+            for (int j = 0; j < slen; ++j) {
+                char a = s[j];
+                char b = lbl[j];
+                if (a >= 'A' && a <= 'Z') a = (char)('a' + (a - 'A'));
+                if (b >= 'A' && b <= 'Z') b = (char)('a' + (b - 'A'));
+                if (a != b) { ok = 0; break; }
+            }
+        }
+        if (ok) {
+            matches++;
+            last_idx = i;
+            if (matches > 1) return -1;
+        }
+    }
+    if (matches == 1) return last_idx;
+    return -1;
+}
+
 static long long numeric_unique_match(const char *s, int slen, long long total) {
     if (slen <= 0) return -1;
     long long matches = 0;
@@ -684,6 +728,12 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         click_by_index(hwnd, idx);
                         return 0;
                     }
+                    // Try prefix-unique on Enter if typed prefix uniquely matches one label
+                    long long pidx = prefix_unique_label_idx(g_input, g_input_len, L, total);
+                    if (pidx != -1) {
+                        click_by_index(hwnd, pidx);
+                        return 0;
+                    }
                 }
 
                 int is_all_digits = 1;
@@ -793,6 +843,13 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             return 0;
                         }
                     }
+
+                    // NEW: if typed prefix length >= MIN_LABEL_ACTIVATE, try prefix-unique immediate activation
+                    if (g_input_len >= MIN_LABEL_ACTIVATE) {
+                        long long pidx = prefix_unique_label_idx(g_input, g_input_len, L, total);
+                        if (pidx != -1) { click_by_index(hwnd, pidx); return 0; }
+                    }
+
                     // otherwise: check visible count and auto-click if unique
                     long long visible_count = 0, last_idx = -1;
                     for (long long i = 1; i <= total; ++i) {
@@ -869,6 +926,61 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!(g_input[i] >= '0' && g_input[i] <= '9')) { is_all_digits_input = 0; break; }
         }
 
+#if PRECOMPUTE_DRAW
+        // allocate small buffer: one char per cell (0 => nothing to draw)
+        char *drawChars = (char*)malloc((size_t)total);
+        if (!drawChars) {
+            // allocation failed; fall back to original on-the-fly behavior
+            // (we'll set drawChars to NULL so code below uses original logic)
+        } else {
+            memset(drawChars, 0, (size_t)total);
+
+            // Single pre-pass to compute the single-character to draw for each cell (if any).
+            for (long long i = 1; i <= total; ++i) {
+                char ch = '\0';
+                // generate label and decide what to show
+                label_for_index(i, lbl, L);
+                if (g_input_len == 0) {
+                    // initial: show first char of label
+                    if (L > 0) ch = lbl[0];
+                } else if (is_all_label_input) {
+                    if (g_input_len < L) {
+                        // if prefix matches, show next char
+                        int match = 1;
+                        for (int j = 0; j < g_input_len; ++j) {
+                            char a = g_input[j];
+                            char b = lbl[j];
+                            if (a >= 'A' && a <= 'Z') a = (char)('a' + (a - 'A'));
+                            if (b >= 'A' && b <= 'Z') b = (char)('a' + (b - 'A'));
+                            if (a != b) { match = 0; break; }
+                        }
+                        if (match) ch = lbl[g_input_len];
+                    } else {
+                        // typed longer or equal -> no char to draw (handled elsewhere)
+                        ch = '\0';
+                    }
+                } else if (is_all_digits_input) {
+                    char numbuf[64];
+                    int n = snprintf(numbuf, sizeof(numbuf), "%" PRId64, i);
+                    if (n > 0) {
+                        if (g_input_len == 0) {
+                            ch = numbuf[0];
+                        } else if (g_input_len < n) {
+                            if (strncmp(numbuf, g_input, (size_t)g_input_len) == 0) {
+                                ch = numbuf[g_input_len];
+                            }
+                        }
+                    }
+                } else {
+                    // mixed/other: draw full label (but we only have space to draw one char
+                    // in this optimized mode; draw first char as a fallback)
+                    if (L > 0) ch = lbl[0];
+                }
+                drawChars[i-1] = ch;
+            }
+        }
+#endif
+
         for (int r = 0; r < rows; ++r) {
             int hcell = base_h + (r < extra_h ? 1 : 0);
             int x = 0;
@@ -878,52 +990,53 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 RECT cell = { x, y, x + wcell, y + hcell };
 
                 ++idx;
+                // label_for_index(idx, lbl, L);   // moved into precompute
+
+#if PRECOMPUTE_DRAW
+                char to_draw_ch = 0;
+                if (drawChars) to_draw_ch = drawChars[idx-1];
+
+                if (to_draw_ch != 0) {
+                    RECT lblR = cell;
+                    lblR.left += 1; lblR.top += 1; lblR.right -= 1; lblR.bottom -= 1;
+                    char to_draw[2] = { to_draw_ch, '\0' };
+                    DrawTextA(hdc, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                } else {
+                    // Nothing to draw for this cell in optimized mode.
+                }
+#else
                 label_for_index(idx, lbl, L);
 
                 int visible = is_index_visible_for_input(idx, L, total);
 
-                // draw visible cells only; hidden ones are left as background to
-                // effectively disable their grid and let the user focus on the
-                // remaining labels.
                 if (visible) {
                     RECT lblR = cell;
-                    // --- REDUCED PADDING: previously used +=2/-=2, now use 1 ---
-                    // set to 0 for absolutely no padding if desired
                     lblR.left += 1; lblR.top += 1; lblR.right -= 1; lblR.bottom -= 1;
                     SetTextColor(hdc, RGB(255,255,255));
 
-                    // New: show only the character at the current input position
-                    // for matching labels (i.e., first, second, third character)
                     char to_draw[128];
                     to_draw[0] = '\0';
 
                     if (g_input_len == 0) {
-                        // initial state: show first character of label.
                         if (L > 0) {
                             to_draw[0] = lbl[0];
                             to_draw[1] = '\0';
                         }
                     } else if (is_all_label_input) {
-                        // If typed prefix matches this label up to g_input_len,
-                        // and there is a next character, show exactly that single char.
                         if (g_input_len < L && strncmp(lbl, g_input, (size_t)g_input_len) == 0) {
                             to_draw[0] = lbl[g_input_len];
                             to_draw[1] = '\0';
                         } else {
-                            // either doesn't match, or typed length >= label length -> show nothing
                             to_draw[0] = '\0';
                         }
                     } else if (is_all_digits_input) {
-                        // numeric labels - compute numeric string for idx
                         char numbuf[64];
                         int n = snprintf(numbuf, sizeof(numbuf), "%" PRId64, idx);
                         if (n > 0) {
                             if (g_input_len == 0) {
-                                // initial: show first digit
                                 to_draw[0] = numbuf[0];
                                 to_draw[1] = '\0';
                             } else if (g_input_len < n && strncmp(numbuf, g_input, (size_t)g_input_len) == 0) {
-                                // show next digit only
                                 to_draw[0] = numbuf[g_input_len];
                                 to_draw[1] = '\0';
                             } else {
@@ -931,22 +1044,24 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                             }
                         }
                     } else {
-                        // mixed/other: fallback to existing behavior (draw full label)
-                        // but only if visible (visibility logic already decides)
                         strncpy(to_draw, lbl, sizeof(to_draw)-1);
                         to_draw[sizeof(to_draw)-1] = '\0';
                     }
 
-                    // DrawTextA with the chosen string. If to_draw is empty, nothing is drawn.
                     if (to_draw[0] != '\0') {
                         DrawTextA(hdc, to_draw, -1, &lblR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                     }
                 }
+#endif
 
                 x += wcell;
             }
             y += hcell;
         }
+
+#if PRECOMPUTE_DRAW
+        if (drawChars) { free(drawChars); drawChars = NULL; }
+#endif
 
         // update small caps marker window (separate topmost window) if present
         if (g_capsWnd) {
