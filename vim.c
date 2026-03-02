@@ -421,9 +421,18 @@ static void compute_grid(int screen_w, int screen_h, int *pcols, int *prows, lon
 #endif
 }
 
-// ----------------- BASE36 LABELING HELPERS (REPLACED) -----------------
-static const char *LABEL_ALPHABET = "abcdefghijklmnopqrstuvwxyz";
-static const int LABEL_BASE = 26; // letters then digits
+// ----------------- REDUCED-ALPHABET LABELING HELPERS -----------------
+// removed 'i' and 'y' from the alphabet to avoid confusion with j/v.
+static const char LABEL_ALPHABET[] = "abcdefghjklmnopqrstuvwxz";
+static const int LABEL_BASE = (int)(sizeof(LABEL_ALPHABET) - 1); // 24
+
+static int alphabet_index(char ch) {
+    if (ch >= 'A' && ch <= 'Z') ch = (char)('a' + (ch - 'A'));
+    for (int i = 0; i < LABEL_BASE; ++i) {
+        if (LABEL_ALPHABET[i] == ch) return i;
+    }
+    return -1;
+}
 
 static int compute_label_length(long long total) {
     if (total <= 0) return 1;
@@ -457,14 +466,8 @@ static long long index_for_label(const char *s, int slen, int L, long long total
     for (int i = 0; i < slen; ++i) {
         char ch = s[i];
         if (ch >= 'A' && ch <= 'Z') ch = (char)('a' + (ch - 'A'));
-        int found = -1;
-        if (ch >= 'a' && ch <= 'z') {
-            found = (int)(ch - 'a');
-        } else if (ch >= '0' && ch <= '9') {
-            found = 26 + (int)(ch - '0');
-        } else {
-            return -1;
-        }
+        int found = alphabet_index(ch);
+        if (found < 0) return -1;
         v = v * LABEL_BASE + found;
         if (v < 0) return -1;
     }
@@ -478,7 +481,7 @@ static int is_all_label_chars(const char *s, int slen) {
     for (int i = 0; i < slen; ++i) {
         char ch = s[i];
         if (ch >= 'A' && ch <= 'Z') ch = (char)('a' + (ch - 'A'));
-        if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) return 0;
+        if (alphabet_index(ch) < 0) return 0;
     }
     return 1;
 }
@@ -492,7 +495,7 @@ static int is_index_visible_for_input(long long idx, int L, long long total) {
     if (L >= (int)sizeof(lbl)) return 0;
     label_for_index(idx, lbl, L);
 
-    // if input is all label chars (letters+digits), treat it as label prefix
+    // if input is all label chars (letters from reduced alphabet), treat it as label prefix
     if (is_all_label_chars(g_input, g_input_len)) {
         if (g_input_len > L) {
             // typed longer than label -> cannot match
