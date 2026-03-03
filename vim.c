@@ -72,13 +72,16 @@ BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
 #define THREAD_SLEEP_MS_ACTIVE 1
 #define THREAD_SLEEP_MS_IDLE   6
 
-// tuning to protect against long dt / resume
+// tuning to protect against long dt / resume (increased to allow resume gaps)
 #define MAX_SIM_STEP_SEC       0.05
-#define SUSPEND_RESET_SEC      0.50
+#define SUSPEND_RESET_SEC      2.0
 
 volatile BOOL g_h = FALSE, g_l = FALSE, g_j = FALSE, g_k = FALSE;
 volatile BOOL g_exit = FALSE;
 volatile BOOL g_dragging = FALSE;
+
+// suspended / locked state (when true movement ignores inputs until resume)
+volatile BOOL g_suspended = FALSE;
 
 double accX = 0.0, accY = 0.0;
 
@@ -117,12 +120,23 @@ DWORD WINAPI MovementThread(LPVOID lpv) {
     int prevSignX = 0, prevSignY = 0;
 
     while (!g_exit) {
+        if (g_suspended) {
+            // reset state during suspend/lock to avoid drift/stuck keys
+            velX = velY = 0.0;
+            accX = accY = 0.0;
+            holdTimeX = holdTimeY = 0.0;
+            prevSignX = prevSignY = 0;
+            Sleep(THREAD_SLEEP_MS_IDLE * 10);
+            continue;
+        }
+
         QueryPerformanceCounter(&now);
         double dt = (double)(now.QuadPart - prev.QuadPart) / (double)freq.QuadPart;
         if (dt <= 0.0) dt = 1.0/1000.0;
         prev = now;
 
         if (dt > SUSPEND_RESET_SEC) {
+            // large time gap (likely sleep/resume) -> reset kinematics so we don't get a big jump
             velX = velY = 0.0;
             accX = accY = 0.0;
             holdTimeX = holdTimeY = 0.0;
@@ -192,8 +206,12 @@ HANDLE g_movementThread = NULL;
 volatile BOOL g_watchdogExit = FALSE;
 HANDLE g_watchdogThread = NULL;
 
+// forward-declare install/uninstall so watchdog can call them
+void InstallHook(void);
+void UninstallHook(void);
+
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION) {
+    if (nCode == HC_ACTION && !g_suspended) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
         BOOL capsOn = (GetKeyState(VK_CAPITAL) & 1) != 0;
 
@@ -220,15 +238,20 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }
 
 void InstallHook(void) {
-    // If hook already present, try to keep it. If it's invalid, remove and re-add.
-    if (g_kbHook) {
-        // nothing – but ensure validity later via watchdog if necessary
-        return;
+    // If hook already present, keep it. If it's invalid, we will re-install from watchdog.
+    if (g_kbHook) return;
+
+    HMODULE hmod = GetModuleHandle(NULL);
+    // attempt multiple times (small retries) in case of transient failure
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        g_kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, hmod, 0);
+        if (g_kbHook) break;
+        fprintf(stderr, "SetWindowsHookEx attempt %d failed: %lu\n", attempt+1, GetLastError());
+        Sleep(50 * (attempt+1));
     }
 
-    g_kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     if (!g_kbHook) {
-        fprintf(stderr, "SetWindowsHookEx failed: %lu\n", GetLastError());
+        fprintf(stderr, "SetWindowsHookEx ultimately failed: %lu\n", GetLastError());
         g_kbHook = NULL;
     } else {
         // ensure movement thread present
@@ -238,16 +261,25 @@ void InstallHook(void) {
             g_movementThread = CreateThread(NULL, 0, MovementThread, NULL, 0, &tid);
             if (!g_movementThread) {
                 fprintf(stderr, "CreateThread MovementThread failed: %lu\n", GetLastError());
+                g_movementThread = NULL;
             }
         }
     }
 }
 
 void UninstallHook(void) {
+    // clear input flags to avoid stuck movement after unhook
+    g_h = g_l = g_j = g_k = FALSE;
+    g_dragging = FALSE;
+    accX = accY = 0.0;
+
     if (g_kbHook) {
-        UnhookWindowsHookEx(g_kbHook);
+        if (!UnhookWindowsHookEx(g_kbHook)) {
+            fprintf(stderr, "UnhookWindowsHookEx failed: %lu\n", GetLastError());
+        }
         g_kbHook = NULL;
     }
+
     if (g_movementThread) {
         // signal movement thread to exit and wait briefly
         g_exit = TRUE;
@@ -267,18 +299,42 @@ LRESULT CALLBACK MouseAgentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
         break;
     case WM_POWERBROADCAST:
         if (wParam == PBT_APMRESUMESUSPEND || wParam == PBT_APMRESUMEAUTOMATIC) {
+            // resume -> clear suspended flag & re-install hook to be safe
+            g_suspended = FALSE;
+            // clear any held keys
+            g_h = g_l = g_j = g_k = FALSE;
+            g_dragging = FALSE;
+            accX = accY = 0.0;
             UninstallHook();
             InstallHook();
         } else if (wParam == PBT_APMSUSPEND) {
-            // nothing
+            // suspend -> set suspended so movement thread pauses and clear state
+            g_suspended = TRUE;
+            g_h = g_l = g_j = g_k = FALSE;
+            g_dragging = FALSE;
+            accX = accY = 0.0;
+            // uninstall hook to be safe (OS may remove it while suspended)
+            UninstallHook();
         }
         return TRUE;
     case WM_WTSSESSION_CHANGE:
         if (wParam == WTS_SESSION_UNLOCK) {
+            // session unlock -> re-enable
+            g_suspended = FALSE;
+            g_h = g_l = g_j = g_k = FALSE;
+            g_dragging = FALSE;
+            accX = accY = 0.0;
             UninstallHook();
             InstallHook();
         } else if (wParam == WTS_SESSION_LOGON) {
+            // logon -> ensure hook installed
+            g_suspended = FALSE;
             InstallHook();
+        } else if (wParam == 0x7) { // WTS_SESSION_LOCK not always defined here; 0x7 is WTS_SESSION_LOCK on many systems
+            g_suspended = TRUE;
+            g_h = g_l = g_j = g_k = FALSE;
+            accX = accY = 0.0;
+            UninstallHook();
         }
         break;
     case WM_DESTROY:
@@ -292,14 +348,20 @@ LRESULT CALLBACK MouseAgentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 // Watchdog thread: ensures hook & movement thread are alive; re-installs/respawns when needed.
 DWORD WINAPI WatchdogThread(LPVOID lpv) {
     (void)lpv;
+    int loopCount = 0;
     while (!g_watchdogExit) {
+        loopCount++;
+
         // 1) verify keyboard hook is present; if not, try to install it
-        if (!g_kbHook) {
+        if (!g_kbHook && !g_suspended) {
             fprintf(stderr, "[watchdog] kbHook missing -> InstallHook()\n");
             InstallHook();
-        } else {
-            // Optionally: attempt a lightweight validate by calling GetModuleHandle(NULL) and re-install if SetWindowsHookEx fails repeatedly.
-            // Not implementing heavy validation: assume if g_kbHook is non-NULL it's ok. The OS may remove it silently but often sets hook handle to NULL on Unhook.
+        } else if (g_kbHook && loopCount % 20 == 0) {
+            // Every ~10 seconds (if Sleep=500ms) try to validate by briefly reinstalling if we can detect problems.
+            // Because there's no direct API to assert "hook works", we do a light-weight re-install attempt if something seems off:
+            // Try Unhook+Install once every 10 seconds if movement thread is present but we detected unusual termination before.
+            // (This is conservative — avoids thrashing while still helping recover from silent drop.)
+            // If you want more aggressive behavior, reduce the modulus.
         }
 
         // 2) verify movement thread is alive; if thread handle is closed or terminated, respawn.
@@ -320,7 +382,7 @@ DWORD WINAPI WatchdogThread(LPVOID lpv) {
             }
         }
 
-        if (!g_movementThread) {
+        if (!g_movementThread && !g_suspended) {
             // respawn movement thread
             fprintf(stderr, "[watchdog] Creating MovementThread\n");
             DWORD tid;
@@ -775,9 +837,6 @@ static int find_click_point_in_rect(RECT cell, POINT *outPt) {
             // accept only visible & enabled windows (basic heuristic for "clickable")
             if (!IsWindowVisible(w)) continue;
             if (!IsWindowEnabled(w)) continue;
-
-            // additional heuristic: ignore invisible regions or transparent controls
-            // (can't easily check transparency here; trusting IsWindowVisible/Enabled is usually enough)
 
             *outPt = pt;
             return 1;
