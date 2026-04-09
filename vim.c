@@ -1456,7 +1456,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 DWORD WINAPI ConsoleThread(LPVOID lp) {
     HWND main = (HWND)lp;
     char buf[128];
-    // printf("Type 'go' to show overlay, 'q' to quit program. Hotkey: Shift+F\n");
+    // printf("Type 'go' to show overlay, 'q' to quit program. Hotkey: Alt+F\n");
     while (fgets(buf, sizeof(buf), stdin)) {
         size_t n = strlen(buf);
         if (n && buf[n-1] == '\n') buf[n-1] = '\0';
@@ -1558,7 +1558,7 @@ int main(void) {
     // Build overlay cache now so showing it later is instant.
     render_overlay_cache();
 
-    if (!RegisterHotKey(g_mainWnd, 1, MOD_SHIFT, 'F')) {
+    if (!RegisterHotKey(g_mainWnd, 1, MOD_ALT, 'F')) {
         fprintf(stderr, "Warning: RegisterHotKey failed. Hotkey may be in use.\n");
     } else {
         // silent: hotkey registration succeeded (no instructional print)
