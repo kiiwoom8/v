@@ -691,6 +691,14 @@ static void build_help_rows(void)
     help_add_row(buf, L"Leave mouse mode");
 
     help_add_header(L"Hint mode");
+    help_add_row(L"type the label", L"Click the element showing it");
+    help_add_row(L"Shift / Ctrl + label", L"Right click / double click");
+    format_hotkey(&g_cfg.hint_hotkey, mode, 64);
+    _snwprintf(buf, 127, L"%s again", mode);
+    buf[127] = L'\0';
+    help_add_row(buf, L"Grid instead (again: close)");
+
+    help_add_header(L"Grid");
     help_add_row(L"row letter, column letter", L"Pick a grid cell");
     help_add_row(L"subgrid key", L"Pick a point inside the cell");
     help_add_row(L"Enter", L"Click the cell centre");

@@ -1,6 +1,7 @@
 // hint.c - click-hint overlay (main/UI thread).
 
 #include "common.h"
+#include <stdlib.h>
 #include <wchar.h>
 
 #ifndef WS_EX_NOACTIVATE
@@ -28,7 +29,11 @@
 #define HINT_CLASS      L"VimMouseHintOverlay"
 #define KEY_COLOR       RGB(255, 0, 255)
 #define TIMER_FLASH_ID  1
+#define TIMER_SCAN_ID   2
 #define MAX_MONITORS    16
+#define MAX_TARGETS     2000
+#define MAX_LABEL_LEN   16
+#define MAX_QUEUED_KEYS 32
 #define DOT             L"\x00B7"
 
 typedef struct {
@@ -36,12 +41,35 @@ typedef struct {
     RECT     rect;
 } MonInfo;
 
+typedef struct {
+    WCHAR s[MAX_LABEL_LEN];
+} HintLabel;
+
+typedef struct {
+    UINT vk;
+    UINT mods;
+} QueuedKey;
+
 static HINSTANCE g_hint_inst;
 static HWND      g_hint_wnd;
 static BOOL      g_open;
+static int       g_mode;        // HINT_MODE_*
+static int       g_start_mode;  // mode the overlay opened in (hotkey cycling)
 static int       g_state;       // 0 = nothing, 1 = row chosen, 2 = cell chosen
 static int       g_row;
 static int       g_col;
+
+static BOOL      g_scanning;
+static UINT      g_scan_id;
+static ClickList *g_scan_list;  // newest partial result, owned here
+static WCHAR     g_prefix[16];
+static int       g_prefix_len;
+static QueuedKey g_queue[MAX_QUEUED_KEYS];
+static int       g_queue_count;
+static ClickTarget *g_targets;
+static HintLabel *g_labels;
+static int       g_target_count;
+static WCHAR     g_notice[160]; // transient status for this open (grid fallback)
 
 static HMONITOR  g_mon;
 static RECT      g_mon_rect;
@@ -66,6 +94,12 @@ static HPEN      g_pen_border, g_pen_sel;
 
 static MonInfo   g_mons[MAX_MONITORS];
 static int       g_mon_count;
+
+static void finalize_scan(void);
+static void reset_input(void);
+static void handle_key(UINT vk, UINT mods);
+static void invalidate(void);
+static void cycle_monitor(UINT mods);
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -375,31 +409,70 @@ static BOOL create_resources(void)
 // ---------------------------------------------------------------------------
 // drawing
 
+static void measure_label(HDC dc, const WCHAR *text, int len,
+                          int *w, int *tw, int *th)
+{
+    int i;
+
+    *tw = 0;
+    *th = 0;
+    for (i = 0; i < len && i < MAX_LABEL_LEN; ++i) {
+        SIZE sz;
+        w[i] = 0;
+        if (GetTextExtentPoint32W(dc, &text[i], 1, &sz)) {
+            w[i] = sz.cx;
+            if (sz.cy > *th) *th = sz.cy;
+        }
+        *tw += w[i];
+    }
+}
+
+// Draws the box and text already positioned at left/top. typed chars at the
+// start of the label use split_col (the typed prefix).
+static void draw_box_text(HDC dc, int left, int top, int bw, int bh,
+                          const WCHAR *text, int len, int typed,
+                          COLORREF split_col, int font_px,
+                          const int *wchars, int tw, int th)
+{
+    HGDIOBJ old_br, old_pen;
+    int i, rad, x, y;
+
+    rad = MulDiv(4, g_dpi, 96);
+    if (rad < 2) rad = 2;
+    if (rad > bh / 2) rad = bh / 2;
+    if (rad < 1) rad = 1;
+
+    old_br = SelectObject(dc, g_br_label);
+    old_pen = SelectObject(dc, g_pen_border);
+    RoundRect(dc, left, top, left + bw, top + bh, rad, rad);
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_br);
+
+    x = left + (bw - tw) / 2;
+    y = top + (bh - th) / 2;
+    for (i = 0; i < len && i < MAX_LABEL_LEN; ++i) {
+        SetTextColor(dc, i < typed ? split_col : g_fg);
+        TextOutW(dc, x, y, &text[i], 1);
+        x += wchars[i];
+    }
+    (void)font_px;
+}
+
 // corner: pin the box to the top-left of the cell instead of centring it
 static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
-                           BOOL split, COLORREF split_col,
+                           int typed, COLORREF split_col,
                            HFONT font, int font_px, BOOL corner)
 {
-    HGDIOBJ old_font, old_br, old_pen;
-    int w[2] = { 0, 0 }, h[2] = { 0, 0 };
-    int i, tw, th, pad, bw, bh, cw, ch, cx, cy, left, top, rad, x, y;
+    HGDIOBJ old_font;
+    int w[MAX_LABEL_LEN];
+    int tw, th, pad, bw, bh, cw, ch, cx, cy, left, top;
 
     if (len <= 0) return;
+    if (len > MAX_LABEL_LEN) len = MAX_LABEL_LEN;
 
     old_font = SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
     SetBkMode(dc, TRANSPARENT);
-
-    for (i = 0; i < len && i < 2; ++i) {
-        SIZE sz;
-        if (GetTextExtentPoint32W(dc, &text[i], 1, &sz)) {
-            w[i] = sz.cx;
-            h[i] = sz.cy;
-        }
-    }
-
-    tw = w[0] + (len > 1 ? w[1] : 0);
-    th = h[0];
-    if (len > 1 && h[1] > th) th = h[1];
+    measure_label(dc, text, len, w, &tw, &th);
 
     pad = font_px / 4;
     if (pad < 2) pad = 2;
@@ -416,8 +489,6 @@ static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
     if (corner) {
         left = cell.left + 2;
         top = cell.top + 2;
-        cx = left + bw / 2;
-        cy = top + bh / 2;
     } else {
         cx = (cell.left + cell.right) / 2;
         cy = (cell.top + cell.bottom) / 2;
@@ -425,36 +496,241 @@ static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
         top = cy - bh / 2;
     }
 
-    rad = MulDiv(4, g_dpi, 96);
-    if (rad < 2) rad = 2;
-    if (rad > bh / 2) rad = bh / 2;
-    if (rad < 1) rad = 1;
+    draw_box_text(dc, left, top, bw, bh, text, len, typed, split_col,
+                  font_px, w, tw, th);
+    SelectObject(dc, old_font);
+}
 
-    old_br = SelectObject(dc, g_br_label);
+// A label pinned at the target's top-left, nudged inside the monitor.
+static void draw_element_label(HDC dc, const ClickTarget *t,
+                               const WCHAR *text, int len, int typed)
+{
+    HGDIOBJ old_font;
+    int w[MAX_LABEL_LEN];
+    int tw, th, pad, bw, bh, left, top;
+
+    if (len <= 0) return;
+    if (len > MAX_LABEL_LEN) len = MAX_LABEL_LEN;
+
+    old_font = SelectObject(dc, g_font_label ? g_font_label
+                                             : GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(dc, TRANSPARENT);
+    measure_label(dc, text, len, w, &tw, &th);
+
+    pad = g_font_label_px / 4;
+    if (pad < 2) pad = 2;
+    bw = tw + 2 * pad;
+    bh = th + 2 * pad;
+
+    left = t->rc.left - g_mon_rect.left;
+    top = t->rc.top - g_mon_rect.top;
+    if (left + bw > g_mon_w) left = g_mon_w - bw;
+    if (top + bh > g_mon_h) top = g_mon_h - bh;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (bw > g_mon_w) bw = g_mon_w;
+    if (bh > g_mon_h) bh = g_mon_h;
+    if (bw < 1) bw = 1;
+    if (bh < 1) bh = 1;
+
+    draw_box_text(dc, left, top, bw, bh, text, len, typed, g_match,
+                  g_font_label_px, w, tw, th);
+    SelectObject(dc, old_font);
+}
+
+static void draw_target_outline(HDC dc, RECT rc)
+{
+    HGDIOBJ old_br, old_pen;
+
+    old_br = SelectObject(dc, GetStockObject(NULL_BRUSH));
     old_pen = SelectObject(dc, g_pen_border);
-    RoundRect(dc, left, top, left + bw, top + bh, rad, rad);
+    Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
     SelectObject(dc, old_pen);
     SelectObject(dc, old_br);
+}
 
-    x = cx - tw / 2;
-    y = cy - th / 2;
-    for (i = 0; i < len && i < 2; ++i) {
-        SetTextColor(dc, (split && i == 0) ? split_col : g_fg);
-        TextOutW(dc, x, y, &text[i], 1);
-        x += w[i];
+// ---------------------------------------------------------------------------
+// element labels / targets
+
+static BOOL label_has_prefix(const WCHAR *label, const WCHAR *prefix)
+{
+    while (*prefix) {
+        if (*label != *prefix) return FALSE;
+        ++label;
+        ++prefix;
+    }
+    return TRUE;
+}
+
+static BOOL element_matches(int i)
+{
+    return label_has_prefix(g_labels[i].s, g_prefix);
+}
+
+static int count_matches(void)
+{
+    int i, n = 0;
+
+    for (i = 0; i < g_target_count; ++i)
+        if (element_matches(i)) ++n;
+    return n;
+}
+
+static int exact_match(void)
+{
+    int i;
+
+    for (i = 0; i < g_target_count; ++i)
+        if (wcscmp(g_labels[i].s, g_prefix) == 0) return i;
+    return -1;
+}
+
+static int only_match(void)
+{
+    int i, found = -1;
+
+    for (i = 0; i < g_target_count; ++i) {
+        if (!element_matches(i)) continue;
+        if (found >= 0) return -1;
+        found = i;
+    }
+    return found;
+}
+
+static void free_elements(void)
+{
+    free(g_targets);
+    free(g_labels);
+    g_targets = NULL;
+    g_labels = NULL;
+    g_target_count = 0;
+}
+
+static int target_band(int top)
+{
+    int band = MulDiv(16, g_dpi, 96);
+
+    if (band < 1) band = 1;
+    return top >= 0 ? top / band : (top - band + 1) / band;
+}
+
+static int __cdecl target_cmp(const void *pa, const void *pb)
+{
+    const ClickTarget *a = (const ClickTarget *)pa;
+    const ClickTarget *b = (const ClickTarget *)pb;
+    int ba = target_band(a->rc.top);
+    int bb = target_band(b->rc.top);
+
+    if (ba != bb) return ba < bb ? -1 : 1;
+    if (a->rc.left != b->rc.left) return a->rc.left < b->rc.left ? -1 : 1;
+    if (a->rc.top != b->rc.top) return a->rc.top < b->rc.top ? -1 : 1;
+    return 0;
+}
+
+// Vimium's prefix-free labelling: grow labels by prefixing each earlier hint
+// with every alphabet character, then take the n oldest unexpanded ones.
+static HintLabel *build_labels(int n)
+{
+    int alen = (int)wcslen(g_cfg.alphabet);
+    int cap, count, offset, i, j;
+    HintLabel *pool, *out;
+
+    if (n <= 0 || alen < 1) return NULL;
+    if (alen > 60) alen = 60;
+    cap = 2 * n + 2 * alen + 16;
+    pool = (HintLabel *)calloc((size_t)cap, sizeof(*pool));
+    out = (HintLabel *)calloc((size_t)n, sizeof(*out));
+    if (!pool || !out) {
+        free(pool);
+        free(out);
+        return NULL;
     }
 
-    SelectObject(dc, old_font);
+    count = 1;
+    offset = 0;
+    pool[0].s[0] = 0;
+    while (count - offset < n || count == 1) {
+        const WCHAR *base;
+        int len;
+
+        if (offset >= cap) break;
+        base = pool[offset].s;
+        len = (int)wcslen(base);
+        if (len > MAX_LABEL_LEN - 2) len = MAX_LABEL_LEN - 2;
+        ++offset;
+
+        for (j = 0; j < alen && count < cap; ++j) {
+            WCHAR *dst = pool[count].s;
+            for (i = 0; i < len; ++i) dst[i] = base[i];
+            dst[len] = lower_ascii(g_cfg.alphabet[j]);
+            dst[len + 1] = 0;
+            ++count;
+        }
+    }
+
+    for (i = 0; i < n; ++i) {
+        int src = offset + i;
+        if (src >= count) src = count - 1;
+        if (src < 0) src = 0;
+        memcpy(out[i].s, pool[src].s, sizeof(out[i].s));
+    }
+    free(pool);
+    return out;
+}
+
+static BOOL element_status_overlaps(RECT br)
+{
+    int i;
+
+    if (g_mode != HINT_MODE_ELEMENTS || !g_targets) return FALSE;
+    for (i = 0; i < g_target_count; ++i) {
+        RECT t, hit;
+        if (!element_matches(i)) continue;
+        t.left = g_targets[i].rc.left - g_mon_rect.left;
+        t.top = g_targets[i].rc.top - g_mon_rect.top;
+        t.right = g_targets[i].rc.right - g_mon_rect.left;
+        t.bottom = g_targets[i].rc.bottom - g_mon_rect.top;
+        if (IntersectRect(&hit, &t, &br)) return TRUE;
+    }
+    return FALSE;
 }
 
 static void build_status(WCHAR *buf, int cch)
 {
     BOOL drop = input_left_button_held();
     WCHAR tmp[16];
+    WCHAR hk[64];
 
     (void)cch;
     buf[0] = 0;
+    format_hotkey(&g_cfg.hint_hotkey, hk, 64);
+
+    if (g_mode == HINT_MODE_ELEMENTS) {
+        if (g_scanning) {
+            lstrcatW(buf, L"Finding clickable elements " DOT L" ");
+            lstrcatW(buf, hk);
+            lstrcatW(buf, L" again: grid " DOT L" Esc cancel");
+            return;
+        }
+        if (drop) lstrcatW(buf, L"Drop target: ");
+        if (g_prefix_len == 0) {
+            lstrcatW(buf, L"Type a label " DOT L" ");
+            lstrcatW(buf, hk);
+            lstrcatW(buf, L" again: grid " DOT L" Esc cancel");
+        } else {
+            lstrcatW(buf, g_prefix);
+            lstrcatW(buf, L"_ " DOT L" Backspace undo");
+            if (!drop)
+                lstrcatW(buf, L" " DOT L" Shift: right " DOT L" Ctrl: double");
+        }
+        return;
+    }
+
     if (drop) lstrcatW(buf, L"Drop target: ");
+    if (g_notice[0]) {
+        lstrcatW(buf, g_notice);
+        lstrcatW(buf, L" " DOT L" ");
+    }
 
     if (g_state == 0) {
         lstrcatW(buf, L"Type a label " DOT L" Esc cancel "
@@ -509,35 +785,60 @@ static void draw_status(HDC dc, int w, int h)
     if (boxw < 1) boxw = 1;
 
     gap = MulDiv(24, g_dpi, 96);
-    bottom = h - gap;
-    top = bottom - boxh;
-    if (g_rows >= 2) {
-        // Sit in the gap between two label rows so no label is covered:
-        // the last two rows, or the first two when the chosen cell is low.
-        RECT row_rc;
-        int boundary = g_rows - 1;
-        if (g_state == 2 && g_row >= g_rows - 2) boundary = 1;
-        cell_rect(boundary, 0, &row_rc);
-        top = row_rc.top - boxh / 2;
-        bottom = top + boxh;
-    }
-    if (top < 0) {
-        top = 0;
-        bottom = boxh;
-    }
-    if (bottom > h) {
-        bottom = h;
-        top = h - boxh;
-        if (top < 0) top = 0;
-    }
-
     left = (w - boxw) / 2;
     if (left < 0) left = 0;
 
-    br.left = left;
-    br.top = top;
-    br.right = left + boxw;
-    br.bottom = bottom;
+    if (g_mode == HINT_MODE_ELEMENTS) {
+        bottom = h - gap;
+        top = bottom - boxh;
+        if (top < 0) {
+            top = 0;
+            bottom = boxh;
+        }
+        br.left = left;
+        br.top = top;
+        br.right = left + boxw;
+        br.bottom = bottom;
+        if (element_status_overlaps(br)) {
+            top = gap;
+            if (top < 0) top = 0;
+            bottom = top + boxh;
+            if (bottom > h) {
+                bottom = h;
+                top = h - boxh;
+                if (top < 0) top = 0;
+            }
+            br.top = top;
+            br.bottom = bottom;
+        }
+    } else {
+        bottom = h - gap;
+        top = bottom - boxh;
+        if (g_rows >= 2) {
+            // Sit in the gap between two label rows so no label is covered:
+            // the last two rows, or the first two when the chosen cell is low.
+            RECT row_rc;
+            int boundary = g_rows - 1;
+            if (g_state == 2 && g_row >= g_rows - 2) boundary = 1;
+            cell_rect(boundary, 0, &row_rc);
+            top = row_rc.top - boxh / 2;
+            bottom = top + boxh;
+        }
+        if (top < 0) {
+            top = 0;
+            bottom = boxh;
+        }
+        if (bottom > h) {
+            bottom = h;
+            top = h - boxh;
+            if (top < 0) top = 0;
+        }
+
+        br.left = left;
+        br.top = top;
+        br.right = left + boxw;
+        br.bottom = bottom;
+    }
 
     old_br = SelectObject(dc, g_flash ? g_br_status_red : g_br_status);
     old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
@@ -619,7 +920,26 @@ static void paint_overlay(HWND hwnd)
     FillRect(dc, &rc, g_br_key ? g_br_key
                                : (HBRUSH)GetStockObject(BLACK_BRUSH));
 
-    if (g_open && g_font_label && g_font_sub) {
+    if (g_open && g_font_label && g_font_sub && g_mode == HINT_MODE_ELEMENTS) {
+        int i;
+
+        if (!g_scanning) {
+            for (i = 0; i < g_target_count; ++i) {
+                RECT trc;
+                if (!element_matches(i)) continue;
+                draw_element_label(dc, &g_targets[i], g_labels[i].s,
+                                   (int)wcslen(g_labels[i].s), g_prefix_len);
+                if (g_prefix_len > 0) {
+                    trc.left = g_targets[i].rc.left - g_mon_rect.left;
+                    trc.top = g_targets[i].rc.top - g_mon_rect.top;
+                    trc.right = g_targets[i].rc.right - g_mon_rect.left;
+                    trc.bottom = g_targets[i].rc.bottom - g_mon_rect.top;
+                    draw_target_outline(dc, trc);
+                }
+            }
+        }
+        draw_status(dc, w, h);
+    } else if (g_open && g_font_label && g_font_sub) {
         WCHAR text[2];
 
         if (g_state == 0) {
@@ -629,7 +949,7 @@ static void paint_overlay(HWND hwnd)
                     RECT cell;
                     text[1] = g_cfg.alphabet[c];
                     cell_rect(r, c, &cell);
-                    draw_label_box(dc, cell, text, 2, FALSE, 0,
+                    draw_label_box(dc, cell, text, 2, 0, 0,
                                    g_font_label, g_font_label_px, FALSE);
                 }
             }
@@ -639,7 +959,7 @@ static void paint_overlay(HWND hwnd)
             for (c = 0; c < g_cols; ++c) {
                 text[1] = g_cfg.alphabet[c];
                 cell_rect(g_row, c, &cell);
-                draw_label_box(dc, cell, text, 2, TRUE, g_match,
+                draw_label_box(dc, cell, text, 2, 1, g_match,
                                g_font_label, g_font_label_px, FALSE);
             }
         } else if (g_state == 2) {
@@ -654,7 +974,7 @@ static void paint_overlay(HWND hwnd)
                 for (sc = 0; sc < g_sub_cols; ++sc) {
                     WCHAR ch = g_sub[sr][sc];
                     subcell_rect(cell, sr, sc, &sub);
-                    draw_label_box(dc, sub, &ch, 1, FALSE, 0,
+                    draw_label_box(dc, sub, &ch, 1, 0, 0,
                                    g_font_sub, g_font_sub_px, TRUE);
                 }
             }
@@ -689,6 +1009,9 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, TIMER_FLASH_ID);
             g_flash = FALSE;
             InvalidateRect(hwnd, NULL, FALSE);
+        } else if (wp == TIMER_SCAN_ID) {
+            KillTimer(hwnd, TIMER_SCAN_ID);
+            if (g_scanning) finalize_scan();
         }
         return 0;
     case WM_DISPLAYCHANGE:
@@ -781,6 +1104,207 @@ static void act_at(POINT pt, UINT mods)
         mouse_click_at(pt, BTN_LEFT, 1);
 }
 
+static void reset_input(void)
+{
+    g_state = 0;
+    g_row = -1;
+    g_col = -1;
+    g_flash = FALSE;
+    g_prefix_len = 0;
+    g_prefix[0] = 0;
+    g_queue_count = 0;
+    g_notice[0] = 0;
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_FLASH_ID);
+}
+
+static void cancel_scan(void)
+{
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
+    if (g_scanning) {
+        g_scanning = FALSE;
+        uia_cancel();
+    }
+    if (g_scan_list) {
+        free(g_scan_list);
+        g_scan_list = NULL;
+    }
+}
+
+static void start_scan(void)
+{
+    UINT ms;
+
+    reset_input();
+    free_elements();
+    if (g_scan_list) {
+        free(g_scan_list);
+        g_scan_list = NULL;
+    }
+    g_scanning = TRUE;
+    ++g_scan_id;
+    uia_scan(g_mon, g_scan_id);
+    if (g_hint_wnd) {
+        ms = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout : 1000u;
+        SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
+    }
+    invalidate();
+    if (g_hint_wnd) UpdateWindow(g_hint_wnd);
+}
+
+static void enter_grid_mode(const WCHAR *notice)
+{
+    cancel_scan();
+    free_elements();
+    g_mode = HINT_MODE_GRID;
+    reset_input();
+    if (notice && *notice) {
+        wcsncpy(g_notice, notice, sizeof(g_notice) / sizeof(g_notice[0]) - 1);
+        g_notice[sizeof(g_notice) / sizeof(g_notice[0]) - 1] = 0;
+    }
+    invalidate();
+    if (g_hint_wnd) UpdateWindow(g_hint_wnd);
+}
+
+static void start_element_mode(void)
+{
+    cancel_scan();
+    free_elements();
+    g_mode = HINT_MODE_ELEMENTS;
+    start_scan();
+}
+
+static void replay_queue(void)
+{
+    QueuedKey keys[MAX_QUEUED_KEYS];
+    int n = g_queue_count, i;
+
+    if (n <= 0) return;
+    memcpy(keys, g_queue, sizeof(keys[0]) * (size_t)n);
+    g_queue_count = 0;
+    for (i = 0; i < n && g_open; ++i)
+        handle_key(keys[i].vk, keys[i].mods);
+}
+
+static void finalize_scan(void)
+{
+    ClickList *list = g_scan_list;
+    HintLabel *labels;
+    int n;
+
+    g_scan_list = NULL;
+    g_scanning = FALSE;
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
+    uia_cancel();
+
+    n = list ? list->count : 0;
+    if (n > MAX_TARGETS) n = MAX_TARGETS;
+    if (n <= 0) {
+        free(list);
+        enter_grid_mode(L"No clickable elements found - grid");
+        return;
+    }
+
+    g_targets = (ClickTarget *)malloc((size_t)n * sizeof(*g_targets));
+    if (!g_targets) {
+        free(list);
+        enter_grid_mode(L"No clickable elements found - grid");
+        return;
+    }
+    memcpy(g_targets, list->items, (size_t)n * sizeof(*g_targets));
+    g_target_count = n;
+    free(list);
+
+    qsort(g_targets, (size_t)n, sizeof(*g_targets), target_cmp);
+
+    labels = build_labels(n);
+    if (!labels) {
+        free_elements();
+        enter_grid_mode(L"No clickable elements found - grid");
+        return;
+    }
+    g_labels = labels;
+
+    g_prefix_len = 0;
+    g_prefix[0] = 0;
+    g_flash = FALSE;
+    g_state = 0;
+    g_notice[0] = 0;
+    invalidate();
+    if (g_hint_wnd) UpdateWindow(g_hint_wnd);
+
+    replay_queue();
+}
+
+static void element_append(int ch, UINT mods)
+{
+    int idx;
+
+    if (g_prefix_len >= (int)sizeof(g_prefix) - 2) {
+        flash_invalid();
+        return;
+    }
+    g_prefix[g_prefix_len++] = (WCHAR)ch;
+    g_prefix[g_prefix_len] = 0;
+
+    idx = exact_match();
+    if (idx >= 0) {
+        act_at(g_targets[idx].click, mods);
+        return;
+    }
+    if (count_matches() == 0) {
+        --g_prefix_len;
+        g_prefix[g_prefix_len] = 0;
+        flash_invalid();
+        return;
+    }
+    g_flash = FALSE;
+    invalidate();
+}
+
+static void element_key(UINT vk, UINT mods)
+{
+    int ch, idx;
+
+    if (vk == VK_ESCAPE) {
+        hint_close();
+        return;
+    }
+    if (vk == VK_TAB) {
+        cycle_monitor(mods);
+        return;
+    }
+    if (vk == VK_BACK) {
+        if (g_prefix_len > 0) {
+            --g_prefix_len;
+            g_prefix[g_prefix_len] = 0;
+        }
+        g_flash = FALSE;
+        invalidate();
+        return;
+    }
+    if (vk == VK_RETURN) {
+        idx = only_match();
+        if (idx >= 0) act_at(g_targets[idx].click, mods);
+        else flash_invalid();
+        return;
+    }
+    if (vk == VK_SPACE) {
+        idx = only_match();
+        if (idx >= 0) {
+            POINT pt = g_targets[idx].click;
+            hint_close();
+            mouse_move_to(pt);
+        } else {
+            flash_invalid();
+        }
+        return;
+    }
+
+    ch = vk_to_char(vk);
+    if (ch == 0) return;
+    element_append(ch, mods);
+}
+
 static BOOL CALLBACK enum_monitor_proc(HMONITOR mon, HDC dc,
                                        LPRECT rect, LPARAM data)
 {
@@ -845,16 +1369,16 @@ static void cycle_monitor(UINT mods)
     if (next >= g_mon_count) next = 0;
     target = g_mons[next].mon;
 
+    if (g_mode == HINT_MODE_ELEMENTS) {
+        cancel_scan();
+        free_elements();
+    }
     if (!compute_geometry(target)) {
         hint_close();
         return;
     }
 
-    g_state = 0;
-    g_row = -1;
-    g_col = -1;
-    g_flash = FALSE;
-    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_FLASH_ID);
+    reset_input();
 
     destroy_resources();
     if (!create_resources()) {
@@ -869,6 +1393,8 @@ static void cycle_monitor(UINT mods)
                                LWA_COLORKEY | LWA_ALPHA);
     InvalidateRect(g_hint_wnd, NULL, TRUE);
     UpdateWindow(g_hint_wnd);
+
+    if (g_mode == HINT_MODE_ELEMENTS) start_scan();
 }
 
 // ---------------------------------------------------------------------------
@@ -918,12 +1444,45 @@ void hint_shutdown(void)
         g_hint_wnd = NULL;
         UnregisterClassW(HINT_CLASS, g_hint_inst);
     }
+    cancel_scan();
+    free_elements();
+    reset_input();
     g_open = FALSE;
-    g_state = 0;
-    g_row = -1;
-    g_col = -1;
-    g_flash = FALSE;
     destroy_resources();
+}
+
+static BOOL open_overlay(HMONITOR mon, int mode)
+{
+    if (!compute_geometry(mon))
+        return FALSE;
+
+    reset_input();
+    free_elements();
+    g_mode = mode;
+    g_start_mode = mode;
+    // Paint the scanning status straight away; start_scan() follows.
+    g_scanning = (mode == HINT_MODE_ELEMENTS);
+
+    if (!create_resources()) {
+        g_scanning = FALSE;
+        return FALSE;
+    }
+
+    SetLayeredWindowAttributes(g_hint_wnd, KEY_COLOR, g_cfg.opacity,
+                               LWA_COLORKEY | LWA_ALPHA);
+
+    g_open = TRUE;
+    if (!show_on_monitor()) {
+        g_open = FALSE;
+        g_scanning = FALSE;
+        ShowWindow(g_hint_wnd, SW_HIDE);
+        destroy_resources();
+        return FALSE;
+    }
+
+    InvalidateRect(g_hint_wnd, NULL, TRUE);
+    UpdateWindow(g_hint_wnd);
+    return TRUE;
 }
 
 void hint_open(void)
@@ -931,6 +1490,7 @@ void hint_open(void)
     POINT cur;
     POINT zero = { 0, 0 };
     HMONITOR mon;
+    int mode;
 
     if (g_open) return;
 
@@ -948,35 +1508,17 @@ void hint_open(void)
     if (!mon)
         mon = MonitorFromPoint(zero, MONITOR_DEFAULTTOPRIMARY);
 
-    if (!compute_geometry(mon)) {
-        input_set_key_capture(FALSE);
-        return;
-    }
+    mode = (g_cfg.hint_mode == HINT_MODE_ELEMENTS && uia_available())
+           ? HINT_MODE_ELEMENTS : HINT_MODE_GRID;
 
-    g_state = 0;
-    g_row = -1;
-    g_col = -1;
-    g_flash = FALSE;
-
-    if (!create_resources()) {
-        input_set_key_capture(FALSE);
-        return;
-    }
-
-    SetLayeredWindowAttributes(g_hint_wnd, KEY_COLOR, g_cfg.opacity,
-                               LWA_COLORKEY | LWA_ALPHA);
-
-    g_open = TRUE;
-    if (!show_on_monitor()) {
+    if (!open_overlay(mon, mode)) {
         g_open = FALSE;
-        ShowWindow(g_hint_wnd, SW_HIDE);
-        destroy_resources();
         input_set_key_capture(FALSE);
         return;
     }
 
-    InvalidateRect(g_hint_wnd, NULL, TRUE);
-    UpdateWindow(g_hint_wnd);
+    if (mode == HINT_MODE_ELEMENTS)
+        start_scan();
 }
 
 void hint_close(void)
@@ -985,14 +1527,15 @@ void hint_close(void)
 
     if (g_hint_wnd) {
         KillTimer(g_hint_wnd, TIMER_FLASH_ID);
+        KillTimer(g_hint_wnd, TIMER_SCAN_ID);
         ShowWindow(g_hint_wnd, SW_HIDE);
     }
 
+    cancel_scan();
+    uia_cancel();
+    free_elements();
+    reset_input();
     g_open = FALSE;
-    g_state = 0;
-    g_row = -1;
-    g_col = -1;
-    g_flash = FALSE;
     destroy_resources();
     input_set_key_capture(FALSE);
 }
@@ -1002,11 +1545,9 @@ BOOL hint_is_open(void)
     return g_open;
 }
 
-void hint_on_key(UINT vk, UINT mods)
+static void grid_key(UINT vk, UINT mods)
 {
     int ch, idx;
-
-    if (!g_open) return;
 
     if (vk == VK_ESCAPE) {
         hint_close();
@@ -1087,5 +1628,68 @@ void hint_on_key(UINT vk, UINT mods)
         }
         cell_rect(g_row, g_col, &cell);
         act_at(subcell_center(cell, sr, sc), mods);
+    }
+}
+
+static void handle_key(UINT vk, UINT mods)
+{
+    if (!g_open) return;
+    if (g_mode == HINT_MODE_ELEMENTS)
+        element_key(vk, mods);
+    else
+        grid_key(vk, mods);
+}
+
+void hint_on_key(UINT vk, UINT mods)
+{
+    if (!g_open) return;
+
+    if (g_scanning) {
+        if (vk == VK_ESCAPE) {
+            cancel_scan();
+            hint_close();
+            return;
+        }
+        if (g_queue_count < MAX_QUEUED_KEYS) {
+            g_queue[g_queue_count].vk = vk;
+            g_queue[g_queue_count].mods = mods;
+            ++g_queue_count;
+        }
+        return;
+    }
+
+    handle_key(vk, mods);
+}
+
+void hint_on_elements(ClickList *list)
+{
+    if (!list) return;
+
+    if (!g_open || !g_scanning || list->scan_id != g_scan_id) {
+        free(list);
+        return;
+    }
+
+    if (g_scan_list) free(g_scan_list);
+    g_scan_list = list;
+
+    if (list->done) finalize_scan();
+}
+
+void hint_hotkey_again(void)
+{
+    if (!g_open) return;
+
+    // First press switches to the other mode; a later press closes.
+    if (g_mode != g_start_mode) {
+        hint_close();
+        return;
+    }
+    if (g_mode == HINT_MODE_ELEMENTS) {
+        enter_grid_mode(NULL);
+    } else if (uia_available()) {
+        start_element_mode();
+    } else {
+        hint_close();
     }
 }

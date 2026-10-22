@@ -548,6 +548,9 @@ void config_set_defaults(Config *c)
     c->label_fg = RGB(0x14, 0x14, 0x14);
     c->label_border = RGB(0x7A, 0x5C, 0x00);
     c->match_fg = RGB(0x9C, 0x7A, 0x10);
+    c->hint_mode = HINT_MODE_ELEMENTS;
+    c->scan_scope = SCAN_MONITOR;
+    c->scan_timeout = 1000;
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +821,24 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_colour(&c->label_border, line, key, val);
     else if (_wcsicmp(key, L"match_fg") == 0)
         apply_colour(&c->match_fg, line, key, val);
+    else if (_wcsicmp(key, L"hint_mode") == 0) {
+        if (_wcsicmp(val, L"elements") == 0)
+            c->hint_mode = HINT_MODE_ELEMENTS;
+        else if (_wcsicmp(val, L"grid") == 0)
+            c->hint_mode = HINT_MODE_GRID;
+        else
+            warn_add(line, L"bad value \"%ls\" for \"hint_mode\" "
+                     L"(use elements or grid)", val);
+    } else if (_wcsicmp(key, L"scan_scope") == 0) {
+        if (_wcsicmp(val, L"monitor") == 0)
+            c->scan_scope = SCAN_MONITOR;
+        else if (_wcsicmp(val, L"window") == 0)
+            c->scan_scope = SCAN_WINDOW;
+        else
+            warn_add(line, L"bad value \"%ls\" for \"scan_scope\" "
+                     L"(use monitor or window)", val);
+    } else if (_wcsicmp(key, L"scan_timeout") == 0)
+        apply_int_range(&c->scan_timeout, line, key, val, 100, 5000);
     else
         warn_add(line, L"unknown key \"%ls\" in [hints]", key);
 }
@@ -1105,6 +1126,17 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     _snwprintf(num, 64, L"#%02X%02X%02X", GetRValue(d.match_fg),
                GetGValue(d.match_fg), GetBValue(d.match_fg));
     appendf(buf, cch, L"match_fg = %ls\r\n", num);
+    appendf(buf, cch, L"; What the hint hotkey opens first: elements (clickable element\r\n");
+    appendf(buf, cch, L"; labels) or grid. The other mode is one more hotkey press away.\r\n");
+    appendf(buf, cch, L"hint_mode = %ls\r\n",
+            d.hint_mode == HINT_MODE_GRID ? L"grid" : L"elements");
+    appendf(buf, cch, L"; Element scan scope: monitor (every visible window) or window\r\n");
+    appendf(buf, cch, L"; (only the active window and the taskbar).\r\n");
+    appendf(buf, cch, L"scan_scope = %ls\r\n",
+            d.scan_scope == SCAN_WINDOW ? L"window" : L"monitor");
+    appendf(buf, cch, L"; Milliseconds to wait for the element scan before showing what was\r\n");
+    appendf(buf, cch, L"; found, or the grid when nothing was (100-5000).\r\n");
+    appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
 }
 
 static void write_default_file(const WCHAR *path)

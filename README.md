@@ -2,8 +2,10 @@
 
 vim mouse is a tiny Windows tray program that lets you drive the mouse pointer
 entirely from the keyboard. Tap CapsLock for mouse mode and move with `hjkl`,
-or press Alt+F to open click hints: a grid of letter labels appears over the
-screen and a couple of keypresses move the pointer and click anywhere. It runs
+or press Alt+F to open click hints: labels appear on the clickable elements of
+the screen and one or two keypresses move the pointer and click one. When an
+app does not expose its elements, press the hotkey again for a labelled grid
+that can click anywhere. It runs
 in the background with no console window, is configured by a plain-text
 `vim.ini` next to the executable, and reloads that file as soon as you save it.
 
@@ -27,7 +29,7 @@ in the background with no console window, is configured by a plain-text
 
 | Key | Action |
 |---|---|
-| `Alt+F` | Open click hints on the monitor under the cursor; press again to close |
+| `Alt+F` | Open click hints on the monitor under the cursor; press again for the grid, again to close |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
 | `Shift+CapsLock` | Real CapsLock (passes through) |
@@ -61,9 +63,33 @@ a pass-through modifier.
 
 ### Hint mode (click hints)
 
-A transparent, click-through overlay labels the monitor under the cursor with
-a grid. Every cell has a two-letter label: **row letter + column letter**, like
-spreadsheet coordinates, so column letters line up vertically.
+A transparent, click-through overlay opens on the monitor under the cursor.
+By default it finds the clickable elements of the visible windows through UI
+Automation and labels each one. Type the label shown on the element to click
+it; labels are short (usually one letter) and never a prefix of another. The
+status bar says "Finding clickable elements" while the scan runs.
+
+| Key | Action |
+|---|---|
+| label | Click the element showing that label |
+| `Shift` + label | Right click instead of left click |
+| `Ctrl` + label | Double click |
+| `Enter` / `Space` | Act on / move to the only matching element |
+| `Backspace` | Undo one typed character |
+| `Tab` / `Shift+Tab` | Move to the next / previous monitor and rescan |
+| hotkey again | Switch to the grid (again: close) |
+| `Esc` | Cancel |
+
+If an app does not expose UI Automation (some games, remote desktops,
+custom-drawn apps) the scan finds nothing and vim mouse falls back to the grid
+for that open. You can also ask for the grid at any time with a second press of
+the hint hotkey; the next press closes.
+
+#### Grid
+
+The grid labels every cell of the monitor. Each cell has a two-letter label:
+**row letter + column letter**, like spreadsheet coordinates, so column letters
+line up vertically.
 
 | Key | Action |
 |---|---|
@@ -85,7 +111,9 @@ pointer (a drop target), so `v` ... hints ... `v` drags across the screen.
 
 **Example:** a label reading `dm` means row `d`, column `m`. Type `d`, then
 `m`, then `s` to click the `s` subcell inside that cell. Typing ahead works, so
-`dms` at speed is fine. The status bar at the bottom explains the current step.
+`dms` at speed is fine. Keys typed while the element scan is still running are
+replayed once it finishes. The status bar at the bottom explains the current
+step.
 
 ## Settings
 
@@ -97,6 +125,8 @@ ones:
 - `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `mouse_mode_key`
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement)
 - `scroll_speed`, `scroll_max_speed`
+- `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
+  `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
@@ -125,6 +155,14 @@ Left- or right-click the tray icon:
 - **A window cannot be clicked.** Programs running as administrator cannot be
   controlled from a normal process (Windows UIPI). Run vim mouse as
   administrator too if you need to drive those windows.
+- **An app shows no labels.** It does not expose UI Automation (some games,
+  remote desktops, custom-drawn apps). Press the hotkey again for the grid.
+  `mingw32-make probe` builds `tools\uia_probe.exe`, which lists what the scan
+  finds on the monitor under the cursor (`-v` for every element).
+- **Few labels the first time in Chrome, Edge or an Electron app.** These build
+  their accessibility tree only when first asked. vim mouse asks each window
+  you switch to in the background, so this only happens in a window that was
+  already active when vim mouse started; press `Esc` and open the hints again.
 - **I need the real CapsLock.** vim mouse intercepts CapsLock; use
   `Shift+CapsLock` when you really want the CapsLock state.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
