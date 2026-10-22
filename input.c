@@ -564,7 +564,7 @@ static BOOL handle_hotkeys(UINT vk, UINT mods)
             flag_set(&s_capture, TRUE);
             post_main(WM_APP_HINT_OPEN, 0, 0);
         } else {
-            post_main(WM_APP_HINT_CLOSE, 0, 0);
+            post_main(WM_APP_HINT_AGAIN, 0, 0);
         }
         return TRUE;
     }

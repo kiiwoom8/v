@@ -46,6 +46,8 @@
 #define WM_APP_TRAY             (WM_APP + 7)  // tray icon callback; -> tray_on_message
 #define WM_APP_ALREADY_RUNNING  (WM_APP + 8)  // a second instance was started
 #define WM_APP_RELOAD_CONFIG    (WM_APP + 9)  // settings file changed on disk / reload requested
+#define WM_APP_HINT_AGAIN       (WM_APP + 10) // hint hotkey pressed while hints are open; -> hint_hotkey_again
+#define WM_APP_ELEMENTS         (WM_APP + 11) // lParam = ClickList* from uia.c; -> hint_on_elements (takes ownership)
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -65,6 +67,8 @@ typedef struct {
 // other threads only read it.
 
 enum { INDICATOR_CURSOR = 0, INDICATOR_CORNER = 1, INDICATOR_OFF = 2 };
+enum { HINT_MODE_ELEMENTS = 0, HINT_MODE_GRID = 1 };
+enum { SCAN_MONITOR = 0, SCAN_WINDOW = 1 };
 
 typedef struct {
     // [general]
@@ -107,6 +111,10 @@ typedef struct {
     COLORREF label_fg;         // default #141414
     COLORREF label_border;     // default #7A5C00
     COLORREF match_fg;         // already-typed chars, default #9C7A10
+    int   hint_mode;           // HINT_MODE_*: what the hotkey opens first, default elements
+    int   scan_scope;          // SCAN_MONITOR: every visible window on the monitor (default)
+                               // SCAN_WINDOW: only the foreground window and the taskbar
+    int   scan_timeout;        // ms to wait for the element scan, default 1000 (100-5000)
 } Config;
 
 extern Config g_cfg;
@@ -151,12 +159,42 @@ void mouse_click_at(POINT pt, int button, int count);  // count 1 = click, 2 = d
 // ---------------------------------------------------------------------------
 // Hint overlay (hint.c). All functions run on the main/UI thread.
 
+struct ClickList;
+
 void hint_init(HINSTANCE inst);
 void hint_shutdown(void);
 void hint_open(void);                   // on the monitor under the cursor
 void hint_close(void);
 BOOL hint_is_open(void);
 void hint_on_key(UINT vk, UINT mods);
+void hint_on_elements(struct ClickList *list);  // WM_APP_ELEMENTS; always frees list
+void hint_hotkey_again(void);           // element hints -> grid -> closed
+
+// ---------------------------------------------------------------------------
+// Clickable elements (uia.c). UI Automation runs on its own MTA worker thread;
+// never on the UI thread (querying our own windows from there can deadlock).
+
+typedef struct {
+    RECT  rc;       // element bounds, physical screen px, clipped to the monitor
+    POINT click;    // visible point inside rc to click (physical screen px)
+} ClickTarget;
+
+typedef struct ClickList {
+    UINT scan_id;   // the id passed to uia_scan
+    BOOL done;      // FALSE = partial result, more windows still being scanned
+    int  count;
+    ClickTarget items[];   // cumulative: every post contains everything found so far
+} ClickList;
+
+BOOL uia_start(void);       // FALSE if UI Automation is unavailable (hints fall back to grid)
+void uia_stop(void);
+BOOL uia_available(void);
+// Asynchronous scan of the monitor (g_cfg.scan_scope decides which windows).
+// Posts WM_APP_ELEMENTS with a malloc'd ClickList to g_main_wnd after each
+// window that added targets (done = FALSE) and once at the end (done = TRUE).
+// A newer uia_scan or uia_cancel makes the old scan stop posting.
+void uia_scan(HMONITOR mon, UINT scan_id);
+void uia_cancel(void);
 
 // ---------------------------------------------------------------------------
 // Tray + help (tray.c). Main/UI thread.

@@ -367,6 +367,12 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_HINT_KEY:
         hint_on_key((UINT)wp, (UINT)lp);
         return 0;
+    case WM_APP_HINT_AGAIN:
+        hint_hotkey_again();
+        return 0;
+    case WM_APP_ELEMENTS:
+        hint_on_elements((ClickList *)lp);
+        return 0;
     case WM_APP_SHOW_HELP:
         help_toggle();
         return 0;
@@ -398,6 +404,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_DESTROY:
         stop_watch_thread();
         hint_shutdown();
+        uia_stop();
         input_stop();
         tray_shutdown();
         PostQuitMessage(0);
@@ -474,6 +481,10 @@ int main(void)
             CloseHandle(mutex);
         return 1;
     }
+
+    // Without UI Automation the hints simply fall back to the grid.
+    if (!uia_start())
+        app_log(L"uia: UI Automation unavailable, element hints disabled");
 
     start_watch_thread();
 
