@@ -1,5 +1,5 @@
 // main.c - entry point, single instance, DPI awareness, main window, message
-// routing, settings file watcher, logging helpers. See SPEC.md section 5.
+// routing, settings file watcher, logging helpers.
 
 #ifndef _WIN32_IE
 #define _WIN32_IE 0x0601
@@ -386,7 +386,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_ALREADY_RUNNING:
         tray_balloon(L"Already running",
                      L"vim mouse is already running.\n"
-                     L"Use the tray icon or the help hotkey.");
+                     L"Right-click the tray icon for the menu.");
         help_toggle();
         return 0;
     case WM_APP_RELOAD_CONFIG:

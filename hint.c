@@ -1,4 +1,4 @@
-// hint.c - click-hint overlay (main/UI thread). See SPEC.md section 4.
+// hint.c - click-hint overlay (main/UI thread).
 
 #include "common.h"
 #include <wchar.h>
@@ -375,9 +375,10 @@ static BOOL create_resources(void)
 // ---------------------------------------------------------------------------
 // drawing
 
+// corner: pin the box to the top-left of the cell instead of centring it
 static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
                            BOOL split, COLORREF split_col,
-                           HFONT font, int font_px)
+                           HFONT font, int font_px, BOOL corner)
 {
     HGDIOBJ old_font, old_br, old_pen;
     int w[2] = { 0, 0 }, h[2] = { 0, 0 };
@@ -412,10 +413,17 @@ static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
     if (bw < 1) bw = 1;
     if (bh < 1) bh = 1;
 
-    cx = (cell.left + cell.right) / 2;
-    cy = (cell.top + cell.bottom) / 2;
-    left = cx - bw / 2;
-    top = cy - bh / 2;
+    if (corner) {
+        left = cell.left + 2;
+        top = cell.top + 2;
+        cx = left + bw / 2;
+        cy = top + bh / 2;
+    } else {
+        cx = (cell.left + cell.right) / 2;
+        cy = (cell.top + cell.bottom) / 2;
+        left = cx - bw / 2;
+        top = cy - bh / 2;
+    }
 
     rad = MulDiv(4, g_dpi, 96);
     if (rad < 2) rad = 2;
@@ -503,6 +511,16 @@ static void draw_status(HDC dc, int w, int h)
     gap = MulDiv(24, g_dpi, 96);
     bottom = h - gap;
     top = bottom - boxh;
+    if (g_rows >= 2) {
+        // Sit in the gap between two label rows so no label is covered:
+        // the last two rows, or the first two when the chosen cell is low.
+        RECT row_rc;
+        int boundary = g_rows - 1;
+        if (g_state == 2 && g_row >= g_rows - 2) boundary = 1;
+        cell_rect(boundary, 0, &row_rc);
+        top = row_rc.top - boxh / 2;
+        bottom = top + boxh;
+    }
     if (top < 0) {
         top = 0;
         bottom = boxh;
@@ -552,6 +570,25 @@ static void draw_outline(HDC dc, RECT cell)
     SelectObject(dc, old_br);
 }
 
+static void draw_subgrid_lines(HDC dc, RECT cell)
+{
+    HGDIOBJ old_pen = SelectObject(dc, g_pen_border);
+    RECT sub;
+    int i;
+
+    for (i = 1; i < g_sub_cols; ++i) {
+        subcell_rect(cell, 0, i, &sub);
+        MoveToEx(dc, sub.left, cell.top, NULL);
+        LineTo(dc, sub.left, cell.bottom - 1);
+    }
+    for (i = 1; i < g_sub_rows; ++i) {
+        subcell_rect(cell, i, 0, &sub);
+        MoveToEx(dc, cell.left, sub.top, NULL);
+        LineTo(dc, cell.right - 1, sub.top);
+    }
+    SelectObject(dc, old_pen);
+}
+
 static void paint_overlay(HWND hwnd)
 {
     PAINTSTRUCT ps;
@@ -593,7 +630,7 @@ static void paint_overlay(HWND hwnd)
                     text[1] = g_cfg.alphabet[c];
                     cell_rect(r, c, &cell);
                     draw_label_box(dc, cell, text, 2, FALSE, 0,
-                                   g_font_label, g_font_label_px);
+                                   g_font_label, g_font_label_px, FALSE);
                 }
             }
         } else if (g_state == 1) {
@@ -603,19 +640,22 @@ static void paint_overlay(HWND hwnd)
                 text[1] = g_cfg.alphabet[c];
                 cell_rect(g_row, c, &cell);
                 draw_label_box(dc, cell, text, 2, TRUE, g_match,
-                               g_font_label, g_font_label_px);
+                               g_font_label, g_font_label_px, FALSE);
             }
         } else if (g_state == 2) {
             RECT cell, sub;
             int sr, sc;
 
+            // Thin dividers and corner labels keep the content under the
+            // cell (and each subcell's centre, where the click lands) visible.
             cell_rect(g_row, g_col, &cell);
+            draw_subgrid_lines(dc, cell);
             for (sr = 0; sr < g_sub_rows; ++sr) {
                 for (sc = 0; sc < g_sub_cols; ++sc) {
                     WCHAR ch = g_sub[sr][sc];
                     subcell_rect(cell, sr, sc, &sub);
                     draw_label_box(dc, sub, &ch, 1, FALSE, 0,
-                                   g_font_sub, g_font_sub_px);
+                                   g_font_sub, g_font_sub_px, TRUE);
                 }
             }
             draw_outline(dc, cell);
@@ -1034,6 +1074,7 @@ void hint_on_key(UINT vk, UINT mods)
         } else {
             g_state = 2;
             g_flash = FALSE;
+            mouse_move_to(cell_center(g_row, g_col));
             invalidate();
         }
     } else {

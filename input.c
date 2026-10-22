@@ -273,8 +273,13 @@ static void apply_paused(BOOL paused)
     LONG old = InterlockedExchange(&s_paused, value);
     if (old == value)
         return;
-    if (value)
+    if (value) {
         leave_mouse_mode();
+        if (flag_get(&s_capture)) {
+            flag_set(&s_capture, FALSE);
+            post_main(WM_APP_HINT_CLOSE, 0, 0);
+        }
+    }
     notify_state();
 }
 
@@ -552,7 +557,7 @@ static BOOL handle_hotkeys(UINT vk, UINT mods)
         apply_paused(!flag_get(&s_paused));
         return TRUE;
     }
-    if (hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
+    if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
         if (mods & (KMOD_ALT | KMOD_WIN))
             send_mask_key();
         if (!flag_get(&s_capture)) {
@@ -581,6 +586,10 @@ static BOOL handle_down(UINT vk)
     }
     if (flag_get(&s_capture)) {
         s_owner[vk] = OWN_SWALLOW;
+        // Esc drops capture right here too, so typing comes back even if
+        // the UI thread never processes the close.
+        if (vk == VK_ESCAPE)
+            flag_set(&s_capture, FALSE);
         post_main(WM_APP_HINT_KEY, vk, mods);
         return TRUE;
     }
@@ -1099,9 +1108,22 @@ static void indicator_update(void)
     if (y < rc.top)
         y = rc.top;
 
-    SetWindowPos(s_ind_wnd, HWND_TOPMOST, x, y, w, h,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    InvalidateRect(s_ind_wnd, NULL, FALSE);
+    // The timer runs every 15 ms; only touch the window when something changed.
+    {
+        static RECT last;
+        static BOOL last_drag;
+        BOOL drag = flag_get(&s_left_held);
+        BOOL moved = last.left != x || last.top != y ||
+                     last.right != x + w || last.bottom != y + h ||
+                     !IsWindowVisible(s_ind_wnd);
+        if (moved)
+            SetWindowPos(s_ind_wnd, HWND_TOPMOST, x, y, w, h,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        if (moved || drag != last_drag)
+            InvalidateRect(s_ind_wnd, NULL, FALSE);
+        SetRect(&last, x, y, x + w, y + h);
+        last_drag = drag;
+    }
     if (!s_ind_timer_on) {
         SetTimer(s_ind_wnd, IND_TIMER, 15, NULL);
         s_ind_timer_on = TRUE;

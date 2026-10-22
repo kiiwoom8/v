@@ -1,4 +1,4 @@
-// common.h - shared contract between modules. See SPEC.md for behaviour.
+// common.h - shared contract between modules. User-facing behaviour: README.md.
 //
 //   main.c   entry point, single instance, DPI, main window, message routing,
 //            config file watching, logging/error helpers

@@ -1,5 +1,4 @@
 // tray.c - tray icon, tray menu, help window, start-with-Windows.
-// See SPEC.md sections 1 ("Tray and help") and 5.
 
 #ifndef _WIN32_IE
 #define _WIN32_IE 0x0601

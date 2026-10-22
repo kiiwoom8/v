@@ -125,7 +125,7 @@ Left- or right-click the tray icon:
 - **A window cannot be clicked.** Programs running as administrator cannot be
   controlled from a normal process (Windows UIPI). Run vim mouse as
   administrator too if you need to drive those windows.
-- **CapsLock still toggles.** vim mouse intercepts CapsLock; use
+- **I need the real CapsLock.** vim mouse intercepts CapsLock; use
   `Shift+CapsLock` when you really want the CapsLock state.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
   (it writes a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
@@ -149,4 +149,3 @@ The build uses `-std=gnu11` and `-mwindows`. Source layout:
 - `hint.c` - click-hint overlay
 - `tray.c` - tray icon and menu, help window, start with Windows
 - `common.h` - shared contract between modules
-- `SPEC.md` - the behaviour specification

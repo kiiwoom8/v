@@ -68,3 +68,7 @@ npm-debug.log
 # Ignore Visual Studio Code workspace storage
 .vscode/*
 !.vscode/settings.json
+
+# Generated next to the exe on first run
+vim.ini
+vim.log
