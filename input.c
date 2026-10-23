@@ -21,6 +21,18 @@
 #ifndef LLKHF_INJECTED
 #define LLKHF_INJECTED 0x10
 #endif
+#ifndef LLKHF_EXTENDED
+#define LLKHF_EXTENDED 0x01
+#endif
+#ifndef GUI_INMENUMODE
+#define GUI_INMENUMODE 0x00000004
+#endif
+#ifndef GUI_SYSTEMMENUMODE
+#define GUI_SYSTEMMENUMODE 0x00000008
+#endif
+#ifndef GUI_POPUPMENUMODE
+#define GUI_POPUPMENUMODE 0x00000010
+#endif
 
 BOOL WINAPI WTSRegisterSessionNotification(HWND hWnd, DWORD dwFlags);
 BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
@@ -64,7 +76,7 @@ enum {
     ACT_HINTS, ACT_EXIT, ACT_HELP
 };
 
-enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS };
+enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS, OWN_ALT_HELD };
 
 #define LEFT_SRC_NONE 0
 #define LEFT_SRC_KEY  1
@@ -88,6 +100,11 @@ static int  s_caps_enter = 0;
 static int  s_caps_exit_on_release = 0;
 static int  s_left_source = LEFT_SRC_NONE;
 
+static BOOL s_alt_pending = FALSE;
+static BOOL s_alt_consumed = FALSE;
+static UINT s_alt_scan = 0;
+static BOOL s_alt_extended = FALSE;
+
 static DWORD s_scroll_start[4];
 
 static HANDLE s_move_event = NULL;
@@ -107,6 +124,8 @@ static BOOL  s_ind_timer_on = FALSE;
 #ifdef INPUT_TEST
 static BOOL s_test_mods_on = FALSE;
 static UINT s_test_mods_value = 0;
+static BOOL s_test_popup_on = FALSE;
+static BOOL s_test_popup_value = FALSE;
 #endif
 
 static void indicator_schedule(void);
@@ -225,6 +244,40 @@ static void send_mask_key(void)
     SendInput(2, in, sizeof(INPUT));
 }
 
+static void fill_alt_down(INPUT *in)
+{
+    ZeroMemory(in, sizeof(*in));
+    in->type = INPUT_KEYBOARD;
+    in->ki.wVk = VK_LMENU;
+    in->ki.wScan = (WORD)s_alt_scan;
+    in->ki.dwFlags = s_alt_extended ? KEYEVENTF_EXTENDEDKEY : 0;
+}
+
+static void send_alt_replay(UINT vk, UINT scan, DWORD flags)
+{
+    INPUT in[2];
+    fill_alt_down(&in[0]);
+    ZeroMemory(&in[1], sizeof(in[1]));
+    in[1].type = INPUT_KEYBOARD;
+    in[1].ki.wVk = (WORD)vk;
+    in[1].ki.wScan = (WORD)scan;
+    in[1].ki.dwFlags = (flags & LLKHF_EXTENDED) ? KEYEVENTF_EXTENDEDKEY : 0;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+static void send_alt_tap(void)
+{
+    INPUT in[2];
+    fill_alt_down(&in[0]);
+    ZeroMemory(&in[1], sizeof(in[1]));
+    in[1].type = INPUT_KEYBOARD;
+    in[1].ki.wVk = VK_LMENU;
+    in[1].ki.wScan = (WORD)s_alt_scan;
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP |
+                       (s_alt_extended ? KEYEVENTF_EXTENDEDKEY : 0);
+    SendInput(2, in, sizeof(INPUT));
+}
+
 static void left_set(BOOL held)
 {
     LONG old = InterlockedExchange(&s_left_held, held ? 1 : 0);
@@ -317,6 +370,94 @@ void mouse_click_at(POINT pt, int button, int count)
     SendInput((UINT)n, in, sizeof(INPUT));
 }
 
+// Menus and flyouts are title-less popups owned by the app's window. The owner
+// test keeps out the taskbar, which lives in explorer.exe above every
+// Explorer window.
+static BOOL window_is_popup(HWND hwnd)
+{
+    LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    WCHAR cls[32];
+
+    if (!(style & WS_POPUP) || (style & WS_CAPTION) || !GetWindow(hwnd, GW_OWNER))
+        return FALSE;
+    GetClassNameW(hwnd, cls, 32);
+    return lstrcmpW(cls, L"Shell_TrayWnd") != 0 &&
+           lstrcmpW(cls, L"Shell_SecondaryTrayWnd") != 0;
+}
+
+static BOOL window_cloaked(HWND hwnd)
+{
+    typedef HRESULT (WINAPI *DwmGetWindowAttributeFn)(HWND, DWORD, PVOID, DWORD);
+    static BOOL tried = FALSE;
+    static DwmGetWindowAttributeFn get_attr = NULL;
+    DWORD cloaked = 0;
+
+    if (!tried) {
+        HMODULE dll = LoadLibraryW(L"dwmapi.dll");
+        tried = TRUE;
+        if (dll)
+            get_attr = (DwmGetWindowAttributeFn)(void *)
+                GetProcAddress(dll, "DwmGetWindowAttribute");
+    }
+    if (!get_attr)
+        return FALSE;
+    // 14 = DWMWA_CLOAKED (avoid depending on dwmapi.h/lib).
+    if (get_attr(hwnd, 14, &cloaked, sizeof(cloaked)) != S_OK)
+        return FALSE;
+    return cloaked != 0;
+}
+
+static BOOL popup_open(void)
+{
+#ifdef INPUT_TEST
+    if (s_test_popup_on)
+        return s_test_popup_value;
+#endif
+    HWND fg;
+    HWND root;
+    HWND w;
+    DWORD pid = 0;
+    DWORD tid;
+    DWORD wpid;
+    GUITHREADINFO gti;
+    RECT rc;
+    int steps;
+
+    fg = GetForegroundWindow();
+    if (fg) {
+        tid = GetWindowThreadProcessId(fg, &pid);
+        ZeroMemory(&gti, sizeof(gti));
+        gti.cbSize = sizeof(gti);
+        if (tid && GetGUIThreadInfo(tid, &gti) &&
+            (gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE |
+                          GUI_SYSTEMMENUMODE)))
+            return TRUE;
+    }
+    if (!fg || pid == 0)
+        return FALSE;
+
+    root = GetAncestor(fg, GA_ROOT);
+    if (root && window_is_popup(root))
+        return TRUE;
+
+    steps = 0;
+    w = GetTopWindow(NULL);
+    while (w && steps < 256) {
+        if (w == root)
+            break;
+        if (IsWindowVisible(w)) {
+            GetWindowThreadProcessId(w, &wpid);
+            if (wpid == pid && window_is_popup(w) &&
+                GetWindowRect(w, &rc) && !IsRectEmpty(&rc) &&
+                !window_cloaked(w))
+                return TRUE;
+        }
+        w = GetWindow(w, GW_HWNDNEXT);
+        steps++;
+    }
+    return FALSE;
+}
+
 static UINT current_mods(void)
 {
 #ifdef INPUT_TEST
@@ -328,7 +469,8 @@ static UINT current_mods(void)
         mods |= KMOD_SHIFT;
     if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
         mods |= KMOD_CTRL;
-    if (GetAsyncKeyState(VK_MENU) & 0x8000)
+    if (s_owner[VK_LMENU] == OWN_ALT_HELD ||
+        (GetAsyncKeyState(VK_MENU) & 0x8000))
         mods |= KMOD_ALT;
     if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000))
         mods |= KMOD_WIN;
@@ -543,22 +685,22 @@ static void apply_action_down(int act)
     }
 }
 
-static BOOL handle_hotkeys(UINT vk, UINT mods)
+static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
 {
     if (hotkey_match(&g_cfg.quit_hotkey, vk, mods)) {
-        if (mods & (KMOD_ALT | KMOD_WIN))
+        if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
         post_main(WM_APP_QUIT, 0, 0);
         return TRUE;
     }
     if (hotkey_match(&g_cfg.pause_hotkey, vk, mods)) {
-        if (mods & (KMOD_ALT | KMOD_WIN))
+        if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
         apply_paused(!flag_get(&s_paused));
         return TRUE;
     }
     if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
-        if (mods & (KMOD_ALT | KMOD_WIN))
+        if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
         if (!flag_get(&s_capture)) {
             flag_set(&s_capture, TRUE);
@@ -571,12 +713,58 @@ static BOOL handle_hotkeys(UINT vk, UINT mods)
     return FALSE;
 }
 
+static BOOL alt_hotkey_configured(void)
+{
+    return (g_cfg.hint_hotkey.mods & KMOD_ALT) ||
+           (g_cfg.quit_hotkey.mods & KMOD_ALT) ||
+           (g_cfg.pause_hotkey.mods & KMOD_ALT);
+}
+
+static BOOL alt_should_withhold(void)
+{
+    if (flag_get(&s_paused) || !alt_hotkey_configured())
+        return FALSE;
+    return flag_get(&s_capture) || popup_open();
+}
+
+// The app never saw Alt, so hotkeys act without the 0xE8 menu mask.
+static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
+{
+    UINT mods = current_mods();
+
+    if (handle_hotkeys(vk, mods, FALSE)) {
+        s_owner[vk] = OWN_SWALLOW;
+        s_alt_pending = FALSE;
+        s_alt_consumed = TRUE;
+        return TRUE;
+    }
+    // Over the open hints, Shift/Ctrl still pass as usual (they pick the
+    // click kind); only the Alt stays hidden.
+    if (flag_get(&s_capture) && is_modifier(vk)) {
+        s_owner[vk] = OWN_PASS;
+        return FALSE;
+    }
+    if (flag_get(&s_capture)) {
+        s_owner[vk] = OWN_SWALLOW;
+        if (vk == VK_ESCAPE)
+            flag_set(&s_capture, FALSE);
+        post_main(WM_APP_HINT_KEY, vk, mods);
+        return TRUE;
+    }
+    send_alt_replay(vk, scan, flags);
+    s_owner[vk] = OWN_PASS;
+    s_owner[VK_LMENU] = OWN_PASS;
+    s_alt_pending = FALSE;
+    s_alt_consumed = FALSE;
+    return TRUE;
+}
+
 static BOOL handle_down(UINT vk)
 {
     UINT mods = current_mods();
     int act;
 
-    if (handle_hotkeys(vk, mods)) {
+    if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
         return TRUE;
     }
@@ -661,12 +849,18 @@ static BOOL handle_up(UINT vk)
         return TRUE;
     case OWN_SWALLOW:
         return TRUE;
+    case OWN_ALT_HELD:
+        if (s_alt_pending && !s_alt_consumed && !flag_get(&s_capture))
+            send_alt_tap();
+        s_alt_pending = FALSE;
+        s_alt_consumed = FALSE;
+        return TRUE;
     default:
         return FALSE;
     }
 }
 
-static BOOL handle_key(UINT vk, BOOL down, DWORD flags)
+static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
 {
     int owner;
 
@@ -677,6 +871,27 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags)
     if (down) {
         BOOL repeat = s_down[vk] != 0;
         s_down[vk] = 1;
+        if (vk == VK_LMENU) {
+            if (repeat) {
+                if (s_owner[vk] == OWN_ALT_HELD)
+                    return TRUE;
+            } else if (alt_should_withhold()) {
+                s_owner[vk] = OWN_ALT_HELD;
+                s_alt_pending = TRUE;
+                s_alt_consumed = FALSE;
+                s_alt_scan = scan;
+                s_alt_extended = (flags & LLKHF_EXTENDED) ? TRUE : FALSE;
+                return TRUE;
+            }
+            s_owner[vk] = OWN_PASS;
+            return FALSE;
+        }
+        // Resolve a withheld Alt before the modifier pass-through rule, so
+        // Alt+Shift and friends are replayed too. This also covers keys
+        // pressed after Alt+hotkey while Alt is still held: once the hints
+        // have closed, they reach the app with their Alt replayed.
+        if (s_owner[VK_LMENU] == OWN_ALT_HELD && !repeat)
+            return alt_resolve(vk, scan, flags);
         if (is_modifier(vk)) {
             s_owner[vk] = OWN_PASS;
             return FALSE;
@@ -698,10 +913,10 @@ static LRESULT CALLBACK kb_proc(int nCode, WPARAM wParam, LPARAM lParam)
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            if (handle_key(k->vkCode, TRUE, k->flags))
+            if (handle_key(k->vkCode, TRUE, k->flags, k->scanCode))
                 return 1;
         } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-            if (handle_key(k->vkCode, FALSE, k->flags))
+            if (handle_key(k->vkCode, FALSE, k->flags, k->scanCode))
                 return 1;
         }
     }
@@ -717,6 +932,10 @@ static void reset_key_state(void)
     s_caps_used = 0;
     s_caps_enter = 0;
     s_caps_exit_on_release = 0;
+    s_alt_pending = FALSE;
+    s_alt_consumed = FALSE;
+    s_alt_scan = 0;
+    s_alt_extended = FALSE;
 }
 
 static BOOL install_hook(void)

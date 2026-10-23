@@ -67,7 +67,9 @@ A transparent, click-through overlay opens on the monitor under the cursor.
 By default it finds the clickable elements of the visible windows through UI
 Automation and labels each one. Type the label shown on the element to click
 it; labels are short (usually one letter) and never a prefix of another. The
-status bar says "Finding clickable elements" while the scan runs.
+status bar says "Finding clickable elements" while the scan runs. Hints work
+on open menus and flyouts too: while a menu is open vim mouse holds back the
+hotkey's Alt, so the menu stays open.
 
 | Key | Action |
 |---|---|
@@ -155,6 +157,8 @@ Left- or right-click the tray icon:
 - **A window cannot be clicked.** Programs running as administrator cannot be
   controlled from a normal process (Windows UIPI). Run vim mouse as
   administrator too if you need to drive those windows.
+- **Hints on an open menu.** They work: while a menu or flyout is open vim
+  mouse holds back the hotkey's Alt, so the menu stays open.
 - **An app shows no labels.** It does not expose UI Automation (some games,
   remote desktops, custom-drawn apps). Press the hotkey again for the grid.
   `mingw32-make probe` builds `tools\uia_probe.exe`, which lists what the scan
