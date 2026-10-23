@@ -25,6 +25,7 @@
 #define UIA_MODE_NONE 0
 #define UIA_SCAN_TIMEOUT_MS 1500
 #define UIA_MAX_TARGETS 2000
+#define UIA_HELPER_THREADS 3
 
 #ifndef UIA_BoundingRectanglePropertyId
 #define UIA_BoundingRectanglePropertyId 30001
@@ -355,6 +356,7 @@ typedef struct {
     IUIAutomation *automation;
     IUIAutomationCondition *condition;
     IUIAutomationCacheRequest *cache;
+    BOOL with_names;
 } UiaEngine;
 
 typedef struct {
@@ -533,29 +535,108 @@ static BOOL inside_any(const RECT *rects, int count, const RECT *rc)
     return FALSE;
 }
 
-static int scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
-                       int z, const RECT *monitor, ScanResult *result)
+// Apps that answer UI Automation very slowly with next to nothing (games,
+// custom-drawn UIs) are skipped for a while, so the hints fall back to the
+// grid at once instead of stalling for seconds on every open.
+#define SLOW_SCAN_MS       600
+#define SLOW_SCAN_TARGETS  4
+#define SLOW_SKIP_MS       (10 * 60 * 1000)
+#define SLOW_MAX           16
+
+static struct { DWORD pid; DWORD since; } g_slow[SLOW_MAX];
+static volatile LONG g_slow_lock;
+static BOOL g_slow_memory = TRUE;   // the probe turns it off to report truthfully
+
+static BOOL slow_check(DWORD pid, BOOL remember)
+{
+    DWORD now = GetTickCount();
+    BOOL hit = FALSE;
+    int i, free_slot = -1, oldest = 0;
+
+    if (!g_slow_memory || !pid)
+        return FALSE;
+    while (InterlockedExchange(&g_slow_lock, 1))
+        Sleep(0);
+    for (i = 0; i < SLOW_MAX; ++i) {
+        if (g_slow[i].pid && now - g_slow[i].since > SLOW_SKIP_MS)
+            g_slow[i].pid = 0;
+        if (g_slow[i].pid == pid)
+            hit = TRUE;
+        else if (!g_slow[i].pid && free_slot < 0)
+            free_slot = i;
+        if (now - g_slow[i].since > now - g_slow[oldest].since)
+            oldest = i;
+    }
+    if (remember && !hit) {
+        i = free_slot >= 0 ? free_slot : oldest;
+        g_slow[i].pid = pid;
+        g_slow[i].since = now;
+    }
+    InterlockedExchange(&g_slow_lock, 0);
+    return hit;
+}
+
+// Browsers and Electron apps build their tree lazily: a slow, nearly empty
+// first scan there is normal and must not get them skipped.
+static BOOL lazy_tree_window(HWND hwnd)
+{
+    WCHAR cls[64];
+    GetClassNameW(hwnd, cls, 64);
+    return wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0 ||
+           wcscmp(cls, L"MozillaWindowClass") == 0;
+}
+
+static void scan_window_uia(UiaEngine *engine, HWND hwnd,
+                            const RECT *zrects, int z, const RECT *monitor,
+                            ScanResult *out);
+
+static void scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
+                        int z, const RECT *monitor, ScanResult *out)
+{
+    DWORD pid = 0, started;
+
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (slow_check(pid, FALSE)) {
+        out->items = NULL;
+        out->count = 0;
+        out->cap = 0;
+        return;
+    }
+    started = GetTickCount();
+    scan_window_uia(engine, hwnd, zrects, z, monitor, out);
+    if (GetTickCount() - started > SLOW_SCAN_MS &&
+        out->count <= SLOW_SCAN_TARGETS && !lazy_tree_window(hwnd))
+        slow_check(pid, TRUE);
+}
+
+static void scan_window_uia(UiaEngine *engine, HWND hwnd,
+                            const RECT *zrects, int z, const RECT *monitor,
+                            ScanResult *out)
 {
     // Scroll bars and their arrow/page buttons are not worth a label.
     RECT scrollbars[64];
     int scrollbar_count = 0;
     ScanTarget *cands = NULL;
     int cand_count = 0, cand_cap = 0;
+    int kept = 0;
     IUIAutomationElement *root = NULL;
     IUIAutomationElementArray *array = NULL;
     int length = 0;
     int i;
-    int changes = 0;
+
+    out->items = NULL;
+    out->count = 0;
+    out->cap = 0;
 
     if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
             engine->automation, (UIA_HWND)hwnd, &root)) || !root)
-        return 0;
+        return;
 
     if (FAILED(root->lpVtbl->FindAllBuildCache(
             root, UIA_TREESCOPE_DESCENDANTS, engine->condition,
             engine->cache, &array)) || !array) {
         root->lpVtbl->Release(root);
-        return 0;
+        return;
     }
     root->lpVtbl->Release(root);
 
@@ -620,10 +701,12 @@ static int scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
         }
 
         target.name[0] = 0;
-        if (SUCCEEDED(el->lpVtbl->get_CachedName(el, &name)) && name)
-            lstrcpynW(target.name, name, 128);
-        if (name)
-            SysFreeString(name);
+        if (engine->with_names) {
+            if (SUCCEEDED(el->lpVtbl->get_CachedName(el, &name)) && name)
+                lstrcpynW(target.name, name, 128);
+            if (name)
+                SysFreeString(name);
+        }
         el->lpVtbl->Release(el);
 
         target.target.rc = clip;
@@ -652,15 +735,12 @@ static int scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
                 PtInRect(&cands[i].target.rc, cands[j].target.click))
                 ++inner;
         }
-        if (inner >= 2)
-            continue;
-        if (target_add(result, &cands[i]))
-            ++changes;
-        if (result->count >= UIA_MAX_TARGETS)
-            break;
+        if (inner < 2)
+            cands[kept++] = cands[i];
     }
-    free(cands);
-    return changes;
+    out->items = cands;
+    out->count = kept;
+    out->cap = cand_cap;
 }
 
 typedef struct {
@@ -815,6 +895,173 @@ static void report_skip(UiaWindowCallback cb, void *cb_user,
     cb(cb_user, &event);
 }
 
+typedef struct {
+    HWND hwnd;
+    int z;
+    HANDLE done;
+    DWORD elapsed_ms;
+    ScanResult found;
+} ScanTask;
+
+typedef struct {
+    UiaEngine *engine;
+    RECT *zrects;
+    int zcount;
+    RECT monitor;
+    UiaContinueCallback keep_going;
+    void *keep_user;
+    ScanTask *tasks;
+    int task_count;
+    volatile LONG next;
+    volatile LONG refs;
+    HANDLE refs_event;
+} ScanJob;
+
+static HANDLE g_helper_threads[UIA_HELPER_THREADS];
+static int g_helper_count;
+static HANDLE g_job_sem;
+static HANDLE g_pool_quit;
+static ScanJob *g_job;
+static CRITICAL_SECTION g_pool_cs;
+static BOOL g_pool_cs_ready;
+
+static void job_release_ref(ScanJob *job)
+{
+    if (InterlockedDecrement(&job->refs) == 0)
+        SetEvent(job->refs_event);
+}
+
+static BOOL pool_is_stopping(void)
+{
+    return g_pool_quit &&
+           WaitForSingleObject(g_pool_quit, 0) == WAIT_OBJECT_0;
+}
+
+static DWORD WINAPI uia_helper(void *arg)
+{
+    HRESULT hr;
+    BOOL com_ready;
+    HANDLE waits[2];
+    (void)arg;
+
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    com_ready = (hr == S_OK || hr == S_FALSE);
+
+    for (;;) {
+        ScanJob *job;
+        DWORD wait;
+
+        waits[0] = g_pool_quit;
+        waits[1] = g_job_sem;
+        wait = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        if (wait != WAIT_OBJECT_0 + 1)
+            break;
+
+        EnterCriticalSection(&g_pool_cs);
+        job = g_job;
+        if (job)
+            InterlockedIncrement(&job->refs);
+        LeaveCriticalSection(&g_pool_cs);
+        if (!job)
+            continue;
+
+        for (;;) {
+            LONG index;
+            ScanTask *task;
+            DWORD started;
+
+            if (pool_is_stopping())
+                break;
+            if (job->keep_going && !job->keep_going(job->keep_user))
+                break;
+            index = InterlockedIncrement(&job->next) - 1;
+            if (index >= job->task_count)
+                break;
+            task = &job->tasks[index];
+            if (pool_is_stopping() ||
+                (job->keep_going && !job->keep_going(job->keep_user))) {
+                SetEvent(task->done);
+                continue;
+            }
+            started = GetTickCount();
+            scan_window(job->engine, task->hwnd, job->zrects, task->z,
+                        &job->monitor, &task->found);
+            task->elapsed_ms = GetTickCount() - started;
+            SetEvent(task->done);
+        }
+        job_release_ref(job);
+    }
+
+    if (com_ready)
+        CoUninitialize();
+    return 0;
+}
+
+static BOOL uia_pool_start(void)
+{
+    int i;
+
+    if (!g_pool_cs_ready) {
+        InitializeCriticalSection(&g_pool_cs);
+        g_pool_cs_ready = TRUE;
+    }
+    if (g_helper_count > 0)
+        return TRUE;
+
+    if (!g_pool_quit) {
+        g_pool_quit = CreateEventW(NULL, TRUE, FALSE, NULL);
+        g_job_sem = CreateSemaphoreW(NULL, 0, 0x7fffffff, NULL);
+        if (!g_pool_quit || !g_job_sem) {
+            if (g_job_sem) {
+                CloseHandle(g_job_sem);
+                g_job_sem = NULL;
+            }
+            if (g_pool_quit) {
+                CloseHandle(g_pool_quit);
+                g_pool_quit = NULL;
+            }
+            return FALSE;
+        }
+    }
+
+    for (i = 0; i < UIA_HELPER_THREADS; ++i) {
+        g_helper_threads[i] = CreateThread(NULL, 0, uia_helper, NULL, 0,
+                                           NULL);
+        if (!g_helper_threads[i])
+            break;
+        ++g_helper_count;
+    }
+    return g_helper_count > 0;
+}
+
+static void uia_pool_stop(void)
+{
+    int i;
+
+    if (!g_pool_cs_ready)
+        return;
+    if (g_pool_quit)
+        SetEvent(g_pool_quit);
+    for (i = 0; i < g_helper_count; ++i) {
+        if (g_helper_threads[i]) {
+            WaitForSingleObject(g_helper_threads[i], INFINITE);
+            CloseHandle(g_helper_threads[i]);
+            g_helper_threads[i] = NULL;
+        }
+    }
+    g_helper_count = 0;
+    if (g_job_sem) {
+        CloseHandle(g_job_sem);
+        g_job_sem = NULL;
+    }
+    if (g_pool_quit) {
+        CloseHandle(g_pool_quit);
+        g_pool_quit = NULL;
+    }
+    DeleteCriticalSection(&g_pool_cs);
+    g_pool_cs_ready = FALSE;
+}
+
 static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                              UiaContinueCallback keep_going, void *keep_user,
                              UiaWindowCallback cb, void *cb_user,
@@ -829,9 +1076,18 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     int zcount = 0;
     int zcap = 0;
     int fg_index = -1;
-    int pass;
+    int *order = NULL;
+    int *task_of_win = NULL;
+    int order_count = 0;
+    int task_count = 0;
+    int fg_task = -1;
+    ScanJob *job = NULL;
     int i;
+    int k;
     HRGN covered;
+
+    if (!g_pool_cs_ready)
+        uia_pool_start();
 
     memset(result, 0, sizeof(*result));
     memset(&mi, 0, sizeof(mi));
@@ -896,29 +1152,131 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     if (covered)
         DeleteObject(covered);
 
-    for (pass = 0; pass < 2; ++pass) {
-        for (i = 0; i < ctx.count; ++i) {
-            WinInfo *win = &ctx.items[i];
-            int before;
-            int changes;
-            DWORD started;
+    // Deterministic order: foreground window first, then z-order.
+    order = (int *)malloc((size_t)ctx.count * sizeof(*order));
+    task_of_win = (int *)malloc((size_t)ctx.count * sizeof(*task_of_win));
+    if (!order || !task_of_win)
+        goto done;
+    if (fg_index >= 0)
+        order[order_count++] = fg_index;
+    for (i = 0; i < ctx.count; ++i) {
+        if (i != fg_index)
+            order[order_count++] = i;
+    }
+    for (i = 0; i < ctx.count; ++i)
+        task_of_win[i] = -1;
+    for (k = 0; k < order_count; ++k) {
+        if (ctx.items[order[k]].do_scan)
+            task_of_win[order[k]] = task_count++;
+    }
 
-            if (pass == 0 && i != fg_index)
-                continue;
-            if (pass == 1 && i == fg_index)
-                continue;
-            if (keep_going && !keep_going(keep_user))
+    job = (ScanJob *)calloc(1, sizeof(*job));
+    if (!job)
+        goto done;
+    job->engine = engine;
+    job->zrects = zrects;
+    job->zcount = zcount;
+    job->monitor = mi.rcMonitor;
+    job->keep_going = keep_going;
+    job->keep_user = keep_user;
+    job->task_count = task_count;
+    if (task_count > 0) {
+        job->tasks = (ScanTask *)calloc((size_t)task_count,
+                                        sizeof(*job->tasks));
+        if (!job->tasks)
+            goto done;
+        for (i = 0; i < task_count; ++i) {
+            job->tasks[i].done = CreateEventW(NULL, FALSE, FALSE, NULL);
+            if (!job->tasks[i].done)
                 goto done;
-
-            if (!win->do_scan) {
-                report_skip(cb, cb_user, win, result);
-                continue;
+        }
+        for (k = 0; k < order_count; ++k) {
+            int ti = task_of_win[order[k]];
+            if (ti >= 0) {
+                job->tasks[ti].hwnd = ctx.items[order[k]].hwnd;
+                job->tasks[ti].z = ctx.items[order[k]].z;
             }
+        }
+    }
+    job->refs_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!job->refs_event)
+        goto done;
 
-            before = result->count;
-            started = GetTickCount();
-            changes = scan_window(engine, win->hwnd, zrects, win->z,
-                                  &ctx.monitor, result);
+    // Claim the foreground task before the helpers see the job.
+    if (fg_index >= 0 && task_of_win[fg_index] >= 0) {
+        fg_task = task_of_win[fg_index];
+        job->next = fg_task + 1;
+    }
+
+    EnterCriticalSection(&g_pool_cs);
+    g_job = job;
+    job->refs = 1;
+    LeaveCriticalSection(&g_pool_cs);
+    if (g_helper_count > 0 && g_job_sem)
+        ReleaseSemaphore(g_job_sem, (LONG)g_helper_count, NULL);
+
+    // The foreground window starts first, on this thread.
+    if (fg_task >= 0) {
+        ScanTask *task = &job->tasks[fg_task];
+        if (!(keep_going && !keep_going(keep_user))) {
+            DWORD started = GetTickCount();
+            scan_window(engine, task->hwnd, job->zrects, task->z,
+                        &job->monitor, &task->found);
+            task->elapsed_ms = GetTickCount() - started;
+        }
+        SetEvent(task->done);
+    }
+
+    for (k = 0; k < order_count; ++k) {
+        int wi = order[k];
+        WinInfo *win = &ctx.items[wi];
+        int ti = task_of_win[wi];
+        ScanTask *task;
+
+        if (keep_going && !keep_going(keep_user))
+            break;
+        if (!win->do_scan) {
+            report_skip(cb, cb_user, win, result);
+            continue;
+        }
+
+        task = &job->tasks[ti];
+        if (ti != fg_task) {
+            for (;;) {
+                LONG next = job->next;
+                if (next == ti &&
+                    InterlockedCompareExchange(&job->next, ti + 1, ti) ==
+                        ti) {
+                    if (!(keep_going && !keep_going(keep_user))) {
+                        DWORD started = GetTickCount();
+                        scan_window(engine, task->hwnd, job->zrects, task->z,
+                                    &job->monitor, &task->found);
+                        task->elapsed_ms = GetTickCount() - started;
+                    }
+                    SetEvent(task->done);
+                    break;
+                }
+                if (next > ti) {
+                    WaitForSingleObject(task->done, INFINITE);
+                    break;
+                }
+                Sleep(0);
+            }
+            if (keep_going && !keep_going(keep_user))
+                break;
+        }
+
+        {
+            int before = result->count;
+            int changes = 0;
+            int j;
+
+            for (j = 0; j < task->found.count; ++j) {
+                if (target_add(result, &task->found.items[j]))
+                    ++changes;
+                if (result->count >= UIA_MAX_TARGETS)
+                    break;
+            }
             if (cb) {
                 WindowEvent event;
                 memset(&event, 0, sizeof(event));
@@ -928,15 +1286,38 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                 event.added = result->count - before;
                 event.changed = changes;
                 event.total = result->count;
-                event.elapsed_ms = GetTickCount() - started;
+                event.elapsed_ms = task->elapsed_ms;
                 event.targets = result->items;
                 cb(cb_user, &event);
             }
         }
     }
 
+    EnterCriticalSection(&g_pool_cs);
+    g_job = NULL;
+    LeaveCriticalSection(&g_pool_cs);
+    job_release_ref(job);
+    WaitForSingleObject(job->refs_event, INFINITE);
+
 done:
-    free(zrects);
+    if (job) {
+        if (job->tasks) {
+            for (i = 0; i < job->task_count; ++i) {
+                if (job->tasks[i].done)
+                    CloseHandle(job->tasks[i].done);
+                free(job->tasks[i].found.items);
+            }
+            free(job->tasks);
+        }
+        if (job->refs_event)
+            CloseHandle(job->refs_event);
+        free(job->zrects);
+        free(job);
+    } else {
+        free(zrects);
+    }
+    free(task_of_win);
+    free(order);
     free(zlist);
     free(ctx.items);
 }
@@ -1040,9 +1421,9 @@ static BOOL uia_build_condition(UiaEngine *engine)
         items[i]->lpVtbl->Release(items[i]);
 
     if (ok) {
-        and_items[0] = off;
+        and_items[0] = or_cond;
         and_items[1] = enabled;
-        and_items[2] = or_cond;
+        and_items[2] = off;
         hr = engine->automation->lpVtbl->CreateAndConditionFromNativeArray(
             engine->automation, and_items, 3, &engine->condition);
         if (FAILED(hr) || !engine->condition)
@@ -1056,7 +1437,7 @@ static BOOL uia_build_condition(UiaEngine *engine)
     return ok;
 }
 
-static BOOL uia_build_cache(UiaEngine *engine)
+static BOOL uia_build_cache(UiaEngine *engine, BOOL with_names)
 {
     HRESULT hr;
 
@@ -1073,10 +1454,12 @@ static BOOL uia_build_cache(UiaEngine *engine)
         engine->cache, UIA_ControlTypePropertyId);
     if (FAILED(hr))
         return FALSE;
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_NamePropertyId);
-    if (FAILED(hr))
-        return FALSE;
+    if (with_names) {
+        hr = engine->cache->lpVtbl->AddProperty(
+            engine->cache, UIA_NamePropertyId);
+        if (FAILED(hr))
+            return FALSE;
+    }
     hr = engine->cache->lpVtbl->put_AutomationElementMode(
         engine->cache, UIA_MODE_NONE);
     return SUCCEEDED(hr);
@@ -1093,12 +1476,13 @@ static void uia_engine_cleanup(UiaEngine *engine)
     memset(engine, 0, sizeof(*engine));
 }
 
-static BOOL uia_engine_init(UiaEngine *engine)
+static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
 {
     IUIAutomation2 *automation2 = NULL;
     HRESULT hr;
 
     memset(engine, 0, sizeof(*engine));
+    engine->with_names = with_names;
     hr = CoCreateInstance(&g_clsid_uia8, NULL, CLSCTX_INPROC_SERVER,
                           &g_iid_uia, (void **)&engine->automation);
     if (FAILED(hr) || !engine->automation) {
@@ -1119,7 +1503,7 @@ static BOOL uia_engine_init(UiaEngine *engine)
         automation2->lpVtbl->base.Release((IUIAutomation *)automation2);
     }
 
-    if (!uia_build_condition(engine) || !uia_build_cache(engine)) {
+    if (!uia_build_condition(engine) || !uia_build_cache(engine, with_names)) {
         uia_engine_cleanup(engine);
         return FALSE;
     }
@@ -1239,7 +1623,7 @@ static DWORD WINAPI uia_worker(void *arg)
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (hr == S_OK || hr == S_FALSE) {
         com_ready = TRUE;
-        if (uia_engine_init(&engine)) {
+        if (uia_engine_init(&engine, FALSE)) {
             InterlockedExchange(&g_uia_available, TRUE);
             SetEvent(g_uia_ready);
 
@@ -1274,13 +1658,16 @@ static DWORD WINAPI uia_worker(void *arg)
                     post_list(request.scan_id, TRUE, &result);
                 free(result.items);
             }
+            uia_pool_stop();
             uia_engine_cleanup(&engine);
         } else {
             SetEvent(g_uia_ready);
+            uia_pool_stop();
         }
         CoUninitialize();
     } else {
         SetEvent(g_uia_ready);
+        uia_pool_stop();
     }
 
     if (!com_ready)
@@ -1305,9 +1692,13 @@ BOOL uia_start(void)
     if (!g_uia_ready || !g_uia_wake)
         goto fail;
 
+    uia_pool_start();
+
     g_uia_thread = CreateThread(NULL, 0, uia_worker, NULL, 0, NULL);
-    if (!g_uia_thread)
+    if (!g_uia_thread) {
+        uia_pool_stop();
         goto fail;
+    }
 
     if (WaitForSingleObject(g_uia_ready, 5000) != WAIT_OBJECT_0)
         goto fail_running;

@@ -67,6 +67,8 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define VELOCITY_SMOOTHING 0.12
 #define MAX_SIM_STEP_SEC   0.05
 #define SUSPEND_RESET_SEC  2.0
+// Holding a scroll key repeats after this delay (a tap scrolls one notch).
+#define SCROLL_HOLD_DELAY_MS 150.0
 
 enum {
     ACT_NONE = 0,
@@ -982,9 +984,9 @@ static double scroll_speed_for(LONG flags, int idx, double base, double maximum,
     if (!(flags & (LONG)(1 << idx)))
         return 0.0;
     elapsed = (double)(DWORD)(GetTickCount() - s_scroll_start[idx]);
-    if (elapsed < 250.0)
+    if (elapsed < SCROLL_HOLD_DELAY_MS)
         return 0.0;
-    t = (elapsed - 250.0) / 1000.0 / accel_time;
+    t = (elapsed - SCROLL_HOLD_DELAY_MS) / 1000.0 / accel_time;
     if (t < 0.0)
         t = 0.0;
     if (t > 1.0)

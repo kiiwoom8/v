@@ -243,11 +243,14 @@ int main(int argc, char **argv)
         HMONITOR mon;
         MONITORINFO mi;
 
-        if (!uia_engine_init(&engine)) {
+        // Report real timings; the app itself skips known-slow apps.
+        g_slow_memory = FALSE;
+        if (!uia_engine_init(&engine, verbose)) {
             print_line(L"UI Automation unavailable\n");
             CoUninitialize();
             return 1;
         }
+        uia_pool_start();
 
         GetCursorPos(&cursor);
         mon = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
@@ -273,13 +276,14 @@ int main(int argc, char **argv)
             uia_scan_monitor(&engine, mon, NULL, NULL, probe_on_window,
                              &report, &result);
             elapsed = GetTickCount() - started;
-            print_line(L"total: %d targets, %lu ms, %d windows (%d scanned)\n",
+            print_line(L"total: %d targets, %lu ms wall, %d windows (%d scanned)\n",
                        result.count, elapsed, report.windows, report.scanned);
             if (verbose)
                 print_targets(&result);
             free(result.items);
         }
 
+        uia_pool_stop();
         uia_engine_cleanup(&engine);
     }
 

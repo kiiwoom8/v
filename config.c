@@ -514,13 +514,13 @@ void config_set_defaults(Config *c)
     c->indicator = INDICATOR_CURSOR;
     c->log = 0;
 
-    c->speed = 500.0;
-    c->max_speed = 1500.0;
-    c->accel_time = 0.65;
+    c->speed = 600.0;
+    c->max_speed = 2400.0;
+    c->accel_time = 0.45;
     c->accel_curve = 1.8;
     c->slow_speed = 120.0;
-    c->scroll_speed = 600.0;
-    c->scroll_max_speed = 2400.0;
+    c->scroll_speed = 1200.0;
+    c->scroll_max_speed = 4800.0;
 
     parse_key(L"h", &c->key_left);
     parse_key(L"j", &c->key_down);
@@ -550,7 +550,7 @@ void config_set_defaults(Config *c)
     c->match_fg = RGB(0x9C, 0x7A, 0x10);
     c->hint_mode = HINT_MODE_ELEMENTS;
     c->scan_scope = SCAN_MONITOR;
-    c->scan_timeout = 1000;
+    c->scan_timeout = 400;
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,8 +1134,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; (only the active window and the taskbar).\r\n");
     appendf(buf, cch, L"scan_scope = %ls\r\n",
             d.scan_scope == SCAN_WINDOW ? L"window" : L"monitor");
-    appendf(buf, cch, L"; Milliseconds to wait for the element scan before showing what was\r\n");
-    appendf(buf, cch, L"; found, or the grid when nothing was (100-5000).\r\n");
+    appendf(buf, cch, L"; Milliseconds to wait for the first element results before showing\r\n");
+    appendf(buf, cch, L"; them (100-5000, default 400). If none arrive the scan keeps running\r\n");
+    appendf(buf, cch, L"; until the first results or 3 seconds, then falls back to the grid.\r\n");
     appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
 }
 

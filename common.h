@@ -80,13 +80,13 @@ typedef struct {
     int    log;                // 1 = also write log lines to vim.log; default 0
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
-    double speed;              // default 500
-    double max_speed;          // default 1500
-    double accel_time;         // seconds to reach max_speed, default 0.65
+    double speed;              // default 600
+    double max_speed;          // default 2400
+    double accel_time;         // seconds to reach max_speed, default 0.45
     double accel_curve;        // easing exponent, default 1.8
     double slow_speed;         // while Shift is held (no acceleration), default 120
-    double scroll_speed;       // default 600   (5 notches/s)
-    double scroll_max_speed;   // default 2400  (20 notches/s)
+    double scroll_speed;       // default 1200  (10 notches/s)
+    double scroll_max_speed;   // default 4800  (40 notches/s)
     UINT key_left, key_down, key_up, key_right;          // h j k l
     UINT key_left_button;      // a  (hold = drag, tap = click, tap tap = double click)
     UINT key_right_click;      // s
@@ -114,7 +114,7 @@ typedef struct {
     int   hint_mode;           // HINT_MODE_*: what the hotkey opens first, default elements
     int   scan_scope;          // SCAN_MONITOR: every visible window on the monitor (default)
                                // SCAN_WINDOW: only the foreground window and the taskbar
-    int   scan_timeout;        // ms to wait for the element scan, default 1000 (100-5000)
+    int   scan_timeout;        // ms before showing partial scan results, default 400 (100-5000)
 } Config;
 
 extern Config g_cfg;

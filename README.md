@@ -128,7 +128,10 @@ ones:
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement)
 - `scroll_speed`, `scroll_max_speed`
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
-  `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms)
+  `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
+  400: how long to wait for the first element results before showing them. If
+  none arrive the scan keeps running until the first results or 3 s, then falls
+  back to the grid)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,

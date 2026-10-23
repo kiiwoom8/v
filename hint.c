@@ -35,6 +35,10 @@
 #define MAX_LABEL_LEN   16
 #define MAX_QUEUED_KEYS 32
 #define DOT             L"\x00B7"
+#define SCAN_DEFAULT_MS 400
+#define SCAN_HARD_LIMIT_MS 3000
+#define SCAN_GRACE_MS      100
+#define FONT_REF_PX     64
 
 typedef struct {
     HMONITOR mon;
@@ -49,6 +53,29 @@ typedef struct {
     UINT vk;
     UINT mods;
 } QueuedKey;
+
+// One measured width per character of one font, so labels are not measured
+// with GDI again on every paint.
+typedef struct {
+    HFONT font;
+    int   px;
+    WCHAR chars[64];
+    int   widths[64];
+    int   count;
+    int   height;
+} CharWidths;
+
+// What the cached GDI resources were built from.
+typedef struct {
+    BOOL     valid;
+    int      dpi;
+    int      base_w, base_h;
+    int      font_size;
+    COLORREF label_bg, label_fg, label_border, match_fg;
+    WCHAR    alphabet[64];
+    WCHAR    subgrid[64];
+    int      sub_rows, sub_cols;
+} ResKey;
 
 static HINSTANCE g_hint_inst;
 static HWND      g_hint_wnd;
@@ -91,9 +118,32 @@ static HFONT     g_font_label, g_font_sub, g_font_status;
 static int       g_font_label_px, g_font_sub_px, g_font_status_px;
 static HBRUSH    g_br_key, g_br_label, g_br_status, g_br_status_red;
 static HPEN      g_pen_border, g_pen_sel;
+static CharWidths g_lw, g_sw;
+static ResKey    g_res_key;
+
+// Persistent back buffer (one memory DC + DIB sized to the monitor).
+static HDC       g_mem_dc;
+static HBITMAP   g_mem_bmp;
+static HGDIOBJ   g_mem_old;
+static int       g_mem_w, g_mem_h;
+static BOOL      g_mem_blank;  // back buffer is known to be plain key colour
+
+// Ready-to-show frame for the initial grid (labels + status); it only depends
+// on the monitor geometry and the cached resources.
+static HDC       g_grid_dc;
+static HBITMAP   g_grid_bmp;
+static HGDIOBJ   g_grid_old;
+static int       g_grid_w, g_grid_h;
+static BOOL      g_grid_valid;
+
+static BOOL      g_scan_wait_first;  // first timeout passed, waiting for results
+static BOOL      g_scan_grace;       // first results in; finalize shortly
+static DWORD     g_scan_t0;          // scan start tick (hard limit reference)
 
 static MonInfo   g_mons[MAX_MONITORS];
 static int       g_mon_count;
+static RECT      g_last_show;
+static BOOL      g_last_show_valid;
 
 static void finalize_scan(void);
 static void reset_input(void);
@@ -291,19 +341,53 @@ static HFONT make_font(int px, int weight)
                        VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
 }
 
+// Measure once at a fixed reference size, scale to the cell, then verify the
+// chosen size with one more measurement instead of trying every size.
 static int pick_font_px(HDC dc, const WCHAR *chars, int nchars,
                         int cellw, int cellh, int start_px, BOOL two_chars)
 {
-    int px;
+    HFONT f;
+    HGDIOBJ old;
+    int maxw = 0, maxh = 0, i, px, tries;
+    double per_w, per_h;
 
     if (start_px < 6) start_px = 6;
-    for (px = start_px; px >= 6; --px) {
-        HFONT f = make_font(px, FW_BOLD);
-        HGDIOBJ old;
-        int maxw = 0, maxh = 0, i, pad, tw;
+    if (nchars < 1) return 6;
+    if (nchars > 64) nchars = 64;
 
+    f = make_font(FONT_REF_PX, FW_BOLD);
+    if (!f) return 6;
+    old = SelectObject(dc, f);
+    for (i = 0; i < nchars; ++i) {
+        SIZE sz;
+        if (GetTextExtentPoint32W(dc, &chars[i], 1, &sz)) {
+            if (sz.cx > maxw) maxw = sz.cx;
+            if (sz.cy > maxh) maxh = sz.cy;
+        }
+    }
+    SelectObject(dc, old);
+    DeleteObject(f);
+
+    if (maxw < 1) maxw = 1;
+    if (maxh < 1) maxh = 1;
+    per_w = ((two_chars ? 2.0 : 1.0) * maxw) / FONT_REF_PX;
+    per_h = (double)maxh / FONT_REF_PX;
+
+    px = (int)((cellw - 2) / (per_w + 0.5));
+    {
+        int ph = (int)((cellh - 2) / (per_h + 0.5));
+        if (ph < px) px = ph;
+    }
+    if (px > start_px) px = start_px;
+    if (px < 6) px = 6;
+
+    for (tries = 0; tries < 8; ++tries) {
+        int tw, th, pad;
+
+        f = make_font(px, FW_BOLD);
         if (!f) return 6;
         old = SelectObject(dc, f);
+        maxw = maxh = 0;
         for (i = 0; i < nchars; ++i) {
             SIZE sz;
             if (GetTextExtentPoint32W(dc, &chars[i], 1, &sz)) {
@@ -315,12 +399,53 @@ static int pick_font_px(HDC dc, const WCHAR *chars, int nchars,
         DeleteObject(f);
 
         tw = two_chars ? maxw * 2 : maxw;
+        th = maxh;
         pad = px / 4;
         if (pad < 2) pad = 2;
-        if (tw + 2 * pad <= cellw - 2 && maxh + 2 * pad <= cellh - 2)
+        if (tw + 2 * pad <= cellw - 2 && th + 2 * pad <= cellh - 2)
             return px;
+        if (px <= 6) return 6;
+        --px;
     }
     return 6;
+}
+
+static void cache_font_widths(HDC dc, HFONT font, int px,
+                              const WCHAR *chars, int n, CharWidths *cw)
+{
+    HGDIOBJ old;
+    int i, maxh = 0;
+
+    ZeroMemory(cw, sizeof(*cw));
+    cw->font = font;
+    cw->px = px;
+    if (n < 0) n = 0;
+    if (n > 64) n = 64;
+    cw->count = n;
+
+    if (!font) return;
+    old = SelectObject(dc, font);
+    for (i = 0; i < n; ++i) {
+        SIZE sz;
+        WCHAR ch = lower_ascii(chars[i]);
+        cw->chars[i] = ch;
+        if (GetTextExtentPoint32W(dc, &ch, 1, &sz)) {
+            cw->widths[i] = sz.cx;
+            if (sz.cy > maxh) maxh = sz.cy;
+        }
+    }
+    SelectObject(dc, old);
+    cw->height = maxh;
+}
+
+static int cached_char_width(const CharWidths *cw, WCHAR ch)
+{
+    int i;
+
+    ch = lower_ascii(ch);
+    for (i = 0; i < cw->count; ++i)
+        if (cw->chars[i] == ch) return cw->widths[i];
+    return 0;
 }
 
 static void destroy_resources(void)
@@ -334,6 +459,37 @@ static void destroy_resources(void)
     if (g_br_status_red) { DeleteObject(g_br_status_red); g_br_status_red = NULL; }
     if (g_pen_border) { DeleteObject(g_pen_border); g_pen_border = NULL; }
     if (g_pen_sel) { DeleteObject(g_pen_sel); g_pen_sel = NULL; }
+    ZeroMemory(&g_lw, sizeof(g_lw));
+    ZeroMemory(&g_sw, sizeof(g_sw));
+    g_res_key.valid = FALSE;
+    g_grid_valid = FALSE;
+}
+
+static void fill_res_key(ResKey *k)
+{
+    ZeroMemory(k, sizeof(*k));
+    k->valid = TRUE;
+    k->dpi = g_dpi;
+    k->base_w = g_base_w;
+    k->base_h = g_base_h;
+    k->font_size = g_cfg.font_size;
+    k->label_bg = g_cfg.label_bg;
+    k->label_fg = g_cfg.label_fg;
+    k->label_border = g_cfg.label_border;
+    k->match_fg = g_cfg.match_fg;
+    wcsncpy(k->alphabet, g_cfg.alphabet, 63);
+    wcsncpy(k->subgrid, g_cfg.subgrid_keys, 63);
+    k->sub_rows = g_sub_rows;
+    k->sub_cols = g_sub_cols;
+}
+
+static BOOL resource_key_matches(void)
+{
+    ResKey k;
+
+    if (!g_res_key.valid) return FALSE;
+    fill_res_key(&k);
+    return memcmp(&k, &g_res_key, sizeof(k)) == 0;
 }
 
 static BOOL create_resources(void)
@@ -342,6 +498,7 @@ static BOOL create_resources(void)
     int min_cw, min_ch, start, alen;
     WCHAR subchars[64];
     int sn = 0, r, c, subw, subh, substart;
+    ResKey key;
 
     destroy_resources();
 
@@ -397,44 +554,51 @@ static BOOL create_resources(void)
     if (g_font_status_px < 6) g_font_status_px = 6;
     g_font_status = make_font(g_font_status_px, FW_NORMAL);
 
-    ReleaseDC(NULL, dc);
-
     if (!g_font_label || !g_font_sub || !g_font_status) {
+        ReleaseDC(NULL, dc);
         destroy_resources();
         return FALSE;
     }
+
+    cache_font_widths(dc, g_font_label, g_font_label_px,
+                      g_cfg.alphabet, alen, &g_lw);
+    cache_font_widths(dc, g_font_sub, g_font_sub_px, subchars, sn, &g_sw);
+    ReleaseDC(NULL, dc);
+
+    fill_res_key(&key);
+    g_res_key = key;
     return TRUE;
+}
+
+static BOOL ensure_resources(void)
+{
+    if (resource_key_matches()) return TRUE;
+    return create_resources();
 }
 
 // ---------------------------------------------------------------------------
 // drawing
 
-static void measure_label(HDC dc, const WCHAR *text, int len,
+static void measure_label(const CharWidths *cw, const WCHAR *text, int len,
                           int *w, int *tw, int *th)
 {
     int i;
 
     *tw = 0;
-    *th = 0;
+    *th = cw ? cw->height : 0;
     for (i = 0; i < len && i < MAX_LABEL_LEN; ++i) {
-        SIZE sz;
-        w[i] = 0;
-        if (GetTextExtentPoint32W(dc, &text[i], 1, &sz)) {
-            w[i] = sz.cx;
-            if (sz.cy > *th) *th = sz.cy;
-        }
+        w[i] = cw ? cached_char_width(cw, text[i]) : 0;
         *tw += w[i];
     }
 }
 
-// Draws the box and text already positioned at left/top. typed chars at the
-// start of the label use split_col (the typed prefix).
+// Draws the box and text already positioned at left/top. The label brush and
+// border pen are selected by the caller for the whole label pass. Typed chars
+// at the start of the label use split_col (the typed prefix).
 static void draw_box_text(HDC dc, int left, int top, int bw, int bh,
                           const WCHAR *text, int len, int typed,
-                          COLORREF split_col, int font_px,
-                          const int *wchars, int tw, int th)
+                          COLORREF split_col, const int *wchars, int tw, int th)
 {
-    HGDIOBJ old_br, old_pen;
     int i, rad, x, y;
 
     rad = MulDiv(4, g_dpi, 96);
@@ -442,46 +606,72 @@ static void draw_box_text(HDC dc, int left, int top, int bw, int bh,
     if (rad > bh / 2) rad = bh / 2;
     if (rad < 1) rad = 1;
 
-    old_br = SelectObject(dc, g_br_label);
-    old_pen = SelectObject(dc, g_pen_border);
     RoundRect(dc, left, top, left + bw, top + bh, rad, rad);
-    SelectObject(dc, old_pen);
-    SelectObject(dc, old_br);
 
     x = left + (bw - tw) / 2;
     y = top + (bh - th) / 2;
-    for (i = 0; i < len && i < MAX_LABEL_LEN; ++i) {
-        SetTextColor(dc, i < typed ? split_col : g_fg);
-        TextOutW(dc, x, y, &text[i], 1);
-        x += wchars[i];
+    if (typed <= 0) {
+        for (i = 0; i < len && i < MAX_LABEL_LEN; ++i) {
+            TextOutW(dc, x, y, &text[i], 1);
+            x += wchars[i];
+        }
+        return;
     }
-    (void)font_px;
+    for (i = 0; i < len && i < MAX_LABEL_LEN; ) {
+        COLORREF col = i < typed ? split_col : g_fg;
+        int j = i;
+
+        while (j < len && (j < typed ? split_col : g_fg) == col) ++j;
+        SetTextColor(dc, col);
+        for (; i < j; ++i) {
+            TextOutW(dc, x, y, &text[i], 1);
+            x += wchars[i];
+        }
+    }
+}
+
+typedef struct {
+    HGDIOBJ old_font, old_br, old_pen;
+} LabelPass;
+
+static void labels_begin(HDC dc, HFONT font, LabelPass *pass)
+{
+    pass->old_font = SelectObject(dc, font ? font
+                                           : GetStockObject(DEFAULT_GUI_FONT));
+    pass->old_br = SelectObject(dc, g_br_label);
+    pass->old_pen = SelectObject(dc, g_pen_border);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, g_fg);
+}
+
+static void labels_end(HDC dc, LabelPass *pass)
+{
+    SelectObject(dc, pass->old_pen);
+    SelectObject(dc, pass->old_br);
+    SelectObject(dc, pass->old_font);
 }
 
 // corner: pin the box to the top-left of the cell instead of centring it
 static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
                            int typed, COLORREF split_col,
-                           HFONT font, int font_px, BOOL corner)
+                           int font_px, BOOL corner, const CharWidths *cw)
 {
-    HGDIOBJ old_font;
     int w[MAX_LABEL_LEN];
-    int tw, th, pad, bw, bh, cw, ch, cx, cy, left, top;
+    int tw, th, pad, bw, bh, cw_px, ch, cx, cy, left, top;
 
     if (len <= 0) return;
     if (len > MAX_LABEL_LEN) len = MAX_LABEL_LEN;
 
-    old_font = SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
-    SetBkMode(dc, TRANSPARENT);
-    measure_label(dc, text, len, w, &tw, &th);
+    measure_label(cw, text, len, w, &tw, &th);
 
     pad = font_px / 4;
     if (pad < 2) pad = 2;
     bw = tw + 2 * pad;
     bh = th + 2 * pad;
 
-    cw = cell.right - cell.left;
+    cw_px = cell.right - cell.left;
     ch = cell.bottom - cell.top;
-    if (bw > cw) bw = cw;
+    if (bw > cw_px) bw = cw_px;
     if (bh > ch) bh = ch;
     if (bw < 1) bw = 1;
     if (bh < 1) bh = 1;
@@ -497,25 +687,20 @@ static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
     }
 
     draw_box_text(dc, left, top, bw, bh, text, len, typed, split_col,
-                  font_px, w, tw, th);
-    SelectObject(dc, old_font);
+                  w, tw, th);
 }
 
 // A label pinned at the target's top-left, nudged inside the monitor.
 static void draw_element_label(HDC dc, const ClickTarget *t,
                                const WCHAR *text, int len, int typed)
 {
-    HGDIOBJ old_font;
     int w[MAX_LABEL_LEN];
     int tw, th, pad, bw, bh, left, top;
 
     if (len <= 0) return;
     if (len > MAX_LABEL_LEN) len = MAX_LABEL_LEN;
 
-    old_font = SelectObject(dc, g_font_label ? g_font_label
-                                             : GetStockObject(DEFAULT_GUI_FONT));
-    SetBkMode(dc, TRANSPARENT);
-    measure_label(dc, text, len, w, &tw, &th);
+    measure_label(&g_lw, text, len, w, &tw, &th);
 
     pad = g_font_label_px / 4;
     if (pad < 2) pad = 2;
@@ -534,8 +719,7 @@ static void draw_element_label(HDC dc, const ClickTarget *t,
     if (bh < 1) bh = 1;
 
     draw_box_text(dc, left, top, bw, bh, text, len, typed, g_match,
-                  g_font_label_px, w, tw, th);
-    SelectObject(dc, old_font);
+                  w, tw, th);
 }
 
 static void draw_target_outline(HDC dc, RECT rc)
@@ -890,13 +1074,142 @@ static void draw_subgrid_lines(HDC dc, RECT cell)
     SelectObject(dc, old_pen);
 }
 
+static void free_back_buffer(void)
+{
+    if (g_mem_dc && g_mem_old) {
+        SelectObject(g_mem_dc, g_mem_old);
+        g_mem_old = NULL;
+    }
+    if (g_mem_bmp) {
+        DeleteObject(g_mem_bmp);
+        g_mem_bmp = NULL;
+    }
+    if (g_mem_dc) {
+        DeleteDC(g_mem_dc);
+        g_mem_dc = NULL;
+    }
+    g_mem_w = g_mem_h = 0;
+    g_mem_blank = FALSE;
+}
+
+static BOOL ensure_back_buffer(int w, int h)
+{
+    BITMAPINFO bmi;
+    void *bits = NULL;
+
+    if (w <= 0 || h <= 0) return FALSE;
+    if (g_mem_dc && g_mem_bmp && g_mem_w == w && g_mem_h == h) return TRUE;
+
+    free_back_buffer();
+    g_mem_dc = CreateCompatibleDC(NULL);
+    if (!g_mem_dc) return FALSE;
+
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;  // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    g_mem_bmp = CreateDIBSection(g_mem_dc, &bmi, DIB_RGB_COLORS,
+                                 &bits, NULL, 0);
+    if (!g_mem_bmp) {
+        free_back_buffer();
+        return FALSE;
+    }
+    g_mem_old = SelectObject(g_mem_dc, g_mem_bmp);
+    g_mem_w = w;
+    g_mem_h = h;
+    g_mem_blank = FALSE;
+    return TRUE;
+}
+
+static void free_grid_cache(void)
+{
+    if (g_grid_dc && g_grid_old) {
+        SelectObject(g_grid_dc, g_grid_old);
+        g_grid_old = NULL;
+    }
+    if (g_grid_bmp) {
+        DeleteObject(g_grid_bmp);
+        g_grid_bmp = NULL;
+    }
+    if (g_grid_dc) {
+        DeleteDC(g_grid_dc);
+        g_grid_dc = NULL;
+    }
+    g_grid_w = g_grid_h = 0;
+    g_grid_valid = FALSE;
+}
+
+static BOOL ensure_grid_cache(int w, int h)
+{
+    BITMAPINFO bmi;
+    void *bits = NULL;
+
+    if (w <= 0 || h <= 0) return FALSE;
+    if (g_grid_dc && g_grid_bmp && g_grid_w == w && g_grid_h == h)
+        return TRUE;
+
+    free_grid_cache();
+    g_grid_dc = CreateCompatibleDC(NULL);
+    if (!g_grid_dc) return FALSE;
+
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;  // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    g_grid_bmp = CreateDIBSection(g_grid_dc, &bmi, DIB_RGB_COLORS,
+                                  &bits, NULL, 0);
+    if (!g_grid_bmp) {
+        free_grid_cache();
+        return FALSE;
+    }
+    g_grid_old = SelectObject(g_grid_dc, g_grid_bmp);
+    g_grid_w = w;
+    g_grid_h = h;
+    g_grid_valid = FALSE;
+    return TRUE;
+}
+
+// Draw the initial grid into dc (also used to fill the cached frame).
+static void render_grid0(HDC dc, int w, int h)
+{
+    RECT rc;
+    WCHAR text[2];
+    LabelPass pass;
+    int r, c;
+
+    rc.left = 0;
+    rc.top = 0;
+    rc.right = w;
+    rc.bottom = h;
+    FillRect(dc, &rc, g_br_key ? g_br_key
+                               : (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+    labels_begin(dc, g_font_label, &pass);
+    for (r = 0; r < g_rows; ++r) {
+        text[0] = g_cfg.alphabet[r];
+        for (c = 0; c < g_cols; ++c) {
+            RECT cell;
+            text[1] = g_cfg.alphabet[c];
+            cell_rect(r, c, &cell);
+            draw_label_box(dc, cell, text, 2, 0, 0,
+                           g_font_label_px, FALSE, &g_lw);
+        }
+    }
+    labels_end(dc, &pass);
+    draw_status(dc, w, h);
+}
+
 static void paint_overlay(HWND hwnd)
 {
     PAINTSTRUCT ps;
-    HDC hdc, mem, dc;
-    HBITMAP bmp = NULL;
-    HGDIOBJ old_bmp = NULL;
-    RECT rc;
+    HDC hdc, dc;
+    RECT rc, dirty;
     int w, h, r, c;
 
     hdc = BeginPaint(hwnd, &ps);
@@ -904,26 +1217,42 @@ static void paint_overlay(HWND hwnd)
     w = rc.right;
     h = rc.bottom;
 
-    mem = CreateCompatibleDC(hdc);
-    dc = hdc;
-    if (mem) {
-        bmp = CreateCompatibleBitmap(hdc, w, h);
-        if (bmp) {
-            old_bmp = SelectObject(mem, bmp);
-            dc = mem;
-        } else {
-            DeleteDC(mem);
-            mem = NULL;
+    dc = ensure_back_buffer(w, h) ? g_mem_dc : hdc;
+
+    if (g_open && g_mode == HINT_MODE_GRID && g_state == 0 && !g_scanning &&
+        !g_flash && g_notice[0] == 0 && !input_left_button_held() &&
+        g_font_label && g_font_sub && ensure_grid_cache(w, h)) {
+        if (!g_grid_valid) {
+            render_grid0(g_grid_dc, w, h);
+            g_grid_valid = TRUE;
         }
+        dirty = ps.rcPaint;
+        if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
+            dirty = rc;
+        BitBlt(hdc, dirty.left, dirty.top,
+               dirty.right - dirty.left, dirty.bottom - dirty.top,
+               g_grid_dc, dirty.left, dirty.top, SRCCOPY);
+        // Leave the normal back buffer ready to draw the next state without a
+        // full clear.
+        if (dc == g_mem_dc && !g_mem_blank) {
+            FillRect(dc, &rc, g_br_key ? g_br_key
+                                       : (HBRUSH)GetStockObject(BLACK_BRUSH));
+            g_mem_blank = TRUE;
+        }
+        EndPaint(hwnd, &ps);
+        return;
     }
 
-    FillRect(dc, &rc, g_br_key ? g_br_key
-                               : (HBRUSH)GetStockObject(BLACK_BRUSH));
+    if (!g_mem_blank || dc != g_mem_dc)
+        FillRect(dc, &rc, g_br_key ? g_br_key
+                                   : (HBRUSH)GetStockObject(BLACK_BRUSH));
 
     if (g_open && g_font_label && g_font_sub && g_mode == HINT_MODE_ELEMENTS) {
         int i;
 
         if (!g_scanning) {
+            LabelPass pass;
+            labels_begin(dc, g_font_label, &pass);
             for (i = 0; i < g_target_count; ++i) {
                 RECT trc;
                 if (!element_matches(i)) continue;
@@ -937,12 +1266,15 @@ static void paint_overlay(HWND hwnd)
                     draw_target_outline(dc, trc);
                 }
             }
+            labels_end(dc, &pass);
         }
         draw_status(dc, w, h);
     } else if (g_open && g_font_label && g_font_sub) {
         WCHAR text[2];
 
         if (g_state == 0) {
+            LabelPass pass;
+            labels_begin(dc, g_font_label, &pass);
             for (r = 0; r < g_rows; ++r) {
                 text[0] = g_cfg.alphabet[r];
                 for (c = 0; c < g_cols; ++c) {
@@ -950,45 +1282,56 @@ static void paint_overlay(HWND hwnd)
                     text[1] = g_cfg.alphabet[c];
                     cell_rect(r, c, &cell);
                     draw_label_box(dc, cell, text, 2, 0, 0,
-                                   g_font_label, g_font_label_px, FALSE);
+                                   g_font_label_px, FALSE, &g_lw);
                 }
             }
+            labels_end(dc, &pass);
         } else if (g_state == 1) {
             RECT cell;
+            LabelPass pass;
             text[0] = g_cfg.alphabet[g_row];
+            labels_begin(dc, g_font_label, &pass);
             for (c = 0; c < g_cols; ++c) {
                 text[1] = g_cfg.alphabet[c];
                 cell_rect(g_row, c, &cell);
                 draw_label_box(dc, cell, text, 2, 1, g_match,
-                               g_font_label, g_font_label_px, FALSE);
+                               g_font_label_px, FALSE, &g_lw);
             }
+            labels_end(dc, &pass);
         } else if (g_state == 2) {
             RECT cell, sub;
+            LabelPass pass;
             int sr, sc;
 
             // Thin dividers and corner labels keep the content under the
             // cell (and each subcell's centre, where the click lands) visible.
             cell_rect(g_row, g_col, &cell);
             draw_subgrid_lines(dc, cell);
+            labels_begin(dc, g_font_sub, &pass);
             for (sr = 0; sr < g_sub_rows; ++sr) {
                 for (sc = 0; sc < g_sub_cols; ++sc) {
                     WCHAR ch = g_sub[sr][sc];
                     subcell_rect(cell, sr, sc, &sub);
                     draw_label_box(dc, sub, &ch, 1, 0, 0,
-                                   g_font_sub, g_font_sub_px, TRUE);
+                                   g_font_sub_px, TRUE, &g_sw);
                 }
             }
+            labels_end(dc, &pass);
             draw_outline(dc, cell);
         }
         draw_status(dc, w, h);
     }
 
-    if (mem) {
-        BitBlt(hdc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
-        if (old_bmp) SelectObject(mem, old_bmp);
+    g_mem_blank = FALSE;
+
+    if (dc != hdc) {
+        dirty = ps.rcPaint;
+        if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
+            dirty = rc;
+        BitBlt(hdc, dirty.left, dirty.top,
+               dirty.right - dirty.left, dirty.bottom - dirty.top,
+               dc, dirty.left, dirty.top, SRCCOPY);
     }
-    if (bmp) DeleteObject(bmp);
-    if (mem) DeleteDC(mem);
 
     EndPaint(hwnd, &ps);
 }
@@ -1011,7 +1354,27 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (wp == TIMER_SCAN_ID) {
             KillTimer(hwnd, TIMER_SCAN_ID);
-            if (g_scanning) finalize_scan();
+            if (!g_scanning) return 0;
+            if (g_scan_wait_first) {
+                finalize_scan();  // hard limit reached
+                return 0;
+            }
+            if (g_scan_list && g_scan_list->count > 0) {
+                finalize_scan();
+                return 0;
+            }
+            {
+                DWORD elapsed = GetTickCount() - g_scan_t0;
+                if (elapsed >= SCAN_HARD_LIMIT_MS) {
+                    finalize_scan();
+                } else {
+                    // Nothing yet: keep the status text and wait for the
+                    // first result, but not past the hard limit.
+                    g_scan_wait_first = TRUE;
+                    SetTimer(hwnd, TIMER_SCAN_ID,
+                             SCAN_HARD_LIMIT_MS - elapsed, NULL);
+                }
+            }
         }
         return 0;
     case WM_DISPLAYCHANGE:
@@ -1120,6 +1483,7 @@ static void reset_input(void)
 static void cancel_scan(void)
 {
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
+    g_scan_wait_first = FALSE;
     if (g_scanning) {
         g_scanning = FALSE;
         uia_cancel();
@@ -1130,7 +1494,7 @@ static void cancel_scan(void)
     }
 }
 
-static void start_scan(void)
+static void start_scan(BOOL repaint)
 {
     UINT ms;
 
@@ -1141,14 +1505,21 @@ static void start_scan(void)
         g_scan_list = NULL;
     }
     g_scanning = TRUE;
+    g_scan_wait_first = FALSE;
+    g_scan_grace = FALSE;
+    g_scan_t0 = GetTickCount();
     ++g_scan_id;
     uia_scan(g_mon, g_scan_id);
     if (g_hint_wnd) {
-        ms = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout : 1000u;
+        ms = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout
+                                    : SCAN_DEFAULT_MS;
+        if (ms > SCAN_HARD_LIMIT_MS) ms = SCAN_HARD_LIMIT_MS;
         SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
     }
-    invalidate();
-    if (g_hint_wnd) UpdateWindow(g_hint_wnd);
+    if (repaint) {
+        invalidate();
+        if (g_hint_wnd) UpdateWindow(g_hint_wnd);
+    }
 }
 
 static void enter_grid_mode(const WCHAR *notice)
@@ -1170,7 +1541,7 @@ static void start_element_mode(void)
     cancel_scan();
     free_elements();
     g_mode = HINT_MODE_ELEMENTS;
-    start_scan();
+    start_scan(TRUE);
 }
 
 static void replay_queue(void)
@@ -1193,6 +1564,7 @@ static void finalize_scan(void)
 
     g_scan_list = NULL;
     g_scanning = FALSE;
+    g_scan_wait_first = FALSE;
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
     uia_cancel();
 
@@ -1277,9 +1649,12 @@ static void element_key(UINT vk, UINT mods)
         if (g_prefix_len > 0) {
             --g_prefix_len;
             g_prefix[g_prefix_len] = 0;
+            g_flash = FALSE;
+            invalidate();
+        } else if (g_flash) {
+            g_flash = FALSE;
+            invalidate();
         }
-        g_flash = FALSE;
-        invalidate();
         return;
     }
     if (vk == VK_RETURN) {
@@ -1338,11 +1713,28 @@ static void sort_monitors(void)
 
 static BOOL show_on_monitor(void)
 {
+    RECT want;
+
     if (!g_hint_wnd) return FALSE;
-    return SetWindowPos(g_hint_wnd, HWND_TOPMOST,
-                        g_mon_rect.left, g_mon_rect.top,
-                        g_mon_w, g_mon_h,
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW) != FALSE;
+    want.left = g_mon_rect.left;
+    want.top = g_mon_rect.top;
+    want.right = g_mon_rect.left + g_mon_w;
+    want.bottom = g_mon_rect.top + g_mon_h;
+
+    if (g_last_show_valid && EqualRect(&want, &g_last_show)) {
+        // Already in place: skip the move/resize, but still raise it above
+        // topmost popups that opened since (Chrome menus are topmost).
+        return SetWindowPos(g_hint_wnd, HWND_TOPMOST, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                            SWP_SHOWWINDOW) != FALSE;
+    }
+    if (!SetWindowPos(g_hint_wnd, HWND_TOPMOST,
+                      want.left, want.top, g_mon_w, g_mon_h,
+                      SWP_NOACTIVATE | SWP_SHOWWINDOW))
+        return FALSE;
+    g_last_show = want;
+    g_last_show_valid = TRUE;
+    return TRUE;
 }
 
 static void cycle_monitor(UINT mods)
@@ -1380,8 +1772,7 @@ static void cycle_monitor(UINT mods)
 
     reset_input();
 
-    destroy_resources();
-    if (!create_resources()) {
+    if (!ensure_resources()) {
         hint_close();
         return;
     }
@@ -1391,10 +1782,9 @@ static void cycle_monitor(UINT mods)
     }
     SetLayeredWindowAttributes(g_hint_wnd, KEY_COLOR, g_cfg.opacity,
                                LWA_COLORKEY | LWA_ALPHA);
+    if (g_mode == HINT_MODE_ELEMENTS) start_scan(FALSE);
     InvalidateRect(g_hint_wnd, NULL, TRUE);
     UpdateWindow(g_hint_wnd);
-
-    if (g_mode == HINT_MODE_ELEMENTS) start_scan();
 }
 
 // ---------------------------------------------------------------------------
@@ -1442,6 +1832,7 @@ void hint_shutdown(void)
         if (g_open) hint_close();
         DestroyWindow(g_hint_wnd);
         g_hint_wnd = NULL;
+        g_last_show_valid = FALSE;
         UnregisterClassW(HINT_CLASS, g_hint_inst);
     }
     cancel_scan();
@@ -1449,6 +1840,8 @@ void hint_shutdown(void)
     reset_input();
     g_open = FALSE;
     destroy_resources();
+    free_back_buffer();
+    free_grid_cache();
 }
 
 static BOOL open_overlay(HMONITOR mon, int mode)
@@ -1463,7 +1856,7 @@ static BOOL open_overlay(HMONITOR mon, int mode)
     // Paint the scanning status straight away; start_scan() follows.
     g_scanning = (mode == HINT_MODE_ELEMENTS);
 
-    if (!create_resources()) {
+    if (!ensure_resources()) {
         g_scanning = FALSE;
         return FALSE;
     }
@@ -1476,7 +1869,6 @@ static BOOL open_overlay(HMONITOR mon, int mode)
         g_open = FALSE;
         g_scanning = FALSE;
         ShowWindow(g_hint_wnd, SW_HIDE);
-        destroy_resources();
         return FALSE;
     }
 
@@ -1518,7 +1910,7 @@ void hint_open(void)
     }
 
     if (mode == HINT_MODE_ELEMENTS)
-        start_scan();
+        start_scan(FALSE);
 }
 
 void hint_close(void)
@@ -1536,7 +1928,6 @@ void hint_close(void)
     free_elements();
     reset_input();
     g_open = FALSE;
-    destroy_resources();
     input_set_key_capture(FALSE);
 }
 
@@ -1673,7 +2064,23 @@ void hint_on_elements(ClickList *list)
     if (g_scan_list) free(g_scan_list);
     g_scan_list = list;
 
-    if (list->done) finalize_scan();
+    if (list->done) {
+        finalize_scan();
+    } else if (g_scan_wait_first && list->count > 0) {
+        // The first results arrived after the initial timeout: use them now.
+        finalize_scan();
+    } else if (list->count > 0 && !g_scan_grace && g_hint_wnd) {
+        // The foreground window is merged first. Give the other windows a
+        // short grace period instead of the full scan_timeout, so one slow
+        // background app cannot hold the labels back.
+        DWORD elapsed = GetTickCount() - g_scan_t0;
+        UINT limit = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout
+                                            : SCAN_DEFAULT_MS;
+        UINT ms = elapsed < limit ? limit - elapsed : 1;
+        if (ms > SCAN_GRACE_MS) ms = SCAN_GRACE_MS;
+        g_scan_grace = TRUE;
+        SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
+    }
 }
 
 void hint_hotkey_again(void)
