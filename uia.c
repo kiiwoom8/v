@@ -619,6 +619,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     ScanTarget *cands = NULL;
     int cand_count = 0, cand_cap = 0;
     int kept = 0;
+    BOOL *drop;
     IUIAutomationElement *root = NULL;
     IUIAutomationElementArray *array = NULL;
     int length = 0;
@@ -727,17 +728,35 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 
     // An element that holds the click points of two or more smaller targets
     // is a container (toolbar strip, row group), not something to click.
-    for (i = 0; i < cand_count; ++i) {
+    // Smaller targets that duplicate each other count once: Google wraps each
+    // result's menu button in a clickable element of the same size, and that
+    // pair alone must not turn the result link into a container. Containers
+    // are marked first and dropped after, so every check sees the full list.
+    drop = cand_count ? (BOOL *)calloc((size_t)cand_count, sizeof(*drop))
+                      : NULL;
+    for (i = 0; drop && i < cand_count; ++i) {
         LONG64 area = rect_area(&cands[i].target.rc);
-        int inner = 0, j;
+        int inner = 0, first = -1, j;
         for (j = 0; j < cand_count && inner < 2; ++j) {
-            if (j != i && rect_area(&cands[j].target.rc) < area &&
-                PtInRect(&cands[i].target.rc, cands[j].target.click))
-                ++inner;
+            const ClickTarget *t = &cands[j].target;
+            if (j == i || rect_area(&t->rc) >= area ||
+                !PtInRect(&cands[i].target.rc, t->click))
+                continue;
+            if (first >= 0 &&
+                rects_duplicate(&cands[first].target.rc,
+                                cands[first].target.click, &t->rc, t->click))
+                continue;
+            if (first < 0)
+                first = j;
+            ++inner;
         }
-        if (inner < 2)
+        drop[i] = inner >= 2;
+    }
+    for (i = 0; i < cand_count; ++i) {
+        if (!drop || !drop[i])
             cands[kept++] = cands[i];
     }
+    free(drop);
     out->items = cands;
     out->count = kept;
     out->cap = cand_cap;
