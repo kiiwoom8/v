@@ -635,8 +635,10 @@ static void caps_key_down(void)
         s_caps_exit_on_release = FALSE;
         enter_mouse_mode();
     } else {
+        // Leave on the press, not the release, so turning it off is instant.
         s_caps_enter = FALSE;
-        s_caps_exit_on_release = TRUE;
+        s_caps_exit_on_release = FALSE;
+        leave_mouse_mode();
     }
 }
 
