@@ -18,8 +18,6 @@
 #define VK_F24 0x87
 #endif
 
-Config g_cfg;
-
 static WCHAR g_exe_ini[32768];
 static BOOL  g_exe_ini_ready = FALSE;
 static WCHAR g_warnings[4096];
