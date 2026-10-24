@@ -1,0 +1,78 @@
+name: Release
+
+# Builds vim.exe and publishes it to GitHub Releases.
+# - push to master / manual run: refreshes the rolling "latest" release
+# - push of a v* tag: publishes a release for that tag
+# Direct download: https://github.com/kiiwoom8/v/releases/latest/download/vim.exe
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: mingw-w64-i686-gcc mingw-w64-i686-make zip
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          mingw32-make
+          test -f vim.exe
+
+      - name: Package
+        shell: msys2 {0}
+        run: zip vim-mouse.zip vim.exe build.bat README.md
+
+      - name: Move the latest tag to this commit
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Publish rolling release
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Built from ${{ github.sha }}.
+
+            Download [vim.exe](https://github.com/${{ github.repository }}/releases/latest/download/vim.exe) and run it, or get `vim-mouse.zip` (exe, `build.bat`, README).
+          prerelease: false
+          make_latest: true
+          files: |
+            vim.exe
+            build.bat
+            vim-mouse.zip
+
+      - name: Publish tagged release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            vim.exe
+            build.bat
+            vim-mouse.zip
