@@ -586,6 +586,11 @@ static BOOL lazy_tree_window(HWND hwnd)
            wcscmp(cls, L"MozillaWindowClass") == 0;
 }
 
+// Optional observer for candidates scan_window_uia rejects (hint_check.c).
+// NULL in the app, so the only cost there is the pointer test.
+static void (*g_scan_debug)(const RECT *rc, int control_type,
+                            const WCHAR *reason);
+
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
                             ScanResult *out);
@@ -679,24 +684,51 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         }
 
         orig_area = rect_area(&rc);
-        if (orig_area <= 0 || control_type == UIA_ScrollBarControlTypeId ||
-            inside_any(scrollbars, scrollbar_count, &rc) ||
-            !IntersectRect(&clip, &rc, monitor)) {
+        if (orig_area <= 0) {
+            if (g_scan_debug)
+                g_scan_debug(&rc, control_type, L"zero area");
+            el->lpVtbl->Release(el);
+            continue;
+        }
+        if (control_type == UIA_ScrollBarControlTypeId ||
+            inside_any(scrollbars, scrollbar_count, &rc)) {
+            if (g_scan_debug)
+                g_scan_debug(&rc, control_type, L"scrollbar");
+            el->lpVtbl->Release(el);
+            continue;
+        }
+        if (!IntersectRect(&clip, &rc, monitor)) {
+            if (g_scan_debug)
+                g_scan_debug(&rc, control_type, L"off monitor");
             el->lpVtbl->Release(el);
             continue;
         }
 
         clip_area = rect_area(&clip);
         monitor_area = rect_area(monitor);
-        if (clip.right - clip.left < 4 || clip.bottom - clip.top < 4 ||
-            (monitor_area > 0 && clip_area * 100 > monitor_area * 40) ||
-            clip_area * 2 < orig_area) {
+        if (clip.right - clip.left < 4 || clip.bottom - clip.top < 4) {
+            if (g_scan_debug)
+                g_scan_debug(&clip, control_type, L"too small");
+            el->lpVtbl->Release(el);
+            continue;
+        }
+        if (monitor_area > 0 && clip_area * 100 > monitor_area * 40) {
+            if (g_scan_debug)
+                g_scan_debug(&clip, control_type, L"too large");
+            el->lpVtbl->Release(el);
+            continue;
+        }
+        if (clip_area * 2 < orig_area) {
+            if (g_scan_debug)
+                g_scan_debug(&clip, control_type, L"mostly off monitor");
             el->lpVtbl->Release(el);
             continue;
         }
 
         click = choose_click_point(zrects, z, &clip);
         if (click.x < 0 && click.y < 0) {
+            if (g_scan_debug)
+                g_scan_debug(&clip, control_type, L"hidden");
             el->lpVtbl->Release(el);
             continue;
         }
@@ -753,8 +785,12 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         drop[i] = inner >= 2;
     }
     for (i = 0; i < cand_count; ++i) {
-        if (!drop || !drop[i])
+        if (!drop || !drop[i]) {
             cands[kept++] = cands[i];
+        } else if (g_scan_debug) {
+            g_scan_debug(&cands[i].target.rc, cands[i].control_type,
+                         L"container");
+        }
     }
     free(drop);
     out->items = cands;

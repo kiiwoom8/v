@@ -19,9 +19,16 @@ probe: tools/uia_probe.exe
 tools/uia_probe.exe: tools/uia_probe.c uia.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/uia_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid
 
+# Console tool that compares Chrome's DOM with what the scan finds (hint_check.mjs)
+check: tools/hint_check.exe
+
+tools/hint_check.exe: tools/hint_check.c uia.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/hint_check.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid
+
 clean:
 	-@del /Q $(TARGET) 2>nul || true
 	-@del /Q *.o 2>nul || true
 	-@del /Q tools\uia_probe.exe 2>nul || true
+	-@del /Q tools\hint_check.exe 2>nul || true
 
-.PHONY: all clean probe
+.PHONY: all clean probe check
