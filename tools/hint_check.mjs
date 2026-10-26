@@ -24,7 +24,9 @@ const DEFAULT_URLS = [
   'https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button',
   'https://www.amazon.com/s?k=mechanical+keyboard',
   'https://www.bbc.com/news',
-  'https://www.naver.com/'
+  'https://www.naver.com/',
+  'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+  'https://gall.dcinside.com/board/lists/?id=programming'
 ];
 
 function sleep(ms) {

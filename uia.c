@@ -88,6 +88,9 @@
 #ifndef UIA_DataItemControlTypeId
 #define UIA_DataItemControlTypeId 50029
 #endif
+#ifndef UIA_DocumentControlTypeId
+#define UIA_DocumentControlTypeId 50030
+#endif
 #ifndef UIA_SplitButtonControlTypeId
 #define UIA_SplitButtonControlTypeId 50031
 #endif
@@ -204,7 +207,8 @@ typedef struct IUIAutomationElementVtbl {
     void *BuildUpdatedCache;
     void *GetCurrentPropertyValue;
     void *GetCurrentPropertyValueEx;
-    void *GetCachedPropertyValue;
+    HRESULT (STDMETHODCALLTYPE *GetCachedPropertyValue)(
+        IUIAutomationElement *This, int propertyId, VARIANT *retVal);
     void *GetCachedPropertyValueEx;
     void *GetCurrentPatternAs;
     void *GetCachedPatternAs;
@@ -362,6 +366,7 @@ typedef struct {
 typedef struct {
     ClickTarget target;
     int control_type;
+    BOOL actionable;
     WCHAR name[128];
 } ScanTarget;
 
@@ -435,6 +440,29 @@ static BOOL rects_duplicate(const RECT *a, POINT click_a,
     if (inter > 0 && uni > 0 && inter * 10 > uni * 7)
         return TRUE;
     return click_points_close(click_a, click_b);
+}
+
+static BOOL cached_bool_property(IUIAutomationElement *el, int property_id)
+{
+    VARIANT v;
+    BOOL value = FALSE;
+
+    VariantInit(&v);
+    if (SUCCEEDED(el->lpVtbl->GetCachedPropertyValue(el, property_id, &v)) &&
+        v.vt == VT_BOOL && v.boolVal != VARIANT_FALSE)
+        value = TRUE;
+    VariantClear(&v);
+    return value;
+}
+
+static BOOL element_actionable(IUIAutomationElement *el)
+{
+    return cached_bool_property(el, UIA_IsInvokePatternAvailablePropertyId) ||
+           cached_bool_property(el, UIA_IsTogglePatternAvailablePropertyId) ||
+           cached_bool_property(
+               el, UIA_IsSelectionItemPatternAvailablePropertyId) ||
+           cached_bool_property(
+               el, UIA_IsExpandCollapsePatternAvailablePropertyId);
 }
 
 typedef struct {
@@ -535,6 +563,56 @@ static BOOL inside_any(const RECT *rects, int count, const RECT *rc)
     return FALSE;
 }
 
+// A kept clickable card must not click its own inner targets (title, menu
+// button), so try points that stay on the free part of the card.
+static POINT choose_outer_click_point(const ScanTarget *cands, int count,
+                                      int self, const RECT *zrects, int z)
+{
+    const RECT *rc = &cands[self].target.rc;
+    LONG w = rc->right - rc->left;
+    LONG h = rc->bottom - rc->top;
+    LONG64 area = rect_area(rc);
+    POINT pts[9];
+    int i, j;
+
+    pts[0].x = rc->left + w / 2;
+    pts[0].y = rc->top + h / 2;
+    pts[1].x = rc->left + w / 4;
+    pts[1].y = rc->top + h / 4;
+    pts[2].x = rc->left + (3 * w) / 4;
+    pts[2].y = rc->top + h / 4;
+    pts[3].x = rc->left + w / 4;
+    pts[3].y = rc->top + (3 * h) / 4;
+    pts[4].x = rc->left + (3 * w) / 4;
+    pts[4].y = rc->top + (3 * h) / 4;
+    pts[5].x = rc->left + w / 2;
+    pts[5].y = rc->top + h / 4;
+    pts[6].x = rc->left + w / 2;
+    pts[6].y = rc->top + (3 * h) / 4;
+    pts[7].x = rc->left + w / 4;
+    pts[7].y = rc->top + h / 2;
+    pts[8].x = rc->left + (3 * w) / 4;
+    pts[8].y = rc->top + h / 2;
+
+    for (i = 0; i < 9; ++i) {
+        BOOL clear = TRUE;
+        if (!PtInRect(rc, pts[i]) || !point_visible(zrects, z, pts[i]))
+            continue;
+        for (j = 0; j < count; ++j) {
+            if (j == self || rect_area(&cands[j].target.rc) >= area ||
+                !PtInRect(rc, cands[j].target.click))
+                continue;
+            if (PtInRect(&cands[j].target.rc, pts[i])) {
+                clear = FALSE;
+                break;
+            }
+        }
+        if (clear)
+            return pts[i];
+    }
+    return cands[self].target.click;
+}
+
 // Apps that answer UI Automation very slowly with next to nothing (games,
 // custom-drawn UIs) are skipped for a while, so the hints fall back to the
 // grid at once instead of stalling for seconds on every open.
@@ -621,10 +699,13 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     // Scroll bars and their arrow/page buttons are not worth a label.
     RECT scrollbars[64];
     int scrollbar_count = 0;
+    RECT documents[16];
+    int document_count = 0;
     ScanTarget *cands = NULL;
     int cand_count = 0, cand_cap = 0;
     int kept = 0;
     BOOL *drop;
+    POINT *new_click;
     IUIAutomationElement *root = NULL;
     IUIAutomationElementArray *array = NULL;
     int length = 0;
@@ -649,16 +730,23 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     if (FAILED(array->lpVtbl->get_Length(array, &length)) || length < 0)
         length = 0;
 
-    for (i = 0; i < length && scrollbar_count < 64; ++i) {
+    for (i = 0; i < length; ++i) {
         IUIAutomationElement *el = NULL;
         int control_type = 0;
         if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
             continue;
-        if (SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type)) &&
-            control_type == UIA_ScrollBarControlTypeId &&
-            SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(
-                el, &scrollbars[scrollbar_count])))
-            ++scrollbar_count;
+        if (SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
+            if (control_type == UIA_ScrollBarControlTypeId &&
+                scrollbar_count < 64 &&
+                SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(
+                    el, &scrollbars[scrollbar_count])))
+                ++scrollbar_count;
+            else if (control_type == UIA_DocumentControlTypeId &&
+                     document_count < 16 &&
+                     SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(
+                         el, &documents[document_count])))
+                ++document_count;
+        }
         el->lpVtbl->Release(el);
     }
 
@@ -679,6 +767,13 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 
         if (FAILED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc)) ||
             FAILED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
+            el->lpVtbl->Release(el);
+            continue;
+        }
+
+        if (control_type == UIA_DocumentControlTypeId) {
+            if (g_scan_debug)
+                g_scan_debug(&rc, control_type, L"document");
             el->lpVtbl->Release(el);
             continue;
         }
@@ -706,6 +801,37 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 
         clip_area = rect_area(&clip);
         monitor_area = rect_area(monitor);
+        if (clip_area * 2 < orig_area) {
+            if (g_scan_debug)
+                g_scan_debug(&clip, control_type, L"mostly off monitor");
+            el->lpVtbl->Release(el);
+            continue;
+        }
+
+        // Chrome reports unclipped page rects: clip page elements to the
+        // Document so a click point cannot land on the browser toolbar.
+        {
+            const RECT *best_doc = NULL;
+            LONG64 best_area = 0;
+            int d;
+            for (d = 0; d < document_count; ++d) {
+                RECT doc_mon;
+                RECT inter;
+                LONG64 area;
+                if (!IntersectRect(&doc_mon, &documents[d], monitor) ||
+                    !IntersectRect(&inter, &rc, &documents[d]))
+                    continue;
+                area = rect_area(&doc_mon);
+                if (area > best_area) {
+                    best_area = area;
+                    best_doc = &documents[d];
+                }
+            }
+            if (best_doc)
+                IntersectRect(&clip, &clip, best_doc);
+        }
+
+        clip_area = rect_area(&clip);
         if (clip.right - clip.left < 4 || clip.bottom - clip.top < 4) {
             if (g_scan_debug)
                 g_scan_debug(&clip, control_type, L"too small");
@@ -718,12 +844,6 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
             el->lpVtbl->Release(el);
             continue;
         }
-        if (clip_area * 2 < orig_area) {
-            if (g_scan_debug)
-                g_scan_debug(&clip, control_type, L"mostly off monitor");
-            el->lpVtbl->Release(el);
-            continue;
-        }
 
         click = choose_click_point(zrects, z, &clip);
         if (click.x < 0 && click.y < 0) {
@@ -733,6 +853,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
             continue;
         }
 
+        target.actionable = element_actionable(el);
         target.name[0] = 0;
         if (engine->with_names) {
             if (SUCCEEDED(el->lpVtbl->get_CachedName(el, &name)) && name)
@@ -758,40 +879,69 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     }
     array->lpVtbl->Release(array);
 
-    // An element that holds the click points of two or more smaller targets
-    // is a container (toolbar strip, row group), not something to click.
+    // An element holding the click points of smaller targets is a container
+    // (toolbar strip, row group), not something to click. A plain row or cell
+    // (li/td) around its whole link is not worth a second label at the same
+    // spot, but an actionable card can be: YouTube's video card exposes
+    // Invoke and holds the title link and menu button, while the thumbnail is
+    // only clickable through the card. So keep inner == 0; for an actionable
+    // element keep inner == 1, or inner >= 2 when enough of it is free; for a
+    // non-actionable element keep only inner == 1 with mostly free space.
     // Smaller targets that duplicate each other count once: Google wraps each
     // result's menu button in a clickable element of the same size, and that
-    // pair alone must not turn the result link into a container. Containers
-    // are marked first and dropped after, so every check sees the full list.
+    // pair alone must not turn the result link into a container. Decisions and
+    // new click points use the original points and are applied afterwards.
     drop = cand_count ? (BOOL *)calloc((size_t)cand_count, sizeof(*drop))
                       : NULL;
-    for (i = 0; drop && i < cand_count; ++i) {
-        LONG64 area = rect_area(&cands[i].target.rc);
-        int inner = 0, first = -1, j;
-        for (j = 0; j < cand_count && inner < 2; ++j) {
-            const ClickTarget *t = &cands[j].target;
-            if (j == i || rect_area(&t->rc) >= area ||
-                !PtInRect(&cands[i].target.rc, t->click))
-                continue;
-            if (first >= 0 &&
-                rects_duplicate(&cands[first].target.rc,
-                                cands[first].target.click, &t->rc, t->click))
-                continue;
-            if (first < 0)
-                first = j;
-            ++inner;
+    new_click = cand_count ? (POINT *)malloc((size_t)cand_count *
+                                             sizeof(*new_click))
+                           : NULL;
+    if (drop && new_click) {
+        for (i = 0; i < cand_count; ++i) {
+            LONG64 area = rect_area(&cands[i].target.rc);
+            LONG64 covered = 0;
+            int inner = 0, first = -1, j;
+            for (j = 0; j < cand_count; ++j) {
+                const ClickTarget *t = &cands[j].target;
+                if (j == i || rect_area(&t->rc) >= area ||
+                    !PtInRect(&cands[i].target.rc, t->click))
+                    continue;
+                if (first >= 0 &&
+                    rects_duplicate(&cands[first].target.rc,
+                                    cands[first].target.click, &t->rc,
+                                    t->click))
+                    continue;
+                if (first < 0)
+                    first = j;
+                ++inner;
+                covered += rect_intersection_area(
+                    &t->rc, &cands[i].target.rc);
+            }
+            if (inner == 0)
+                drop[i] = FALSE;
+            else if (cands[i].actionable)
+                drop[i] = !(inner == 1 || covered * 2 < area);
+            else
+                drop[i] = !(inner == 1 && covered * 4 < area);
+
+            new_click[i] = cands[i].target.click;
+            if (!drop[i] && inner > 0)
+                new_click[i] = choose_outer_click_point(
+                    cands, cand_count, i, zrects, z);
+            if (drop[i] && g_scan_debug)
+                g_scan_debug(&cands[i].target.rc, cands[i].control_type,
+                             inner >= 2 ? L"container" : L"wrapper");
         }
-        drop[i] = inner >= 2;
     }
     for (i = 0; i < cand_count; ++i) {
         if (!drop || !drop[i]) {
-            cands[kept++] = cands[i];
-        } else if (g_scan_debug) {
-            g_scan_debug(&cands[i].target.rc, cands[i].control_type,
-                         L"container");
+            cands[kept] = cands[i];
+            if (drop && new_click)
+                cands[kept].target.click = new_click[i];
+            ++kept;
         }
     }
+    free(new_click);
     free(drop);
     out->items = cands;
     out->count = kept;
@@ -1415,7 +1565,8 @@ static BOOL uia_build_condition(UiaEngine *engine)
         UIA_DataItemControlTypeId,
         UIA_SplitButtonControlTypeId,
         UIA_HeaderItemControlTypeId,
-        UIA_ScrollBarControlTypeId   // fetched only to drop its buttons
+        UIA_ScrollBarControlTypeId,   // fetched only to drop its buttons
+        UIA_DocumentControlTypeId     // fetched only to clip page elements
     };
     IUIAutomationCondition *off;
     IUIAutomationCondition *enabled;
@@ -1507,6 +1658,22 @@ static BOOL uia_build_cache(UiaEngine *engine, BOOL with_names)
         return FALSE;
     hr = engine->cache->lpVtbl->AddProperty(
         engine->cache, UIA_ControlTypePropertyId);
+    if (FAILED(hr))
+        return FALSE;
+    hr = engine->cache->lpVtbl->AddProperty(
+        engine->cache, UIA_IsInvokePatternAvailablePropertyId);
+    if (FAILED(hr))
+        return FALSE;
+    hr = engine->cache->lpVtbl->AddProperty(
+        engine->cache, UIA_IsTogglePatternAvailablePropertyId);
+    if (FAILED(hr))
+        return FALSE;
+    hr = engine->cache->lpVtbl->AddProperty(
+        engine->cache, UIA_IsSelectionItemPatternAvailablePropertyId);
+    if (FAILED(hr))
+        return FALSE;
+    hr = engine->cache->lpVtbl->AddProperty(
+        engine->cache, UIA_IsExpandCollapsePatternAvailablePropertyId);
     if (FAILED(hr))
         return FALSE;
     if (with_names) {
