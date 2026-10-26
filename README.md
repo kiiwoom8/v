@@ -11,16 +11,14 @@ in the background with no console window, is configured by a plain-text
 
 ## Quick start
 
-1. Install MinGW (32-bit) and make sure `mingw32-make` is on `PATH`.
-2. Build:
-
-   ```
-   mingw32-make
-   ```
-
-3. Run `vim.exe`. Look for the mouse icon in the notification area (it may be
+1. Download [vim.exe](https://github.com/kiiwoom8/v/releases/latest/download/vim.exe)
+   from the latest release (or
+   [vim-mouse.zip](https://github.com/kiiwoom8/v/releases/latest/download/vim-mouse.zip)
+   with `build.bat` and this README). To build from source instead, install
+   MinGW (32-bit) and double-click `build.bat` (or run `mingw32-make`).
+2. Run `vim.exe`. Look for the mouse icon in the notification area (it may be
    hidden under the "^" arrow).
-4. The first run creates `vim.ini` next to `vim.exe`. Edit it, save, and the
+3. The first run creates `vim.ini` next to `vim.exe`. Edit it, save, and the
    changes apply immediately.
 
 ## Keys
@@ -188,6 +186,12 @@ Use MinGW.org GCC 6.3 (32-bit, `C:\MinGW\bin\gcc`). From the source directory:
 ```
 mingw32-make
 ```
+
+or double-click `build.bat`, which finds MinGW in `C:\MinGW` or `C:\msys64\mingw32`
+and falls back to calling `gcc` directly. Every push to `master` rebuilds
+`vim.exe` on GitHub Actions and publishes it to the
+[latest release](https://github.com/kiiwoom8/v/releases/latest); pushing a `v*`
+tag publishes a versioned release.
 
 The build uses `-std=gnu11` and `-mwindows`. Source layout:
 
