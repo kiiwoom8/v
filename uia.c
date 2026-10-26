@@ -455,8 +455,16 @@ static BOOL cached_bool_property(IUIAutomationElement *el, int property_id)
     return value;
 }
 
-static BOOL element_actionable(IUIAutomationElement *el)
+// List, table and tree items are fetched by type alone. Without a pattern
+// they are only the box around a link or button (a web li or td); every
+// other candidate is clickable in its own right.
+static BOOL element_actionable(IUIAutomationElement *el, int control_type)
 {
+    if (control_type != UIA_ListItemControlTypeId &&
+        control_type != UIA_DataItemControlTypeId &&
+        control_type != UIA_TreeItemControlTypeId &&
+        control_type != UIA_HeaderItemControlTypeId)
+        return TRUE;
     return cached_bool_property(el, UIA_IsInvokePatternAvailablePropertyId) ||
            cached_bool_property(el, UIA_IsTogglePatternAvailablePropertyId) ||
            cached_bool_property(
@@ -750,6 +758,18 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         el->lpVtbl->Release(el);
     }
 
+    // A frame's Document is unclipped too and can reach past its page.
+    // FindAll lists elements in tree order, so an earlier Document it
+    // overlaps is the page around it.
+    for (i = 1; i < document_count; ++i) {
+        int d;
+        for (d = 0; d < i; ++d) {
+            RECT inter;
+            if (IntersectRect(&inter, &documents[i], &documents[d]))
+                documents[i] = inter;
+        }
+    }
+
     for (i = 0; i < length; ++i) {
         IUIAutomationElement *el = NULL;
         RECT rc;
@@ -853,7 +873,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
             continue;
         }
 
-        target.actionable = element_actionable(el);
+        target.actionable = element_actionable(el, control_type);
         target.name[0] = 0;
         if (engine->with_names) {
             if (SUCCEEDED(el->lpVtbl->get_CachedName(el, &name)) && name)
@@ -886,7 +906,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     // Invoke and holds the title link and menu button, while the thumbnail is
     // only clickable through the card. So keep inner == 0; for an actionable
     // element keep inner == 1, or inner >= 2 when enough of it is free; for a
-    // non-actionable element keep only inner == 1 with mostly free space.
+    // plain list or table item keep only inner == 1 with mostly free space.
     // Smaller targets that duplicate each other count once: Google wraps each
     // result's menu button in a clickable element of the same size, and that
     // pair alone must not turn the result link into a container. Decisions and

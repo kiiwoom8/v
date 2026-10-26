@@ -170,6 +170,10 @@ Left- or right-click the tray icon:
   their accessibility tree only when first asked. vim mouse asks each window
   you switch to in the background, so this only happens in a window that was
   already active when vim mouse started; press `Esc` and open the hints again.
+- **A web page element gets no label.** With Node and Chrome installed,
+  `mingw32-make check` builds `tools\hint_check.exe` and
+  `node tools\hint_check.mjs [url ...]` opens each page in a separate Chrome
+  profile and lists the clickable elements the scan misses, with the reason.
 - **I need the real CapsLock.** vim mouse intercepts CapsLock; use
   `Shift+CapsLock` when you really want the CapsLock state.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
