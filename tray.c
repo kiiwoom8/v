@@ -77,6 +77,7 @@ static int     g_help_footer_h;
 static int     g_help_hint_y;
 
 static void help_close(void);
+static void startup_repair(void);
 
 // ---------------------------------------------------------------------------
 // Small string helpers
@@ -336,6 +337,7 @@ void tray_init(HWND main_wnd)
     g_icons[0] = create_icon(58, 58, 60, 255);     // normal, dark grey
     g_icons[1] = create_icon(45, 127, 249, 255);   // mouse mode, blue
     g_icons[2] = create_icon(138, 138, 138, 255);  // paused, faded grey
+    startup_repair();
     tray_add();
 }
 
@@ -432,27 +434,63 @@ void tray_balloon(const WCHAR *title, const WCHAR *text)
 // ---------------------------------------------------------------------------
 // Start with Windows
 
+#define RUN_VALUE_MAX 2048
+
+static BOOL current_exe(WCHAR *buf, int cch)
+{
+    DWORD n = GetModuleFileNameW(NULL, buf, (DWORD)cch);
+
+    return n != 0 && n < (DWORD)cch;
+}
+
 static BOOL quoted_exe(WCHAR *buf, int cch)
 {
     WCHAR path[MAX_PATH];
-    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
 
-    if (n == 0 || n >= MAX_PATH)
+    if (cch <= 0 || !current_exe(path, MAX_PATH))
         return FALSE;
     _snwprintf(buf, cch - 1, L"\"%s\"", path);
     buf[cch - 1] = L'\0';
     return TRUE;
 }
 
+// Extracts the program path from a Run value: "C:\path\vim.exe" [args], or an
+// unquoted path. An unquoted value cannot contain spaces unambiguously, so it
+// ends at the first one.
+static BOOL run_value_path(const WCHAR *value, WCHAR *path, int cch)
+{
+    const WCHAR *p = value;
+    int n = 0;
+
+    while (*p == L' ' || *p == L'\t')
+        p++;
+    if (*p == L'"') {
+        p++;
+        while (p[n] && p[n] != L'"')
+            n++;
+    } else {
+        while (p[n] && p[n] != L' ' && p[n] != L'\t')
+            n++;
+    }
+    if (n == 0 || cch <= 0)
+        return FALSE;
+    if (n >= cch)
+        n = cch - 1;
+    memcpy(path, p, (size_t)n * sizeof(WCHAR));
+    path[n] = L'\0';
+    return TRUE;
+}
+
 static BOOL startup_enabled(void)
 {
     HKEY    key;
-    WCHAR   want[MAX_PATH + 4];
-    WCHAR   got[MAX_PATH + 8];
+    WCHAR   exe[MAX_PATH];
+    WCHAR   got[RUN_VALUE_MAX];
+    WCHAR   path[RUN_VALUE_MAX];
     DWORD   type = 0, size = (DWORD)sizeof(got);
     LONG    rc;
 
-    if (!quoted_exe(want, MAX_PATH + 4))
+    if (!current_exe(exe, MAX_PATH))
         return FALSE;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &key) !=
         ERROR_SUCCESS)
@@ -462,7 +500,46 @@ static BOOL startup_enabled(void)
     if (rc != ERROR_SUCCESS || type != REG_SZ)
         return FALSE;
     got[(sizeof(got) / sizeof(WCHAR)) - 1] = L'\0';
-    return wcscmp(got, want) == 0;
+    if (!run_value_path(got, path, RUN_VALUE_MAX))
+        return FALSE;
+    return lstrcmpiW(path, exe) == 0;
+}
+
+// A moved vim.exe leaves the Run value pointing at a file that no longer
+// exists, so Windows tries to start it at every login. Repair only that case:
+// another existing exe may be a second copy that owns the value.
+static void startup_repair(void)
+{
+    HKEY  key;
+    WCHAR value[RUN_VALUE_MAX];
+    WCHAR path[RUN_VALUE_MAX];
+    WCHAR want[MAX_PATH + 4];
+    DWORD type = 0, size = (DWORD)sizeof(value);
+    LONG  rc;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0,
+                      KEY_QUERY_VALUE | KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+        return;
+    rc = RegQueryValueExW(key, APP_NAME, NULL, &type, (BYTE *)value, &size);
+    if (rc != ERROR_SUCCESS || type != REG_SZ) {
+        RegCloseKey(key);
+        return;
+    }
+    value[(sizeof(value) / sizeof(WCHAR)) - 1] = L'\0';
+    if (!run_value_path(value, path, RUN_VALUE_MAX) ||
+        GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+        RegCloseKey(key);
+        return;
+    }
+    if (!quoted_exe(want, MAX_PATH + 4)) {
+        RegCloseKey(key);
+        return;
+    }
+    rc = RegSetValueExW(key, APP_NAME, 0, REG_SZ, (const BYTE *)want,
+                        (DWORD)((wcslen(want) + 1) * sizeof(WCHAR)));
+    RegCloseKey(key);
+    app_log(L"startup: repaired stale Run value pointing at %s (%ld)", path,
+            rc);
 }
 
 static void toggle_startup(void)
