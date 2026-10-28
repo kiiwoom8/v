@@ -289,7 +289,14 @@ and falls back to calling `gcc` directly. Every push to `master` rebuilds
 [latest release](https://github.com/kiiwoom8/v/releases/latest); pushing a `v*`
 tag publishes a versioned release.
 
-The build uses `-std=gnu11` and `-mwindows`. Source layout:
+The build uses `-std=gnu11` and `-mwindows`. The version lives in `version.h`;
+`vim.rc` embeds the icon (`vim.ico`), the manifest (`vim.manifest`, which brings
+in Common Controls v6, per-monitor DPI and the supported Windows versions) and
+the version info. Regenerate the icon with `mingw32-make icon` after changing
+its drawing code. A GitHub Actions build check (`build.yml`) compiles 32-bit and
+64-bit with `-Werror` on every branch except `master` and on pull requests.
+
+Source layout:
 
 - `main.c` - entry point, single instance, DPI awareness, main window, message
   routing, settings watcher, logging
@@ -301,3 +308,5 @@ The build uses `-std=gnu11` and `-mwindows`. Source layout:
 - `tray.c` - tray icon and menu, help window, start with Windows
 - `snippet.c` - text shortcut editor window
 - `common.h` - shared contract between modules
+- `version.h` - version numbers and strings, shared by the code and `vim.rc`
+- `vim.rc`, `vim.manifest`, `vim.ico` - icon, manifest and version resources

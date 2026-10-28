@@ -4,6 +4,7 @@
 #define _WIN32_IE 0x0601
 #endif
 #include "common.h"
+#include "version.h"
 
 #include <basetyps.h>
 #include <shellapi.h>
@@ -14,6 +15,9 @@
 
 #define TRAY_ICON_ID   1
 #define HELP_CLASS     L"VimMouseHelpWindow"
+
+static const WCHAR HELP_TITLE[] =
+    L"vim mouse " VIM_VERSION_STR L" - keyboard shortcuts";
 
 #define IDM_HINTS      1001
 #define IDM_MOUSE      1002
@@ -826,9 +830,8 @@ static void help_paint(HWND hwnd)
 
     SelectObject(mem, g_help_title_font);
     SetTextColor(mem, RGB(255, 255, 255));
-    TextOutW(mem, g_help_pad, g_help_pad,
-             L"vim mouse - keyboard shortcuts",
-             (int)wcslen(L"vim mouse - keyboard shortcuts"));
+    TextOutW(mem, g_help_pad, g_help_pad, HELP_TITLE,
+             (int)wcslen(HELP_TITLE));
 
     for (i = 0; i < g_help_row_count; i++) {
         HelpRow *r = &g_help_rows[i];
@@ -909,6 +912,10 @@ static BOOL help_register_class(void)
     wc.lpfnWndProc   = help_wnd_proc;
     wc.hInstance     = g_hinst;
     wc.hCursor       = LoadCursorW(NULL, IDC_ARROW);
+    wc.hIcon         = app_load_icon(GetSystemMetrics(SM_CXICON),
+                                     GetSystemMetrics(SM_CYICON));
+    wc.hIconSm       = app_load_icon(GetSystemMetrics(SM_CXSMICON),
+                                     GetSystemMetrics(SM_CYSMICON));
     wc.lpszClassName = HELP_CLASS;
     if (!RegisterClassExW(&wc))
         return FALSE;
@@ -968,8 +975,7 @@ static void help_open(void)
 
     dc = GetDC(NULL);
     old = (HFONT)SelectObject(dc, g_help_body_font);
-    titlew = text_width(dc, g_help_title_font,
-                        L"vim mouse - keyboard shortcuts");
+    titlew = text_width(dc, g_help_title_font, HELP_TITLE);
     for (i = 0; i < g_help_row_count; i++) {
         HelpRow *r = &g_help_rows[i];
         int w;
@@ -1045,7 +1051,7 @@ static void help_open(void)
         yy = work.top;
 
     g_help_wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                                 HELP_CLASS, L"vim mouse - keyboard shortcuts",
+                                 HELP_CLASS, HELP_TITLE,
                                  WS_POPUP, x, yy, width, height, NULL, NULL,
                                  g_hinst, NULL);
     if (!g_help_wnd) {

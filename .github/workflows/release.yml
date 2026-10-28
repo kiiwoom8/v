@@ -35,7 +35,7 @@ jobs:
 
       - name: Build
         run: |
-          make CC=i686-w64-mingw32-gcc
+          make CC=i686-w64-mingw32-gcc WINDRES=i686-w64-mingw32-windres
           test -f vim.exe
 
       - name: Package

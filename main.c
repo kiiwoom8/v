@@ -120,6 +120,9 @@ typedef HRESULT (WINAPI *GetDpiForMonitorFn)(HMONITOR, int, UINT *, UINT *);
 #define DPI_CTX_PER_MONITOR_V2 ((HANDLE)-4)
 #define MDT_EFFECTIVE_DPI 0
 
+// The manifest normally sets the awareness before this runs, so every call
+// here fails with ERROR_ACCESS_DENIED / E_ACCESSDENIED. That is expected; this
+// is only the fallback for an older host that ignores the manifest.
 static void set_dpi_awareness(void)
 {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -188,6 +191,12 @@ UINT dpi_for_monitor(HMONITOR mon)
         }
         return dpi ? dpi : 96;
     }
+}
+
+HICON app_load_icon(int cx, int cy)
+{
+    return (HICON)LoadImageW(g_hinst, MAKEINTRESOURCEW(APP_ICON_ID),
+                             IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR);
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +479,10 @@ int main(void)
     wc.lpfnWndProc   = main_wnd_proc;
     wc.hInstance     = g_hinst;
     wc.hCursor       = LoadCursorW(NULL, IDC_ARROW);
-    wc.hIcon         = LoadIconW(NULL, IDI_APPLICATION);
+    wc.hIcon         = app_load_icon(GetSystemMetrics(SM_CXICON),
+                                     GetSystemMetrics(SM_CYICON));
+    wc.hIconSm       = app_load_icon(GetSystemMetrics(SM_CXSMICON),
+                                     GetSystemMetrics(SM_CYSMICON));
     wc.lpszClassName = MAIN_WND_CLASS;
     if (!RegisterClassExW(&wc)) {
         app_log(L"main: RegisterClassEx failed (%lu)", GetLastError());
