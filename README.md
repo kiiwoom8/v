@@ -30,6 +30,7 @@ in the background with no console window, is configured by a plain-text
 | `Alt+F` | Open click hints on the monitor under the cursor; press again to rescan |
 | `Alt+h` / `Alt+j` / `Alt+k` / `Alt+l` | Scroll left / down / up / right, anywhere (tap = one notch, hold = continuous) |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
+| `Alt+u u` / `Alt+d d` | Scroll to the top / bottom (two quick taps) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
@@ -200,7 +201,9 @@ ones:
 - `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
   anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area when
   the pointer is not over one), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
-  5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held)
+  5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held),
+  `scroll_end_tap_ms` (two Alt + `u` / Alt + `d` taps within this many ms
+  scroll to the top / bottom, 0-1000, default 300; 0 = off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for every window's elements before showing the ones

@@ -128,6 +128,10 @@ static volatile LONG s_scroll_flags = 0;
 static volatile LONG s_scroll_auto = 0;
 static volatile LONG s_scroll_pending = 0;
 static volatile LONG s_target_gen = 0;
+// A double tap of an Alt fast-scroll key jumps to the end of the page instead
+// of scrolling another step; the movement thread emits it when it starts the
+// press and clears the bit.
+static volatile LONG s_scroll_jump = 0;
 static volatile LONG s_move_exit = 0;
 
 static unsigned char s_down[256];
@@ -144,6 +148,11 @@ static BOOL s_alt_pending = FALSE;
 static BOOL s_alt_consumed = FALSE;
 static UINT s_alt_scan = 0;
 static BOOL s_alt_extended = FALSE;
+
+// Last Alt fast-scroll tap. A second press of the same key within
+// scroll_end_tap_ms jumps to the end; any other key starts over.
+static int   s_tap_act = ACT_NONE;
+static DWORD s_tap_tick = 0;
 
 // A press bumps the direction's generation. The movement thread owns all
 // scroll timing and emission, so the hook only records the press and wakes it.
@@ -299,6 +308,22 @@ static void send_wheel(BOOL vertical, int delta)
     in.mi.mouseData = (DWORD)delta;
     in.mi.dwFlags = vertical ? MOUSEEVENTF_WHEEL : MOUSEEVENTF_HWHEEL;
     SendInput(1, &in, sizeof(in));
+}
+
+// Jumping to the end is 64 events of the largest delta a signed 16-bit wheel
+// value can carry (273 notches); apps clamp at their end.
+static void send_wheel_jump(BOOL vertical, int delta)
+{
+    INPUT in[64];
+    int i;
+
+    ZeroMemory(in, sizeof(in));
+    for (i = 0; i < 64; i++) {
+        in[i].type = INPUT_MOUSE;
+        in[i].mi.mouseData = (DWORD)delta;
+        in[i].mi.dwFlags = vertical ? MOUSEEVENTF_WHEEL : MOUSEEVENTF_HWHEEL;
+    }
+    SendInput(64, in, sizeof(INPUT));
 }
 
 static void send_mask_key(void)
@@ -736,12 +761,16 @@ static DWORD qpc_us_from(LARGE_INTEGER counter, LARGE_INTEGER freq)
 }
 
 // auto_target: Alt scrolling, which finds the nearest scrollable area first.
+// jump: the second tap of a double tap, which scrolls to the end instead of
+// starting a stream; it is not held.
 // Only record the press here; the movement thread does all timing and emission.
-static void scroll_press(int act, BOOL auto_target)
+static void scroll_press(int act, BOOL auto_target, BOOL jump)
 {
     int idx = act - ACT_SCROLL_UP;
     LONG bit = (LONG)(1 << idx);
 
+    if (jump)
+        atomic_or(&s_scroll_jump, bit);
     if (auto_target) {
         atomic_or(&s_scroll_auto, bit);
         atomic_or(&s_scroll_pending, bit);
@@ -750,7 +779,8 @@ static void scroll_press(int act, BOOL auto_target)
         atomic_and(&s_scroll_auto, ~bit);
     }
     InterlockedIncrement(&s_scroll_gen[idx]);
-    atomic_or(&s_scroll_flags, bit);
+    if (!jump)
+        atomic_or(&s_scroll_flags, bit);
     if (s_move_event)
         SetEvent(s_move_event);
 }
@@ -838,7 +868,7 @@ static void apply_action_down(int act)
         move_press(act);
         break;
     case ACT_SCROLL_UP: case ACT_SCROLL_DOWN: case ACT_SCROLL_LEFT: case ACT_SCROLL_RIGHT:
-        scroll_press(act, FALSE);
+        scroll_press(act, FALSE, FALSE);
         break;
     case ACT_LEFT:
         left_press_key();
@@ -1096,6 +1126,11 @@ static BOOL handle_down(UINT vk)
 {
     UINT mods = current_mods();
     int act;
+    int tap_prev = s_tap_act;
+
+    // Any key save the same Alt fast-scroll key ends a pending double tap;
+    // modifiers never reach here.
+    s_tap_act = ACT_NONE;
 
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1119,11 +1154,24 @@ static BOOL handle_down(UINT vk)
     if (mods == KMOD_ALT) {
         act = alt_scroll_action(vk);
         if (act != ACT_NONE) {
+            BOOL jump = FALSE;
+            DWORD now = GetTickCount();
+
+            if (act == ACT_FAST_UP || act == ACT_FAST_DOWN) {
+                if (g_cfg.scroll_end_tap_ms > 0 && tap_prev == act &&
+                    (DWORD)(now - s_tap_tick) <=
+                        (DWORD)g_cfg.scroll_end_tap_ms) {
+                    jump = TRUE;
+                } else if (g_cfg.scroll_end_tap_ms > 0) {
+                    s_tap_act = act;
+                    s_tap_tick = now;
+                }
+            }
             send_mask_key();
             mark_caps_used();
             s_action[vk] = (unsigned char)act;
             s_owner[vk] = OWN_MOVE;
-            scroll_press(act, g_cfg.alt_scroll_auto);
+            scroll_press(act, g_cfg.alt_scroll_auto, jump);
             return TRUE;
         }
         if (shortcut_begin(vk)) {
@@ -1810,11 +1858,31 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 held = (sf & (1 << idx)) != 0;
 
                 if (scrSeenGen[idx] != gen_i) {
+                    LONG jump;
+                    int k, delta;
+
                     // An Alt press starts only once its target lookup is
                     // done; its pending bit is cleared right after the lookup.
                     if (pending & (1 << idx))
                         continue;
                     scrSeenGen[idx] = gen_i;
+                    jump = InterlockedCompareExchange(&s_scroll_jump, 0, 0);
+                    if (jump & (1 << idx)) {
+                        // Second tap: stop the axis and jump to the end.
+                        atomic_and(&s_scroll_jump, ~(LONG)(1 << idx));
+                        scrActive[0] = scrActive[1] = 0;
+                        scrActive[4] = scrActive[5] = 0;
+                        scrAccY = 0.0;
+                        delta = idx == 4 ? 32760 : -32760;
+                        dir_aimed = (aimed & (1 << idx)) != 0;
+                        if (dir_aimed && target_ok) {
+                            for (k = 0; k < 64; k++)
+                                post_wheel(target, TRUE, delta);
+                        } else {
+                            send_wheel_jump(TRUE, delta);
+                        }
+                        continue;
+                    }
                     scrMin[idx] = (double)abs(scroll_notch(idx));
                     scrFed[idx] = 0.0;
                     scrStartUs[idx] = now_us;

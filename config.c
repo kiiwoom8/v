@@ -538,6 +538,7 @@ void config_set_defaults(Config *c)
     c->alt_scroll_auto = 1;
     c->shortcut_paste = 1;
     c->fast_scroll_lines = 5;
+    c->scroll_end_tap_ms = 300;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
 
@@ -805,6 +806,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_bool(&c->alt_scroll_auto, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_lines") == 0)
         apply_int_range(&c->fast_scroll_lines, line, key, val, 1, 50);
+    else if (_wcsicmp(key, L"scroll_end_tap_ms") == 0)
+        apply_int_range(&c->scroll_end_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
         apply_double_positive(&c->fast_scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_max_speed") == 0)
@@ -1335,6 +1338,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"fast_scroll_speed = %ls\r\n", num);
     fmt_double(d.fast_scroll_max_speed, num, sizeof(num) / sizeof(num[0]));
     appendf(buf, cch, L"fast_scroll_max_speed = %ls\r\n", num);
+    appendf(buf, cch, L"; Alt + u u / Alt + d d (two taps within this many ms) scroll to the\r\n");
+    appendf(buf, cch, L"; top / bottom; 0 = off.\r\n");
+    appendf(buf, cch, L"scroll_end_tap_ms = %d\r\n", d.scroll_end_tap_ms);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
     add_key_line(buf, cch, L"Move the mouse down.", L"key_down", d.key_down);

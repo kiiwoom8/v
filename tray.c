@@ -716,6 +716,11 @@ static void build_help_rows(void)
         _snwprintf(buf, 127, L"Alt + %s / %s", k1, k2);
         buf[127] = L'\0';
         help_add_row(buf, L"Fast scroll up / down");
+        if (g_cfg.scroll_end_tap_ms > 0) {
+            _snwprintf(buf, 127, L"Alt + %s %s / %s %s", k1, k1, k2, k2);
+            buf[127] = L'\0';
+            help_add_row(buf, L"Top / bottom (tap twice)");
+        }
     }
     help_add_row(L"Alt + abbreviation",
                  L"Type a text shortcut (tray: Text shortcuts...)");
