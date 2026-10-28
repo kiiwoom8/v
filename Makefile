@@ -25,7 +25,7 @@ icon: tools/make_icon.exe
 	tools/make_icon.exe vim.ico
 
 tools/make_icon.exe: tools/make_icon.c
-	$(CC) $(CFLAGS) -o $@ tools/make_icon.c
+	$(CC) $(CFLAGS) -o $@ tools/make_icon.c -lole32
 
 # Console tool that lists what the element scan finds on the monitor under the cursor
 probe: tools/uia_probe.exe
