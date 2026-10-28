@@ -193,7 +193,9 @@ created on first run documents every option with a comment. The most useful
 ones:
 
 - `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `lock_hotkey`, `mouse_mode_key`
-- `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement)
+- `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
+  in screen pixels per second; Windows' pointer speed and "Enhance pointer
+  precision" settings do not change it)
 - `scroll_speed`, `scroll_max_speed`
 - `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
   anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area when
@@ -203,7 +205,9 @@ ones:
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for the first element results before showing them. If
   none arrive the scan keeps running until the first results or 3 s, then falls
-  back to the grid)
+  back to the grid), `prescan` (1 = start finding elements and scrollable areas as soon
+  as Alt goes down, so labels and Alt scrolling respond sooner; 0 = wait for
+  the whole key combination)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,

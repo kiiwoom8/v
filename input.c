@@ -148,6 +148,13 @@ static volatile LONG s_scroll_start_us[6];
 static volatile LONG s_scroll_prepaid[6];
 static volatile LONG s_scroll_gen[6];
 
+// A hint prescan was started (WM_APP_HINT_PREPARE 1) and not yet cancelled or
+// adopted by the hint overlay.
+static BOOL s_prepared = FALSE;
+// Alt went down: the movement thread caches the scrollable areas under the
+// pointer, so a following Alt scroll finds its target at once.
+static volatile LONG s_scroll_prefetch = 0;
+
 // Text shortcut being typed while Alt is held (see shortcut_begin).
 static BOOL  s_sc_active = FALSE;
 static BOOL  s_sc_cancelled = FALSE;
@@ -183,6 +190,7 @@ static void reset_key_state(void);
 static void suspend_input(void);
 static void resume_input(void);
 static BOOL handle_up(UINT vk);
+static void prescan_cancel(void);
 
 static BOOL flag_get(volatile LONG *p)
 {
@@ -388,6 +396,7 @@ static void apply_paused(BOOL paused)
         return;
     if (value) {
         leave_mouse_mode();
+        prescan_cancel();
         if (flag_get(&s_capture)) {
             flag_set(&s_capture, FALSE);
             post_main(WM_APP_HINT_CLOSE, 0, 0);
@@ -547,6 +556,59 @@ static BOOL is_modifier(UINT vk)
         return TRUE;
     }
     return FALSE;
+}
+
+// KMOD_* bit of a modifier key, 0 for any other key.
+static UINT mod_bit(UINT vk)
+{
+    switch (vk) {
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+        return KMOD_SHIFT;
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+        return KMOD_CTRL;
+    case VK_MENU: case VK_LMENU: case VK_RMENU:
+        return KMOD_ALT;
+    case VK_LWIN: case VK_RWIN:
+        return KMOD_WIN;
+    }
+    return 0;
+}
+
+// The hotkey's modifier went down: start the hint scan early so it overlaps
+// typing the hotkey. Inside the hook GetAsyncKeyState does not see the key
+// being processed yet, so add its bit ourselves.
+static void prescan_mod_down(UINT vk)
+{
+    UINT bit = mod_bit(vk);
+    UINT mods;
+
+    if (bit == 0 || !g_cfg.prescan)
+        return;
+    if (flag_get(&s_paused) || flag_get(&s_locked) || flag_get(&s_capture))
+        return;
+    mods = current_mods() | bit;
+    // Alt scrolling may follow: the movement thread looks up its target now
+    // (not here: the hook must not wait on other windows).
+    if (mods == KMOD_ALT && g_cfg.alt_scroll && g_cfg.alt_scroll_auto) {
+        InterlockedExchange(&s_scroll_prefetch, 1);
+        if (s_move_event)
+            SetEvent(s_move_event);
+    }
+    if (s_prepared || g_cfg.hint_hotkey.vk == 0 ||
+        mods != g_cfg.hint_hotkey.mods)
+        return;
+    s_prepared = TRUE;
+    post_main(WM_APP_HINT_PREPARE, 1, 0);
+}
+
+// The hotkey will not follow (another key or a modifier release): drop the
+// prescan. Posting 0 when unsure is harmless.
+static void prescan_cancel(void)
+{
+    if (!s_prepared)
+        return;
+    s_prepared = FALSE;
+    post_main(WM_APP_HINT_PREPARE, 0, 0);
 }
 
 static BOOL is_typing_key(UINT vk)
@@ -914,6 +976,7 @@ static void apply_locked(BOOL locked)
     if (value) {
         leave_mouse_mode();
         shortcut_reset();
+        prescan_cancel();
         if (flag_get(&s_capture)) {
             flag_set(&s_capture, FALSE);
             post_main(WM_APP_HINT_CLOSE, 0, 0);
@@ -981,6 +1044,8 @@ static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
     if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
+        // hint_open adopts the early scan instead of starting a new one.
+        s_prepared = FALSE;
         if (!flag_get(&s_capture)) {
             flag_set(&s_capture, TRUE);
             post_main(WM_APP_HINT_OPEN, 0, 0);
@@ -1127,6 +1192,8 @@ static BOOL handle_up(UINT vk)
     int owner;
     int act;
 
+    if (is_modifier(vk))
+        prescan_cancel();
     owner = s_owner[vk];
     act = s_action[vk];
     s_owner[vk] = OWN_NONE;
@@ -1177,6 +1244,12 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
     if (down) {
         BOOL repeat = s_down[vk] != 0;
         s_down[vk] = 1;
+        if (!repeat) {
+            if (is_modifier(vk))
+                prescan_mod_down(vk);
+            else if (vk != g_cfg.hint_hotkey.vk)
+                prescan_cancel();
+        }
         if (vk == VK_LMENU) {
             if (repeat) {
                 if (s_owner[vk] == OWN_ALT_HELD)
@@ -1243,6 +1316,7 @@ static LRESULT CALLBACK kb_proc(int nCode, WPARAM wParam, LPARAM lParam)
 
 static void reset_key_state(void)
 {
+    prescan_cancel();
     ZeroMemory(s_down, sizeof(s_down));
     ZeroMemory(s_owner, sizeof(s_owner));
     ZeroMemory(s_action, sizeof(s_action));
@@ -1338,6 +1412,16 @@ static void wait_tick(HANDLE timer)
     Sleep(1);
 }
 
+// Alt went down (prescan_mod_down): start caching the scrollable areas of
+// the window under the pointer.
+static void scroll_prefetch_now(void)
+{
+    POINT pt;
+
+    if (InterlockedExchange(&s_scroll_prefetch, 0) && GetCursorPos(&pt))
+        uia_scroll_prefetch(pt);
+}
+
 static DWORD WINAPI movement_thread(LPVOID param)
 {
     LARGE_INTEGER freq, prev, now;
@@ -1376,11 +1460,13 @@ static DWORD WINAPI movement_thread(LPVOID param)
     for (;;) {
         if (flag_get(&s_move_exit))
             break;
+        scroll_prefetch_now();
         if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags) &&
             !flag_get(&s_scroll_pending)) {
             WaitForSingleObject(s_move_event, INFINITE);
             if (flag_get(&s_move_exit))
                 break;
+            scroll_prefetch_now();
             if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags) &&
                 !flag_get(&s_scroll_pending))
                 continue;
@@ -1407,6 +1493,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
             int vx, vy, vw, vh;
             BOOL have_cur;
 
+            scroll_prefetch_now();
             // A new Alt scroll press: find where it should go. The search
             // time does not count as scrolling time.
             if (gen != seen_gen) {
@@ -2001,8 +2088,10 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 continue;
             }
             if (msg.message == WM_INPUT_SET_PAUSED) {
-                if (msg.wParam)
+                if (msg.wParam) {
+                    prescan_cancel();
                     leave_mouse_mode();
+                }
                 continue;
             }
             if (msg.message == WM_INPUT_CONFIG ||

@@ -140,6 +140,13 @@ static BOOL      g_scan_wait_first;  // first timeout passed, waiting for result
 static BOOL      g_scan_grace;       // first results in; finalize shortly
 static DWORD     g_scan_t0;          // scan start tick (hard limit reference)
 
+// Early scan started when the hint hotkey's modifier goes down. g_pre_id 0 =
+// none; the newest result for it is owned in g_pre_list.
+static UINT      g_pre_id;
+static HMONITOR  g_pre_mon;
+static DWORD     g_pre_t0;
+static ClickList *g_pre_list;
+
 static MonInfo   g_mons[MAX_MONITORS];
 static int       g_mon_count;
 static RECT      g_last_show;
@@ -150,6 +157,8 @@ static void reset_input(void);
 static void handle_key(UINT vk, UINT mods);
 static void invalidate(void);
 static void cycle_monitor(UINT mods);
+static void clear_prescan(void);
+static BOOL adopt_prescan(void);
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -1494,10 +1503,89 @@ static void cancel_scan(void)
     }
 }
 
+static UINT scan_limit_ms(void)
+{
+    UINT ms = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout
+                                     : SCAN_DEFAULT_MS;
+    if (ms > SCAN_HARD_LIMIT_MS) ms = SCAN_HARD_LIMIT_MS;
+    return ms;
+}
+
+// Milliseconds left of the initial timeout measured from t0, at least 1.
+static UINT scan_rest_ms(DWORD t0)
+{
+    DWORD elapsed = GetTickCount() - t0;
+    UINT limit = scan_limit_ms();
+    return elapsed < limit ? limit - elapsed : 1;
+}
+
+static void clear_prescan(void)
+{
+    if (g_pre_list) {
+        free(g_pre_list);
+        g_pre_list = NULL;
+    }
+    g_pre_id = 0;
+    g_pre_mon = NULL;
+    g_pre_t0 = 0;
+}
+
+// Drops a prescan that will not be adopted, stopping its worker.
+static void discard_prescan(void)
+{
+    if (g_pre_id != 0)
+        uia_cancel();
+    clear_prescan();
+}
+
+// Adopts the prescan as the open session's scan. Returns FALSE when it is not
+// adoptable (any prescan is then dropped) and a normal scan must start.
+static BOOL adopt_prescan(void)
+{
+    if (g_pre_id == 0)
+        return FALSE;
+    if (g_pre_id != g_scan_id || g_pre_mon != g_mon ||
+        GetTickCount() - g_pre_t0 > 2000) {
+        discard_prescan();
+        return FALSE;
+    }
+
+    reset_input();
+    free_elements();
+    if (g_scan_list) {
+        free(g_scan_list);
+        g_scan_list = NULL;
+    }
+    g_scanning = TRUE;
+    g_scan_wait_first = FALSE;
+    g_scan_grace = FALSE;
+    g_scan_t0 = g_pre_t0;
+    g_scan_list = g_pre_list;   // ownership moves
+    g_pre_list = NULL;
+    g_pre_id = 0;
+    g_pre_mon = NULL;
+    g_pre_t0 = 0;
+
+    if (g_scan_list && g_scan_list->done) {
+        finalize_scan();
+        return TRUE;
+    }
+    if (!g_hint_wnd)
+        return TRUE;
+    if (g_scan_list && g_scan_list->count > 0) {
+        UINT ms = scan_rest_ms(g_scan_t0);
+        if (ms > SCAN_GRACE_MS) ms = SCAN_GRACE_MS;
+        g_scan_grace = TRUE;
+        SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
+    } else {
+        SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_rest_ms(g_scan_t0), NULL);
+    }
+    return TRUE;
+}
+
 static void start_scan(BOOL repaint)
 {
-    UINT ms;
-
+    discard_prescan();
     reset_input();
     free_elements();
     if (g_scan_list) {
@@ -1510,12 +1598,8 @@ static void start_scan(BOOL repaint)
     g_scan_t0 = GetTickCount();
     ++g_scan_id;
     uia_scan(g_mon, g_scan_id);
-    if (g_hint_wnd) {
-        ms = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout
-                                    : SCAN_DEFAULT_MS;
-        if (ms > SCAN_HARD_LIMIT_MS) ms = SCAN_HARD_LIMIT_MS;
-        SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
-    }
+    if (g_hint_wnd)
+        SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_limit_ms(), NULL);
     if (repaint) {
         invalidate();
         if (g_hint_wnd) UpdateWindow(g_hint_wnd);
@@ -1835,6 +1919,7 @@ void hint_shutdown(void)
         g_last_show_valid = FALSE;
         UnregisterClassW(HINT_CLASS, g_hint_inst);
     }
+    discard_prescan();
     cancel_scan();
     free_elements();
     reset_input();
@@ -1844,7 +1929,22 @@ void hint_shutdown(void)
     free_grid_cache();
 }
 
-static BOOL open_overlay(HMONITOR mon, int mode)
+static HMONITOR cursor_monitor(void)
+{
+    POINT cur;
+    POINT zero = { 0, 0 };
+    HMONITOR mon;
+
+    if (GetCursorPos(&cur))
+        mon = MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST);
+    else
+        mon = MonitorFromPoint(zero, MONITOR_DEFAULTTOPRIMARY);
+    if (!mon)
+        mon = MonitorFromPoint(zero, MONITOR_DEFAULTTOPRIMARY);
+    return mon;
+}
+
+static BOOL open_overlay(HMONITOR mon, int mode, BOOL paint)
 {
     if (!compute_geometry(mon))
         return FALSE;
@@ -1853,7 +1953,6 @@ static BOOL open_overlay(HMONITOR mon, int mode)
     free_elements();
     g_mode = mode;
     g_start_mode = mode;
-    // Paint the scanning status straight away; start_scan() follows.
     g_scanning = (mode == HINT_MODE_ELEMENTS);
 
     if (!ensure_resources()) {
@@ -1872,15 +1971,17 @@ static BOOL open_overlay(HMONITOR mon, int mode)
         return FALSE;
     }
 
-    InvalidateRect(g_hint_wnd, NULL, TRUE);
-    UpdateWindow(g_hint_wnd);
+    // Element mode starts or adopts its scan first, then paints, so the
+    // worker runs while the status text goes up. Grid mode paints here.
+    if (paint) {
+        InvalidateRect(g_hint_wnd, NULL, TRUE);
+        UpdateWindow(g_hint_wnd);
+    }
     return TRUE;
 }
 
 void hint_open(void)
 {
-    POINT cur;
-    POINT zero = { 0, 0 };
     HMONITOR mon;
     int mode;
 
@@ -1889,28 +1990,55 @@ void hint_open(void)
     input_set_key_capture(TRUE);
 
     if (!g_hint_wnd) {
+        discard_prescan();
         input_set_key_capture(FALSE);
         return;
     }
 
-    if (GetCursorPos(&cur))
-        mon = MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST);
-    else
-        mon = MonitorFromPoint(zero, MONITOR_DEFAULTTOPRIMARY);
-    if (!mon)
-        mon = MonitorFromPoint(zero, MONITOR_DEFAULTTOPRIMARY);
+    mon = cursor_monitor();
 
     mode = (g_cfg.hint_mode == HINT_MODE_ELEMENTS && uia_available())
            ? HINT_MODE_ELEMENTS : HINT_MODE_GRID;
 
-    if (!open_overlay(mon, mode)) {
+    if (!open_overlay(mon, mode, mode != HINT_MODE_ELEMENTS)) {
         g_open = FALSE;
+        discard_prescan();
         input_set_key_capture(FALSE);
         return;
     }
 
-    if (mode == HINT_MODE_ELEMENTS)
-        start_scan(FALSE);
+    if (mode == HINT_MODE_ELEMENTS) {
+        // A finished prescan is finalized (and painted) before the first
+        // paint, so the status text never flashes.
+        if (!adopt_prescan())
+            start_scan(FALSE);
+        if (g_scanning) {
+            invalidate();
+            UpdateWindow(g_hint_wnd);
+        }
+    } else {
+        discard_prescan();
+    }
+}
+
+void hint_prepare(BOOL on)
+{
+    if (!on) {
+        if (!g_open && g_pre_id != 0)
+            discard_prescan();
+        return;
+    }
+
+    if (g_open || !g_hint_wnd || g_cfg.hint_mode != HINT_MODE_ELEMENTS ||
+        !uia_available())
+        return;
+
+    discard_prescan();
+    ++g_scan_id;
+    g_pre_id = g_scan_id;
+    g_pre_mon = cursor_monitor();
+    g_pre_t0 = GetTickCount();
+    uia_scan(g_pre_mon, g_pre_id);
 }
 
 void hint_close(void)
@@ -1926,6 +2054,7 @@ void hint_close(void)
     cancel_scan();
     uia_cancel();
     free_elements();
+    clear_prescan();
     reset_input();
     g_open = FALSE;
     input_set_key_capture(FALSE);
@@ -2056,7 +2185,18 @@ void hint_on_elements(ClickList *list)
 {
     if (!list) return;
 
-    if (!g_open || !g_scanning || list->scan_id != g_scan_id) {
+    if (!g_open) {
+        // Keep the newest result for the early scan until hint_open adopts it.
+        if (g_pre_id != 0 && list->scan_id == g_pre_id) {
+            if (g_pre_list) free(g_pre_list);
+            g_pre_list = list;
+            return;
+        }
+        free(list);
+        return;
+    }
+
+    if (!g_scanning || list->scan_id != g_scan_id) {
         free(list);
         return;
     }

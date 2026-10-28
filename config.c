@@ -569,6 +569,7 @@ void config_set_defaults(Config *c)
     c->hint_mode = HINT_MODE_ELEMENTS;
     c->scan_scope = SCAN_MONITOR;
     c->scan_timeout = 400;
+    c->prescan = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -880,6 +881,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
                      L"(use monitor or window)", val);
     } else if (_wcsicmp(key, L"scan_timeout") == 0)
         apply_int_range(&c->scan_timeout, line, key, val, 100, 5000);
+    else if (_wcsicmp(key, L"prescan") == 0)
+        apply_bool(&c->prescan, line, key, val);
     else
         warn_add(line, L"unknown key \"%ls\" in [hints]", key);
 }
@@ -1393,6 +1396,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; them (100-5000, default 400). If none arrive the scan keeps running\r\n");
     appendf(buf, cch, L"; until the first results or 3 seconds, then falls back to the grid.\r\n");
     appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
+    appendf(buf, cch, L"; 1 = start finding clickable elements (and, for Alt scrolling, the\r\n");
+    appendf(buf, cch, L"; scrollable areas) as soon as Alt goes down, so the labels and the\r\n");
+    appendf(buf, cch, L"; first scroll come sooner. 0 = wait for the whole key combination.\r\n");
+    appendf(buf, cch, L"prescan = %d\r\n", d.prescan ? 1 : 0);
 
     appendf(buf, cch, L"\r\n[shortcuts]\r\n%ls", SHORTCUTS_COMMENT);
     appendf(buf, cch, L"; Example:\r\n");

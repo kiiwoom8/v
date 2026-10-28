@@ -51,6 +51,8 @@
 #define WM_APP_HINT_AGAIN       (WM_APP + 10) // hint hotkey pressed while hints are open; -> hint_hotkey_again
 #define WM_APP_ELEMENTS         (WM_APP + 11) // lParam = ClickList* from uia.c; -> hint_on_elements (takes ownership)
 #define WM_APP_TYPE_TEXT        (WM_APP + 12) // lParam = malloc'd WCHAR* from input.c; -> snippet_insert, then free
+#define WM_APP_HINT_PREPARE     (WM_APP + 13) // wParam 1 = the hint hotkey's modifiers went down, start scanning early;
+                                              // 0 = the hotkey will not follow; -> hint_prepare
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -125,6 +127,7 @@ typedef struct {
     int   scan_scope;          // SCAN_MONITOR: every visible window on the monitor (default)
                                // SCAN_WINDOW: only the foreground window and the taskbar
     int   scan_timeout;        // ms before showing partial scan results, default 400 (100-5000)
+    int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
 } Config;
 
 extern Config g_cfg;
@@ -213,6 +216,7 @@ struct ClickList;
 void hint_init(HINSTANCE inst);
 void hint_shutdown(void);
 void hint_open(void);                   // on the monitor under the cursor
+void hint_prepare(BOOL on);             // WM_APP_HINT_PREPARE: scan before the hotkey completes
 void hint_close(void);
 BOOL hint_is_open(void);
 void hint_on_key(UINT vk, UINT mods);
