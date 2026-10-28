@@ -435,7 +435,13 @@ int main(int argc, char **argv)
         if (size >= PNG_MIN_SIZE) {
             RGBA *px = (RGBA *)malloc((size_t)size * (size_t)size *
                                       sizeof(RGBA));
-            if (!px || !encode_png(px, size, &png[i], &png_size[i])) {
+            if (!px) {
+                fprintf(stderr, "out of memory for the %dx%d PNG\n",
+                        size, size);
+                goto fail;
+            }
+            render(px, size);
+            if (!encode_png(px, size, &png[i], &png_size[i])) {
                 free(px);
                 fprintf(stderr, "cannot encode the %dx%d PNG\n", size, size);
                 goto fail;
