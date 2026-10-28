@@ -199,7 +199,7 @@ static BOOL parse_subgrid_into(const WCHAR *src, WCHAR out[8][8],
             if (ch == 0) break;
             if (p[1] == 0) return FALSE;  // trailing slash
         } else {
-            if (c >= 8) return FALSE;
+            if (r >= 8 || c >= 8) return FALSE;
             out[r][c++] = lower_ascii(ch);
         }
     }
@@ -1624,8 +1624,10 @@ static void replay_queue(void)
     if (n <= 0) return;
     memcpy(keys, g_queue, sizeof(keys[0]) * (size_t)n);
     g_queue_count = 0;
+    // Through hint_on_key: a Tab among them starts a new scan, and the keys
+    // after it must wait for that scan instead of missing every label.
     for (i = 0; i < n && g_open; ++i)
-        handle_key(keys[i].vk, keys[i].mods);
+        hint_on_key(keys[i].vk, keys[i].mods);
 }
 
 static void finalize_scan(void)
@@ -1973,7 +1975,9 @@ void hint_open(void)
     HMONITOR mon;
     int mode;
 
-    if (g_open) return;
+    // While the keyboard is locked no key could reach the overlay, not even
+    // Esc, so the tray item must not open one.
+    if (g_open || input_is_locked()) return;
 
     input_set_key_capture(TRUE);
 
