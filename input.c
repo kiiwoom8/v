@@ -92,7 +92,10 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define VELOCITY_SMOOTHING 0.12
 #define MAX_SIM_STEP_SEC   0.05
 #define SUSPEND_RESET_SEC  2.0
-// Holding a scroll key repeats after this delay (a tap scrolls one notch).
+// Round-off slack when wheel accumulators are compared with whole units.
+#define SCROLL_EPS 1e-9
+// Scroll speed ramps from its base toward its maximum after this delay. A tap
+// still delivers at least one notch (fast_scroll_lines notches for the fast keys).
 #define SCROLL_HOLD_DELAY_MS 150.0
 // How long Alt scrolling waits for the nearest scrollable area before it
 // scrolls under the cursor instead.
@@ -121,7 +124,7 @@ static volatile LONG s_left_held = 0;
 static volatile LONG s_move_flags = 0;
 static volatile LONG s_scroll_flags = 0;
 // Alt scrolling aims at the nearest scrollable area: the movement thread
-// finds it (s_target_gen changed) before sending the tap notch (pending).
+// finds it (s_target_gen changed) before starting that press's stream (pending).
 static volatile LONG s_scroll_auto = 0;
 static volatile LONG s_scroll_pending = 0;
 static volatile LONG s_target_gen = 0;
@@ -142,10 +145,8 @@ static BOOL s_alt_consumed = FALSE;
 static UINT s_alt_scan = 0;
 static BOOL s_alt_extended = FALSE;
 
-// Per-direction scroll timing, QueryPerformanceCounter-based microseconds.
-// A press bumps the generation so the movement thread can reset its accrual.
-static volatile LONG s_scroll_start_us[6];
-static volatile LONG s_scroll_prepaid[6];
+// A press bumps the direction's generation. The movement thread owns all
+// scroll timing and emission, so the hook only records the press and wakes it.
 static volatile LONG s_scroll_gen[6];
 
 // A hint prescan was started (WM_APP_HINT_PREPARE 1) and not yet cancelled or
@@ -734,21 +735,12 @@ static DWORD qpc_us_from(LARGE_INTEGER counter, LARGE_INTEGER freq)
     return (DWORD)(secs * 1000000 + (rem * 1000000) / freq.QuadPart);
 }
 
-static DWORD qpc_now_us(void)
-{
-    LARGE_INTEGER freq, counter;
-
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&counter);
-    return qpc_us_from(counter, freq);
-}
-
 // auto_target: Alt scrolling, which finds the nearest scrollable area first.
+// Only record the press here; the movement thread does all timing and emission.
 static void scroll_press(int act, BOOL auto_target)
 {
     int idx = act - ACT_SCROLL_UP;
     LONG bit = (LONG)(1 << idx);
-    int notch = scroll_notch(idx);
 
     if (auto_target) {
         atomic_or(&s_scroll_auto, bit);
@@ -756,12 +748,8 @@ static void scroll_press(int act, BOOL auto_target)
         InterlockedIncrement(&s_target_gen);
     } else {
         atomic_and(&s_scroll_auto, ~bit);
-        // The first notch is prepaid: the held stream continues from its end.
-        s_scroll_start_us[idx] = (LONG)qpc_now_us();
-        s_scroll_prepaid[idx] = notch < 0 ? -notch : notch;
-        InterlockedIncrement(&s_scroll_gen[idx]);
-        send_wheel(scroll_vertical(idx), notch);
     }
+    InterlockedIncrement(&s_scroll_gen[idx]);
     atomic_or(&s_scroll_flags, bit);
     if (s_move_event)
         SetEvent(s_move_event);
@@ -1422,16 +1410,171 @@ static void scroll_prefetch_now(void)
         uia_scroll_prefetch(pt);
 }
 
+// dwmapi.h is #pragma pack(1), and DWM refuses the call unless cbSize is the
+// exact size of that layout, so mirror the full field list here.
+#pragma pack(push, 1)
+typedef struct {
+    UINT32 cbSize;
+    struct {
+        UINT32 uiNumerator;
+        UINT32 uiDenominator;
+    } rateRefresh;
+    ULONGLONG qpcRefreshPeriod;
+    struct {
+        UINT32 uiNumerator;
+        UINT32 uiDenominator;
+    } rateCompose;
+    ULONGLONG qpcVBlank;
+    ULONGLONG cRefresh;
+    UINT32 cDXRefresh;
+    ULONGLONG qpcCompose;
+    ULONGLONG cFrame;
+    UINT32 cDXPresent;
+    ULONGLONG cRefreshFrame;
+    ULONGLONG cFrameSubmitted;
+    UINT32 cDXPresentSubmitted;
+    ULONGLONG cFrameConfirmed;
+    UINT32 cDXPresentConfirmed;
+    ULONGLONG cRefreshConfirmed;
+    UINT32 cDXRefreshConfirmed;
+    ULONGLONG cFramesLate;
+    UINT32 cFramesOutstanding;
+    ULONGLONG cFrameDisplayed;
+    ULONGLONG qpcFrameDisplayed;
+    ULONGLONG cRefreshFrameDisplayed;
+    ULONGLONG cFrameComplete;
+    ULONGLONG qpcFrameComplete;
+    ULONGLONG cFramePending;
+    ULONGLONG qpcFramePending;
+    ULONGLONG cFramesDisplayed;
+    ULONGLONG cFramesComplete;
+    ULONGLONG cFramesPending;
+    ULONGLONG cFramesAvailable;
+    ULONGLONG cFramesDropped;
+    ULONGLONG cFramesMissed;
+    ULONGLONG cRefreshNextDisplayed;
+    ULONGLONG cRefreshNextPresented;
+    ULONGLONG cRefreshesDisplayed;
+    ULONGLONG cRefreshesPresented;
+    ULONGLONG cRefreshStarted;
+    ULONGLONG cPixelsReceived;
+    ULONGLONG cPixelsDrawn;
+    ULONGLONG cBuffersEmpty;
+} ScrollTimingInfo;
+#pragma pack(pop)
+
+typedef struct {
+    LONGLONG period;    // QPC units per display frame
+    LONGLONG anchor;    // QPC time of a frame boundary
+    DWORD refreshed_us;
+    BOOL valid;
+} ScrollFrameClock;
+
+static void scroll_clock_refresh(ScrollFrameClock *clock, LARGE_INTEGER now,
+                                 LARGE_INTEGER freq, DWORD now_us)
+{
+    typedef HRESULT (WINAPI *TimingFn)(HWND, ScrollTimingInfo *);
+    static BOOL tried = FALSE;
+    static TimingFn timing_fn = NULL;
+    ScrollTimingInfo info;
+    LONGLONG period = 0;
+
+    if (!tried) {
+        HMODULE dwm;
+
+        tried = TRUE;
+        dwm = LoadLibraryW(L"dwmapi.dll");
+        if (dwm)
+            timing_fn = (TimingFn)(void *)GetProcAddress(
+                dwm, "DwmGetCompositionTimingInfo");
+    }
+    if (timing_fn) {
+        ZeroMemory(&info, sizeof(info));
+        info.cbSize = sizeof(info);
+        if (timing_fn(NULL, &info) == S_OK &&
+            info.qpcRefreshPeriod >= (ULONGLONG)freq.QuadPart / 1000 &&
+            info.qpcRefreshPeriod < (ULONGLONG)freq.QuadPart &&
+            info.qpcVBlank != 0) {
+            period = (LONGLONG)info.qpcRefreshPeriod;
+            clock->anchor = (LONGLONG)info.qpcVBlank;
+        }
+    }
+    if (period <= 0) {
+        // No compositor timing: assume 60 Hz from this burst on.
+        period = freq.QuadPart / 60;
+        if (period <= 0)
+            period = 1;
+        clock->anchor = now.QuadPart;
+    }
+    clock->period = period;
+    clock->refreshed_us = now_us;
+    clock->valid = TRUE;
+}
+
+static LONGLONG scroll_frame_index(const ScrollFrameClock *clock,
+                                   LARGE_INTEGER now)
+{
+    LONGLONG diff;
+
+    if (!clock->valid || clock->period <= 0)
+        return 0;
+    diff = now.QuadPart - clock->anchor;
+    if (diff >= 0)
+        return diff / clock->period;
+    return -(((-diff) + clock->period - 1) / clock->period);
+}
+
+// A press the movement thread has not started yet still needs its stream,
+// even if the key was already released (a tap).
+static BOOL scroll_press_pending(const LONG *seen)
+{
+    int idx;
+
+    for (idx = 0; idx < 6; idx++) {
+        if (InterlockedCompareExchange(&s_scroll_gen[idx], 0, 0) != seen[idx])
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL scroll_active_any(const unsigned char *active)
+{
+    int idx;
+
+    for (idx = 0; idx < 6; idx++) {
+        if (active[idx])
+            return TRUE;
+    }
+    return FALSE;
+}
+
+// The stream stops as soon as the key is released and its minimum is met, but
+// distance already accrued still has to go out on the next frame.
+static BOOL scroll_flush_pending(double accX, double accY)
+{
+    if (g_cfg.smooth_scroll)
+        return accX >= 1.0 - SCROLL_EPS || accX <= -1.0 + SCROLL_EPS ||
+               accY >= 1.0 - SCROLL_EPS || accY <= -1.0 + SCROLL_EPS;
+    return accX >= 120.0 - SCROLL_EPS || accX <= -120.0 + SCROLL_EPS ||
+           accY >= 120.0 - SCROLL_EPS || accY <= -120.0 + SCROLL_EPS;
+}
+
 static DWORD WINAPI movement_thread(LPVOID param)
 {
     LARGE_INTEGER freq, prev, now;
     double velX = 0.0, velY = 0.0;
     double holdX = 0.0, holdY = 0.0;
     double scrAccX = 0.0, scrAccY = 0.0;
-    double scrAccrued[6] = { 0 };
     double scrFed[6] = { 0 };
-    double scrPrepaid[6] = { 0 };
+    double scrMin[6] = { 0 };
+    DWORD scrStartUs[6] = { 0 };
+    DWORD scrLastUs[6] = { 0 };
     LONG scrSeenGen[6] = { 0 };
+    unsigned char scrActive[6] = { 0 };
+    BOOL scrAimX = FALSE, scrAimY = FALSE;
+    BOOL scrFrameValid = FALSE;
+    LONGLONG scrFrame = 0;
+    ScrollFrameClock clock;
     double posX = 0.0, posY = 0.0;
     POINT ref = { 0, 0 };
     BOOL have_ref = FALSE;
@@ -1447,6 +1590,10 @@ static DWORD WINAPI movement_thread(LPVOID param)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&prev);
+    clock.period = 0;
+    clock.anchor = 0;
+    clock.refreshed_us = 0;
+    clock.valid = FALSE;
 
     // A high-resolution waitable timer ticks at ~1.7 ms on Windows 11, where
     // Sleep(1) takes ~6 ms even with timeBeginPeriod(1). Keep the old timer
@@ -1462,19 +1609,25 @@ static DWORD WINAPI movement_thread(LPVOID param)
             break;
         scroll_prefetch_now();
         if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags) &&
-            !flag_get(&s_scroll_pending)) {
+            !flag_get(&s_scroll_pending) &&
+            !scroll_active_any(scrActive) &&
+            !scroll_press_pending(scrSeenGen)) {
             WaitForSingleObject(s_move_event, INFINITE);
             if (flag_get(&s_move_exit))
                 break;
             scroll_prefetch_now();
             if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags) &&
-                !flag_get(&s_scroll_pending))
+                !flag_get(&s_scroll_pending) &&
+                !scroll_active_any(scrActive) &&
+                !scroll_press_pending(scrSeenGen))
                 continue;
         }
 
         velX = velY = 0.0;
         holdX = holdY = 0.0;
         scrAccX = scrAccY = 0.0;
+        scrAimX = scrAimY = FALSE;
+        scrFrameValid = FALSE;
         prevSignX = prevSignY = 0;
         have_ref = FALSE;
         QueryPerformanceCounter(&prev);
@@ -1484,18 +1637,20 @@ static DWORD WINAPI movement_thread(LPVOID param)
             LONG sf = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
             LONG gen = InterlockedCompareExchange(&s_target_gen, 0, 0);
             LONG pending, aimed;
+            DWORD now_us;
             double dt, remaining, tickDX = 0.0, tickDY = 0.0;
             double speed, max_speed, accel_time, curve, slow_speed;
             double scroll_base, scroll_max, fast_base, fast_max;
             int signX, signY, idx;
-            BOOL slow;
+            BOOL slow, had_streams, any_streams;
             POINT cur;
             int vx, vy, vw, vh;
             BOOL have_cur;
 
             scroll_prefetch_now();
             // A new Alt scroll press: find where it should go. The search
-            // time does not count as scrolling time.
+            // time does not count as scrolling time. Clear only the bits the
+            // lookup covered; a press made meanwhile keeps its own lookup.
             if (gen != seen_gen) {
                 POINT cur_pt;
                 LONG bits = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
@@ -1503,30 +1658,12 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 target_ok = GetCursorPos(&cur_pt) &&
                     uia_scroll_target(cur_pt, !(bits & (SCR_LEFT | SCR_RIGHT)),
                                       AUTO_TARGET_TIMEOUT_MS, &target);
+                InterlockedCompareExchange(&s_scroll_pending, 0, bits);
                 QueryPerformanceCounter(&prev);
             }
-            pending = InterlockedExchange(&s_scroll_pending, 0);
+            pending = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
             aimed = target_ok ? InterlockedCompareExchange(&s_scroll_auto, 0, 0)
                               : 0;
-            for (idx = 0; idx < 6; idx++) {
-                int notch;
-                if (!(pending & (1 << idx)))
-                    continue;
-                notch = scroll_notch(idx);
-                if (aimed & (1 << idx))
-                    post_wheel(target, scroll_vertical(idx), notch);
-                else
-                    send_wheel(scroll_vertical(idx), notch);
-                // The accrual and hold-delay clock start now, not at the
-                // press: the target lookup time is not scrolling time.
-                QueryPerformanceCounter(&now);
-                s_scroll_start_us[idx] = (LONG)qpc_us_from(now, freq);
-                s_scroll_prepaid[idx] = notch < 0 ? -notch : notch;
-                InterlockedIncrement(&s_scroll_gen[idx]);
-            }
-
-            if (!mf && !sf)
-                break;
 
             QueryPerformanceCounter(&now);
             dt = (double)(now.QuadPart - prev.QuadPart) / (double)freq.QuadPart;
@@ -1661,69 +1798,170 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 }
             }
 
-            if (sf) {
-                DWORD now_us = qpc_us_from(now, freq);
-                for (idx = 0; idx < 6; idx++) {
-                    LONG gen_i;
-                    DWORD start_us;
-                    double elapsed_ms, base, maximum, sp, avail, dir;
+            had_streams = scroll_active_any(scrActive);
+            now_us = qpc_us_from(now, freq);
+            for (idx = 0; idx < 6; idx++) {
+                LONG gen_i;
+                BOOL held, dir_aimed;
+                DWORD last_us;
+                double elapsed_ms, base, maximum, sp, dt_i, delta, dir;
 
-                    if (!(sf & (1 << idx)))
+                gen_i = InterlockedCompareExchange(&s_scroll_gen[idx], 0, 0);
+                held = (sf & (1 << idx)) != 0;
+
+                if (scrSeenGen[idx] != gen_i) {
+                    // An Alt press starts only once its target lookup is
+                    // done; its pending bit is cleared right after the lookup.
+                    if (pending & (1 << idx))
                         continue;
-                    gen_i = InterlockedCompareExchange(&s_scroll_gen[idx], 0, 0);
-                    if (scrSeenGen[idx] != gen_i) {
-                        scrSeenGen[idx] = gen_i;
-                        scrAccrued[idx] = 0.0;
-                        scrFed[idx] = 0.0;
-                        scrPrepaid[idx] = (double)InterlockedCompareExchange(
-                            &s_scroll_prepaid[idx], 0, 0);
-                    }
-                    start_us = (DWORD)InterlockedCompareExchange(
-                        &s_scroll_start_us[idx], 0, 0);
-                    elapsed_ms = (double)(DWORD)(now_us - start_us) / 1000.0;
-                    if (idx == 4 || idx == 5) {
-                        base = fast_base;
-                        maximum = fast_max;
-                    } else {
-                        base = scroll_base;
-                        maximum = scroll_max;
-                    }
-                    sp = scroll_speed_for(elapsed_ms, base, maximum,
-                                          accel_time, curve);
-                    scrAccrued[idx] += sp * dt;
-                    if (elapsed_ms >= SCROLL_HOLD_DELAY_MS) {
-                        // The first notch was prepaid; only feed what has
-                        // accrued beyond it into the wheel accumulators.
-                        avail = scrAccrued[idx] - scrPrepaid[idx] - scrFed[idx];
-                        if (avail > 0.0) {
-                            dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
-                            scrFed[idx] += avail;
-                            if (scroll_vertical(idx))
-                                scrAccY += dir * avail;
-                            else
-                                scrAccX += dir * avail;
+                    scrSeenGen[idx] = gen_i;
+                    scrMin[idx] = (double)abs(scroll_notch(idx));
+                    scrFed[idx] = 0.0;
+                    scrStartUs[idx] = now_us;
+                    scrLastUs[idx] = now_us;
+                    scrActive[idx] = 1;
+                    if (!g_cfg.smooth_scroll) {
+                        // Apps that treat each message as a whole notch get
+                        // the first one now; the rest follow as distance
+                        // accrues.
+                        dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
+                        scrFed[idx] = 120.0;
+                        dir_aimed = (aimed & (1 << idx)) != 0;
+                        if (scroll_vertical(idx)) {
+                            scrAccY += dir * 120.0;
+                            if (dir_aimed)
+                                scrAimY = TRUE;
+                        } else {
+                            scrAccX += dir * 120.0;
+                            if (dir_aimed)
+                                scrAimX = TRUE;
                         }
                     }
                 }
-                while (scrAccY >= 40.0 || scrAccY <= -40.0) {
-                    int chunk = (int)scrAccY;
-                    if (sf & aimed & (SCR_UP | SCR_DOWN | SCR_FAST_UP | SCR_FAST_DOWN))
-                        post_wheel(target, TRUE, chunk);
-                    else
-                        send_wheel(TRUE, chunk);
-                    scrAccY -= chunk;
+
+                if (!scrActive[idx])
+                    continue;
+                if (!held && scrFed[idx] >= scrMin[idx]) {
+                    // Released after the minimum: stop right away.
+                    scrActive[idx] = 0;
+                    continue;
                 }
-                while (scrAccX >= 40.0 || scrAccX <= -40.0) {
-                    int chunk = (int)scrAccX;
-                    if (sf & aimed & (SCR_LEFT | SCR_RIGHT))
-                        post_wheel(target, FALSE, chunk);
-                    else
-                        send_wheel(FALSE, chunk);
-                    scrAccX -= chunk;
+
+                last_us = scrLastUs[idx];
+                scrLastUs[idx] = now_us;
+                if ((DWORD)(now_us - last_us) >
+                    (DWORD)(SUSPEND_RESET_SEC * 1000000.0))
+                    continue;
+                dt_i = (double)(DWORD)(now_us - last_us) / 1000000.0;
+                if (dt_i <= 0.0)
+                    continue;
+                elapsed_ms = (double)(DWORD)(now_us - scrStartUs[idx]) / 1000.0;
+                if (idx == 4 || idx == 5) {
+                    base = fast_base;
+                    maximum = fast_max;
+                } else {
+                    base = scroll_base;
+                    maximum = scroll_max;
+                }
+                sp = scroll_speed_for(elapsed_ms, base, maximum,
+                                      accel_time, curve);
+                delta = sp * dt_i;
+                if (!held) {
+                    // A tap keeps going until its minimum is delivered, and
+                    // no further.
+                    if (scrFed[idx] + delta >= scrMin[idx])
+                        delta = scrMin[idx] - scrFed[idx];
+                }
+                if (delta <= 0.0)
+                    continue;
+                scrFed[idx] += delta;
+                dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
+                dir_aimed = (aimed & (1 << idx)) != 0;
+                if (scroll_vertical(idx)) {
+                    scrAccY += dir * delta;
+                    if (dir_aimed)
+                        scrAimY = TRUE;
+                } else {
+                    scrAccX += dir * delta;
+                    if (dir_aimed)
+                        scrAimX = TRUE;
+                }
+                if (!held && scrFed[idx] >= scrMin[idx])
+                    scrActive[idx] = 0;
+            }
+
+            any_streams = scroll_active_any(scrActive);
+            if (g_cfg.smooth_scroll && any_streams &&
+                (!clock.valid || !had_streams)) {
+                // A new burst: follow the compositor's frame boundaries.
+                if (!clock.valid ||
+                    (DWORD)(now_us - clock.refreshed_us) >= 500000)
+                    scroll_clock_refresh(&clock, now, freq, now_us);
+                scrFrameValid = FALSE;
+            }
+
+            if (g_cfg.smooth_scroll) {
+                LONGLONG frame = scroll_frame_index(&clock, now);
+
+                if (!scrFrameValid || frame != scrFrame) {
+                    int dx = 0, dy = 0;
+
+                    scrFrameValid = TRUE;
+                    scrFrame = frame;
+                    if (scrAccY >= 1.0 - SCROLL_EPS ||
+                        scrAccY <= -1.0 + SCROLL_EPS) {
+                        dy = (int)(scrAccY +
+                            (scrAccY >= 0.0 ? SCROLL_EPS : -SCROLL_EPS));
+                        scrAccY -= (double)dy;
+                    }
+                    if (scrAccX >= 1.0 - SCROLL_EPS ||
+                        scrAccX <= -1.0 + SCROLL_EPS) {
+                        dx = (int)(scrAccX +
+                            (scrAccX >= 0.0 ? SCROLL_EPS : -SCROLL_EPS));
+                        scrAccX -= (double)dx;
+                    }
+                    if (dy != 0) {
+                        if (scrAimY && target_ok)
+                            post_wheel(target, TRUE, dy);
+                        else
+                            send_wheel(TRUE, dy);
+                    }
+                    if (dx != 0) {
+                        if (scrAimX && target_ok)
+                            post_wheel(target, FALSE, dx);
+                        else
+                            send_wheel(FALSE, dx);
+                    }
                 }
             } else {
-                scrAccX = scrAccY = 0.0;
+                // Whole notches only, one per event, rounding up.
+                while (scrAccY >= 120.0 - SCROLL_EPS ||
+                       scrAccY <= -120.0 + SCROLL_EPS) {
+                    int notch = scrAccY > 0.0 ? 120 : -120;
+
+                    if (scrAimY && target_ok)
+                        post_wheel(target, TRUE, notch);
+                    else
+                        send_wheel(TRUE, notch);
+                    scrAccY -= (double)notch;
+                }
+                while (scrAccX >= 120.0 - SCROLL_EPS ||
+                       scrAccX <= -120.0 + SCROLL_EPS) {
+                    int notch = scrAccX > 0.0 ? 120 : -120;
+
+                    if (scrAimX && target_ok)
+                        post_wheel(target, FALSE, notch);
+                    else
+                        send_wheel(FALSE, notch);
+                    scrAccX -= (double)notch;
+                }
             }
+
+            if (!mf && !sf && !any_streams &&
+                !scroll_flush_pending(scrAccX, scrAccY) &&
+                !scroll_press_pending(scrSeenGen) &&
+                !InterlockedCompareExchange(&s_scroll_pending, 0, 0))
+                break;
 
             wait_tick(timer);
         }

@@ -94,6 +94,7 @@ typedef struct {
     double slow_speed;         // while Shift is held (no acceleration), default 120
     double scroll_speed;       // default 1200  (10 notches/s)
     double scroll_max_speed;   // default 4800  (40 notches/s)
+    int    smooth_scroll;      // 1 = small steps once per display frame; default 1
     int    alt_scroll;         // 1 = Alt + move keys scroll anywhere, Alt + u/d fast; default 1
     int    alt_scroll_auto;    // 1 = Alt scrolling goes to the nearest scrollable area; default 1
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)

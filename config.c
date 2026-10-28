@@ -533,6 +533,7 @@ void config_set_defaults(Config *c)
     c->slow_speed = 120.0;
     c->scroll_speed = 1200.0;
     c->scroll_max_speed = 4800.0;
+    c->smooth_scroll = 1;
     c->alt_scroll = 1;
     c->alt_scroll_auto = 1;
     c->shortcut_paste = 1;
@@ -796,6 +797,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_double_positive(&c->scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"scroll_max_speed") == 0)
         apply_double_positive(&c->scroll_max_speed, line, key, val);
+    else if (_wcsicmp(key, L"smooth_scroll") == 0)
+        apply_bool(&c->smooth_scroll, line, key, val);
     else if (_wcsicmp(key, L"alt_scroll") == 0)
         apply_bool(&c->alt_scroll, line, key, val);
     else if (_wcsicmp(key, L"alt_scroll_auto") == 0)
@@ -1317,6 +1320,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"scroll_speed = %ls\r\n", num);
     fmt_double(d.scroll_max_speed, num, sizeof(num) / sizeof(num[0]));
     appendf(buf, cch, L"scroll_max_speed = %ls\r\n", num);
+    appendf(buf, cch, L"; 1 = scroll in small steps once per display frame (smooth);\r\n");
+    appendf(buf, cch, L"; 0 = only whole notches, for apps that treat each wheel message as one.\r\n");
+    appendf(buf, cch, L"smooth_scroll = %d\r\n", d.smooth_scroll ? 1 : 0);
     appendf(buf, cch, L"; 1 = Alt + the move keys (h j k l) scroll anywhere, also outside mouse\r\n");
     appendf(buf, cch, L"; mode, and Alt + the scroll up/down keys (u d) scroll fast.\r\n");
     appendf(buf, cch, L"alt_scroll = %d\r\n", d.alt_scroll ? 1 : 0);

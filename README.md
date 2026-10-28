@@ -195,7 +195,8 @@ ones:
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
-- `scroll_speed`, `scroll_max_speed`
+- `scroll_speed`, `scroll_max_speed`, `smooth_scroll` (1 = small steps once
+  per display frame, default; 0 = whole notches only)
 - `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
   anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area when
   the pointer is not over one), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
