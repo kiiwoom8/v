@@ -224,7 +224,7 @@ void hint_close(void);
 BOOL hint_is_open(void);
 void hint_on_key(UINT vk, UINT mods);
 void hint_on_elements(struct ClickList *list);  // WM_APP_ELEMENTS; always frees list
-void hint_hotkey_again(void);           // element hints -> grid -> closed
+void hint_hotkey_again(void);           // reload: rescan the elements, or reset the grid
 
 // ---------------------------------------------------------------------------
 // Clickable elements (uia.c). UI Automation runs on its own MTA worker thread;

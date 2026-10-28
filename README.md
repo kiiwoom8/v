@@ -4,8 +4,8 @@ vim mouse is a tiny Windows tray program that lets you drive the mouse pointer
 entirely from the keyboard. Tap CapsLock for mouse mode and move with `hjkl`,
 or press Alt+F to open click hints: labels appear on the clickable elements of
 the screen and one or two keypresses move the pointer and click one. When an
-app does not expose its elements, press the hotkey again for a labelled grid
-that can click anywhere. It runs
+app does not expose its elements, a labelled grid that can click anywhere
+opens instead. It runs
 in the background with no console window, is configured by a plain-text
 `vim.ini` next to the executable, and reloads that file as soon as you save it.
 
@@ -27,7 +27,7 @@ in the background with no console window, is configured by a plain-text
 
 | Key | Action |
 |---|---|
-| `Alt+F` | Open click hints on the monitor under the cursor; press again for the grid, again to close |
+| `Alt+F` | Open click hints on the monitor under the cursor; press again to rescan |
 | `Alt+h` / `Alt+j` / `Alt+k` / `Alt+l` | Scroll left / down / up / right, anywhere (tap = one notch, hold = continuous) |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
@@ -98,13 +98,12 @@ hotkey's Alt, so the menu stays open.
 | `Enter` / `Space` | Act on / move to the only matching element |
 | `Backspace` | Undo one typed character |
 | `Tab` / `Shift+Tab` | Move to the next / previous monitor and rescan |
-| hotkey again | Switch to the grid (again: close) |
+| hotkey again | Rescan the monitor (for elements that appeared since) |
 | `Esc` | Cancel |
 
 If an app does not expose UI Automation (some games, remote desktops,
 custom-drawn apps) the scan finds nothing and vim mouse falls back to the grid
-for that open. You can also ask for the grid at any time with a second press of
-the hint hotkey; the next press closes.
+for that open; the hotkey then tries the scan again.
 
 #### Grid
 
@@ -244,7 +243,8 @@ Left- or right-click the tray icon:
 - **Hints on an open menu.** They work: while a menu or flyout is open vim
   mouse holds back the hotkey's Alt, so the menu stays open.
 - **An app shows no labels.** It does not expose UI Automation (some games,
-  remote desktops, custom-drawn apps). Press the hotkey again for the grid.
+  remote desktops, custom-drawn apps), so the hints fall back to the grid.
+  Set `hint_mode = grid` to open the grid every time.
   `mingw32-make probe` builds `tools\uia_probe.exe`, which lists what the scan
   finds on the monitor under the cursor (`-v` for every element).
 - **Few labels the first time in Chrome, Edge or an Electron app.** These build

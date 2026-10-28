@@ -688,7 +688,7 @@ static void build_help_rows(void)
 
     help_add_header(L"Global");
     help_add_hotkey(&g_cfg.hint_hotkey,
-                    L"Open click hints (press again to close)");
+                    L"Open click hints (press again to rescan)");
     format_key(g_cfg.mouse_mode_key, mode, 64);
     _snwprintf(buf, 127, L"%s tap / hold", mode);
     buf[127] = L'\0';
@@ -749,7 +749,7 @@ static void build_help_rows(void)
     format_hotkey(&g_cfg.hint_hotkey, mode, 64);
     _snwprintf(buf, 127, L"%s again", mode);
     buf[127] = L'\0';
-    help_add_row(buf, L"Grid instead (again: close)");
+    help_add_row(buf, L"Rescan (Esc closes)");
 
     help_add_header(L"Grid");
     help_add_row(L"row letter, column letter", L"Pick a grid cell");

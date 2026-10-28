@@ -80,7 +80,7 @@ static HINSTANCE g_hint_inst;
 static HWND      g_hint_wnd;
 static BOOL      g_open;
 static int       g_mode;        // HINT_MODE_*
-static int       g_start_mode;  // mode the overlay opened in (hotkey cycling)
+static int       g_start_mode;  // mode the overlay opened in (hotkey reloads it)
 static int       g_state;       // 0 = nothing, 1 = row chosen, 2 = cell chosen
 static int       g_row;
 static int       g_col;
@@ -900,14 +900,14 @@ static void build_status(WCHAR *buf, int cch)
         if (g_scanning) {
             lstrcatW(buf, L"Finding clickable elements " DOT L" ");
             lstrcatW(buf, hk);
-            lstrcatW(buf, L" again: grid " DOT L" Esc cancel");
+            lstrcatW(buf, L" again: reload " DOT L" Esc cancel");
             return;
         }
         if (drop) lstrcatW(buf, L"Drop target: ");
         if (g_prefix_len == 0) {
             lstrcatW(buf, L"Type a label " DOT L" ");
             lstrcatW(buf, hk);
-            lstrcatW(buf, L" again: grid " DOT L" Esc cancel");
+            lstrcatW(buf, L" again: reload " DOT L" Esc cancel");
         } else {
             lstrcatW(buf, g_prefix);
             lstrcatW(buf, L"_ " DOT L" Backspace undo");
@@ -2204,16 +2204,10 @@ void hint_hotkey_again(void)
 {
     if (!g_open) return;
 
-    // First press switches to the other mode; a later press closes.
-    if (g_mode != g_start_mode) {
-        hint_close();
-        return;
-    }
-    if (g_mode == HINT_MODE_ELEMENTS) {
-        enter_grid_mode(NULL);
-    } else if (uia_available()) {
+    // Another press reloads what the hotkey opened: a fresh element scan
+    // (also after a fallback to the grid), or the grid back at its start.
+    if (g_start_mode == HINT_MODE_ELEMENTS && uia_available())
         start_element_mode();
-    } else {
-        hint_close();
-    }
+    else
+        enter_grid_mode(NULL);
 }

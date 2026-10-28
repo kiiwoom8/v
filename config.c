@@ -1385,7 +1385,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
                GetGValue(d.match_fg), GetBValue(d.match_fg));
     appendf(buf, cch, L"match_fg = %ls\r\n", num);
     appendf(buf, cch, L"; What the hint hotkey opens first: elements (clickable element\r\n");
-    appendf(buf, cch, L"; labels) or grid. The other mode is one more hotkey press away.\r\n");
+    appendf(buf, cch, L"; labels) or grid. Another hotkey press reloads it.\r\n");
     appendf(buf, cch, L"hint_mode = %ls\r\n",
             d.hint_mode == HINT_MODE_GRID ? L"grid" : L"elements");
     appendf(buf, cch, L"; Element scan scope: monitor (every visible window) or window\r\n");
