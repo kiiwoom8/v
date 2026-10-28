@@ -37,6 +37,24 @@
 #ifndef GUI_POPUPMENUMODE
 #define GUI_POPUPMENUMODE 0x00000010
 #endif
+#ifndef MOUSEEVENTF_VIRTUALDESK
+#define MOUSEEVENTF_VIRTUALDESK 0x4000
+#endif
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+#ifndef ProcessPowerThrottling
+#define ProcessPowerThrottling 4
+#endif
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+
+typedef struct {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+} VM_PROCESS_POWER_THROTTLING_STATE;
 
 BOOL WINAPI WTSRegisterSessionNotification(HWND hWnd, DWORD dwFlags);
 BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
@@ -124,7 +142,11 @@ static BOOL s_alt_consumed = FALSE;
 static UINT s_alt_scan = 0;
 static BOOL s_alt_extended = FALSE;
 
-static DWORD s_scroll_start[6];
+// Per-direction scroll timing, QueryPerformanceCounter-based microseconds.
+// A press bumps the generation so the movement thread can reset its accrual.
+static volatile LONG s_scroll_start_us[6];
+static volatile LONG s_scroll_prepaid[6];
+static volatile LONG s_scroll_gen[6];
 
 // Text shortcut being typed while Alt is held (see shortcut_begin).
 static BOOL  s_sc_active = FALSE;
@@ -204,14 +226,26 @@ static void notify_state(void)
     post_main(WM_APP_STATE_CHANGED, 0, 0);
 }
 
-static void send_relative_move(int dx, int dy)
+// Absolute moves are not distorted by "Enhance pointer precision", unlike
+// relative MOUSEEVENTF_MOVE. Coordinates are physical pixels of the whole
+// virtual desktop.
+static void send_absolute_move(int x, int y, int vx, int vy, int vw, int vh)
 {
     INPUT in;
+    LONGLONG nx, ny;
+
+    if (vw <= 0)
+        vw = 1;
+    if (vh <= 0)
+        vh = 1;
+    nx = ((LONGLONG)(x - vx) * 65536 + vw - 1) / vw;
+    ny = ((LONGLONG)(y - vy) * 65536 + vh - 1) / vh;
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
-    in.mi.dx = dx;
-    in.mi.dy = dy;
-    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    in.mi.dx = (LONG)nx;
+    in.mi.dy = (LONG)ny;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE |
+                    MOUSEEVENTF_VIRTUALDESK;
     SendInput(1, &in, sizeof(in));
 }
 
@@ -627,20 +661,44 @@ static void post_wheel(POINT pt, BOOL vertical, int delta)
                  MAKELPARAM((WORD)(SHORT)pt.x, (WORD)(SHORT)pt.y));
 }
 
+static DWORD qpc_us_from(LARGE_INTEGER counter, LARGE_INTEGER freq)
+{
+    LONGLONG secs, rem;
+
+    if (freq.QuadPart <= 0)
+        return 0;
+    secs = counter.QuadPart / freq.QuadPart;
+    rem = counter.QuadPart % freq.QuadPart;
+    return (DWORD)(secs * 1000000 + (rem * 1000000) / freq.QuadPart);
+}
+
+static DWORD qpc_now_us(void)
+{
+    LARGE_INTEGER freq, counter;
+
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    return qpc_us_from(counter, freq);
+}
+
 // auto_target: Alt scrolling, which finds the nearest scrollable area first.
 static void scroll_press(int act, BOOL auto_target)
 {
     int idx = act - ACT_SCROLL_UP;
     LONG bit = (LONG)(1 << idx);
-    DWORD now = GetTickCount();
-    s_scroll_start[idx] = now;
+    int notch = scroll_notch(idx);
+
     if (auto_target) {
         atomic_or(&s_scroll_auto, bit);
         atomic_or(&s_scroll_pending, bit);
         InterlockedIncrement(&s_target_gen);
     } else {
         atomic_and(&s_scroll_auto, ~bit);
-        send_wheel(scroll_vertical(idx), scroll_notch(idx));
+        // The first notch is prepaid: the held stream continues from its end.
+        s_scroll_start_us[idx] = (LONG)qpc_now_us();
+        s_scroll_prepaid[idx] = notch < 0 ? -notch : notch;
+        InterlockedIncrement(&s_scroll_gen[idx]);
+        send_wheel(scroll_vertical(idx), notch);
     }
     atomic_or(&s_scroll_flags, bit);
     if (s_move_event)
@@ -1235,17 +1293,15 @@ static int round_i(double value)
     return (int)floor(value + 0.5);
 }
 
-static double scroll_speed_for(LONG flags, int idx, double base, double maximum,
+// The direction's base speed from the press on; ramps toward its maximum from
+// SCROLL_HOLD_DELAY_MS on, with the same curve as the original formula.
+static double scroll_speed_for(double elapsed_ms, double base, double maximum,
                                double accel_time, double curve)
 {
-    double elapsed;
     double t;
-    if (!(flags & (LONG)(1 << idx)))
-        return 0.0;
-    elapsed = (double)(DWORD)(GetTickCount() - s_scroll_start[idx]);
-    if (elapsed < SCROLL_HOLD_DELAY_MS)
-        return 0.0;
-    t = (elapsed - SCROLL_HOLD_DELAY_MS) / 1000.0 / accel_time;
+    if (elapsed_ms < SCROLL_HOLD_DELAY_MS)
+        return base;
+    t = (elapsed_ms - SCROLL_HOLD_DELAY_MS) / 1000.0 / accel_time;
     if (t < 0.0)
         t = 0.0;
     if (t > 1.0)
@@ -1253,22 +1309,69 @@ static double scroll_speed_for(LONG flags, int idx, double base, double maximum,
     return base + (maximum - base) * pow(t, curve);
 }
 
+typedef HANDLE (WINAPI *CreateWaitableTimerExWFn)(LPSECURITY_ATTRIBUTES,
+                                                  LPCWSTR, DWORD, DWORD);
+
+static HANDLE create_move_timer(void)
+{
+    CreateWaitableTimerExWFn create;
+
+    create = (CreateWaitableTimerExWFn)(void *)GetProcAddress(
+        GetModuleHandleW(L"kernel32.dll"), "CreateWaitableTimerExW");
+    if (!create)
+        return NULL;
+    return create(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                  TIMER_ALL_ACCESS);
+}
+
+static void wait_tick(HANDLE timer)
+{
+    LARGE_INTEGER due;
+
+    if (timer) {
+        due.QuadPart = -10000;  // relative: 1 ms
+        if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+    Sleep(1);
+}
+
 static DWORD WINAPI movement_thread(LPVOID param)
 {
     LARGE_INTEGER freq, prev, now;
     double velX = 0.0, velY = 0.0;
-    double accX = 0.0, accY = 0.0;
     double holdX = 0.0, holdY = 0.0;
     double scrAccX = 0.0, scrAccY = 0.0;
+    double scrAccrued[6] = { 0 };
+    double scrFed[6] = { 0 };
+    double scrPrepaid[6] = { 0 };
+    LONG scrSeenGen[6] = { 0 };
+    double posX = 0.0, posY = 0.0;
+    POINT ref = { 0, 0 };
+    BOOL have_ref = FALSE;
     int prevSignX = 0, prevSignY = 0;
     BOOL timing = FALSE;
     LONG seen_gen = 0;
     POINT target = { 0, 0 };
     BOOL target_ok = FALSE;
+    HANDLE timer;
 
     (void)param;
+    // Keep the ticks steady while other programs load the CPU.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&prev);
+
+    // A high-resolution waitable timer ticks at ~1.7 ms on Windows 11, where
+    // Sleep(1) takes ~6 ms even with timeBeginPeriod(1). Keep the old timer
+    // resolution trick only as a fallback.
+    timer = create_move_timer();
+    if (!timer) {
+        timeBeginPeriod(1);
+        timing = TRUE;
+    }
 
     for (;;) {
         if (flag_get(&s_move_exit))
@@ -1283,12 +1386,11 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 continue;
         }
 
-        timeBeginPeriod(1);
-        timing = TRUE;
-        velX = velY = accX = accY = 0.0;
+        velX = velY = 0.0;
         holdX = holdY = 0.0;
         scrAccX = scrAccY = 0.0;
         prevSignX = prevSignY = 0;
+        have_ref = FALSE;
         QueryPerformanceCounter(&prev);
 
         while (!flag_get(&s_move_exit)) {
@@ -1296,20 +1398,23 @@ static DWORD WINAPI movement_thread(LPVOID param)
             LONG sf = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
             LONG gen = InterlockedCompareExchange(&s_target_gen, 0, 0);
             LONG pending, aimed;
-            double dt, remaining, accumDX = 0.0, accumDY = 0.0;
+            double dt, remaining, tickDX = 0.0, tickDY = 0.0;
             double speed, max_speed, accel_time, curve, slow_speed;
             double scroll_base, scroll_max, fast_base, fast_max;
             int signX, signY, idx;
             BOOL slow;
+            POINT cur;
+            int vx, vy, vw, vh;
+            BOOL have_cur;
 
             // A new Alt scroll press: find where it should go. The search
             // time does not count as scrolling time.
             if (gen != seen_gen) {
-                POINT cur;
+                POINT cur_pt;
                 LONG bits = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
                 seen_gen = gen;
-                target_ok = GetCursorPos(&cur) &&
-                    uia_scroll_target(cur, !(bits & (SCR_LEFT | SCR_RIGHT)),
+                target_ok = GetCursorPos(&cur_pt) &&
+                    uia_scroll_target(cur_pt, !(bits & (SCR_LEFT | SCR_RIGHT)),
                                       AUTO_TARGET_TIMEOUT_MS, &target);
                 QueryPerformanceCounter(&prev);
             }
@@ -1317,12 +1422,20 @@ static DWORD WINAPI movement_thread(LPVOID param)
             aimed = target_ok ? InterlockedCompareExchange(&s_scroll_auto, 0, 0)
                               : 0;
             for (idx = 0; idx < 6; idx++) {
+                int notch;
                 if (!(pending & (1 << idx)))
                     continue;
+                notch = scroll_notch(idx);
                 if (aimed & (1 << idx))
-                    post_wheel(target, scroll_vertical(idx), scroll_notch(idx));
+                    post_wheel(target, scroll_vertical(idx), notch);
                 else
-                    send_wheel(scroll_vertical(idx), scroll_notch(idx));
+                    send_wheel(scroll_vertical(idx), notch);
+                // The accrual and hold-delay clock start now, not at the
+                // press: the target lookup time is not scrolling time.
+                QueryPerformanceCounter(&now);
+                s_scroll_start_us[idx] = (LONG)qpc_us_from(now, freq);
+                s_scroll_prepaid[idx] = notch < 0 ? -notch : notch;
+                InterlockedIncrement(&s_scroll_gen[idx]);
             }
 
             if (!mf && !sf)
@@ -1334,21 +1447,21 @@ static DWORD WINAPI movement_thread(LPVOID param)
             if (dt <= 0.0)
                 dt = 0.001;
             if (dt > SUSPEND_RESET_SEC) {
-                velX = velY = accX = accY = 0.0;
+                velX = velY = 0.0;
                 holdX = holdY = 0.0;
                 scrAccX = scrAccY = 0.0;
                 prevSignX = prevSignY = 0;
-                Sleep(1);
+                wait_tick(timer);
                 continue;
             }
 
             signX = ((mf & MOVE_RIGHT) ? 1 : 0) - ((mf & MOVE_LEFT) ? 1 : 0);
             signY = ((mf & MOVE_DOWN) ? 1 : 0) - ((mf & MOVE_UP) ? 1 : 0);
             if (prevSignX != 0 && signX == 0) {
-                velX = accX = holdX = 0.0;
+                velX = holdX = 0.0;
             }
             if (prevSignY != 0 && signY == 0) {
-                velY = accY = holdY = 0.0;
+                velY = holdY = 0.0;
             }
             prevSignX = signX;
             prevSignY = signY;
@@ -1378,8 +1491,6 @@ static DWORD WINAPI movement_thread(LPVOID param)
             while (remaining > 0.0) {
                 double step = remaining > MAX_SIM_STEP_SEC ? MAX_SIM_STEP_SEC : remaining;
                 double targetX, targetY;
-                double moveX, moveY;
-                int dx, dy;
 
                 remaining -= step;
                 if (signX != 0)
@@ -1397,6 +1508,11 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 } else {
                     double tX = holdX / accel_time;
                     double tY = holdY / accel_time;
+                    // VELOCITY_SMOOTHING was tuned for 1 ms steps; scale it
+                    // by the actual step so responsiveness does not depend on
+                    // the tick rate.
+                    double alpha = 1.0 - pow(1.0 - VELOCITY_SMOOTHING,
+                                             step / 0.001);
                     if (tX < 0.0) tX = 0.0;
                     if (tX > 1.0) tX = 1.0;
                     if (tY < 0.0) tY = 0.0;
@@ -1405,38 +1521,103 @@ static DWORD WINAPI movement_thread(LPVOID param)
                         (speed + (max_speed - speed) * pow(tX, curve));
                     targetY = (double)signY *
                         (speed + (max_speed - speed) * pow(tY, curve));
-                    velX += (targetX - velX) * VELOCITY_SMOOTHING;
-                    velY += (targetY - velY) * VELOCITY_SMOOTHING;
+                    velX += (targetX - velX) * alpha;
+                    velY += (targetY - velY) * alpha;
                 }
 
-                moveX = velX * step;
-                moveY = velY * step;
-                accX += moveX;
-                accY += moveY;
+                tickDX += velX * step;
+                tickDY += velY * step;
+            }
 
-                dx = round_i(accX);
-                dy = round_i(accY);
-                if (dx != 0 || dy != 0) {
-                    accX -= dx;
-                    accY -= dy;
-                    accumDX += dx;
-                    accumDY += dy;
+            // Absolute moves are exact. Keep a double position and resync to
+            // the real cursor whenever it was not left where we put it (an
+            // external move, or a clamp at a screen edge). Sub-pixel progress
+            // is dropped on a resync; until the first move of a burst the
+            // cursor itself is the reference pixel.
+            have_cur = GetCursorPos(&cur);
+            vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (have_cur) {
+                if (!have_ref ||
+                    cur.x != ref.x || cur.y != ref.y) {
+                    posX = cur.x;
+                    posY = cur.y;
+                    ref = cur;
+                    have_ref = TRUE;
+                }
+            }
+            if ((tickDX != 0.0 || tickDY != 0.0) && have_ref) {
+                int px, py;
+
+                if (vw <= 0)
+                    vw = 1;
+                if (vh <= 0)
+                    vh = 1;
+                posX += tickDX;
+                posY += tickDY;
+                if (posX < vx)
+                    posX = vx;
+                if (posX > vx + vw - 1)
+                    posX = vx + vw - 1;
+                if (posY < vy)
+                    posY = vy;
+                if (posY > vy + vh - 1)
+                    posY = vy + vh - 1;
+                px = round_i(posX);
+                py = round_i(posY);
+                if (px != ref.x || py != ref.y) {
+                    send_absolute_move(px, py, vx, vy, vw, vh);
+                    ref.x = px;
+                    ref.y = py;
                 }
             }
 
-            if ((int)accumDX != 0 || (int)accumDY != 0)
-                send_relative_move((int)accumDX, (int)accumDY);
-
             if (sf) {
-                double sx = 0.0, sy = 0.0;
-                sy += scroll_speed_for(sf, 0, scroll_base, scroll_max, accel_time, curve);
-                sy -= scroll_speed_for(sf, 1, scroll_base, scroll_max, accel_time, curve);
-                sx -= scroll_speed_for(sf, 2, scroll_base, scroll_max, accel_time, curve);
-                sx += scroll_speed_for(sf, 3, scroll_base, scroll_max, accel_time, curve);
-                sy += scroll_speed_for(sf, 4, fast_base, fast_max, accel_time, curve);
-                sy -= scroll_speed_for(sf, 5, fast_base, fast_max, accel_time, curve);
-                scrAccY += sy * dt;
-                scrAccX += sx * dt;
+                DWORD now_us = qpc_us_from(now, freq);
+                for (idx = 0; idx < 6; idx++) {
+                    LONG gen_i;
+                    DWORD start_us;
+                    double elapsed_ms, base, maximum, sp, avail, dir;
+
+                    if (!(sf & (1 << idx)))
+                        continue;
+                    gen_i = InterlockedCompareExchange(&s_scroll_gen[idx], 0, 0);
+                    if (scrSeenGen[idx] != gen_i) {
+                        scrSeenGen[idx] = gen_i;
+                        scrAccrued[idx] = 0.0;
+                        scrFed[idx] = 0.0;
+                        scrPrepaid[idx] = (double)InterlockedCompareExchange(
+                            &s_scroll_prepaid[idx], 0, 0);
+                    }
+                    start_us = (DWORD)InterlockedCompareExchange(
+                        &s_scroll_start_us[idx], 0, 0);
+                    elapsed_ms = (double)(DWORD)(now_us - start_us) / 1000.0;
+                    if (idx == 4 || idx == 5) {
+                        base = fast_base;
+                        maximum = fast_max;
+                    } else {
+                        base = scroll_base;
+                        maximum = scroll_max;
+                    }
+                    sp = scroll_speed_for(elapsed_ms, base, maximum,
+                                          accel_time, curve);
+                    scrAccrued[idx] += sp * dt;
+                    if (elapsed_ms >= SCROLL_HOLD_DELAY_MS) {
+                        // The first notch was prepaid; only feed what has
+                        // accrued beyond it into the wheel accumulators.
+                        avail = scrAccrued[idx] - scrPrepaid[idx] - scrFed[idx];
+                        if (avail > 0.0) {
+                            dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
+                            scrFed[idx] += avail;
+                            if (scroll_vertical(idx))
+                                scrAccY += dir * avail;
+                            else
+                                scrAccX += dir * avail;
+                        }
+                    }
+                }
                 while (scrAccY >= 40.0 || scrAccY <= -40.0) {
                     int chunk = (int)scrAccY;
                     if (sf & aimed & (SCR_UP | SCR_DOWN | SCR_FAST_UP | SCR_FAST_DOWN))
@@ -1457,14 +1638,14 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 scrAccX = scrAccY = 0.0;
             }
 
-            Sleep(1);
-        }
-
-        if (timing) {
-            timeEndPeriod(1);
-            timing = FALSE;
+            wait_tick(timer);
         }
     }
+
+    if (timing)
+        timeEndPeriod(1);
+    if (timer)
+        CloseHandle(timer);
     return 0;
 }
 
@@ -1764,6 +1945,29 @@ static void cleanup_input(void)
     }
 }
 
+// Windows 11 ignores timer-resolution requests from processes without a
+// visible window. Opting out keeps the Sleep(1) fallback tick at ~1 ms.
+static void enable_timer_resolution(void)
+{
+    typedef BOOL (WINAPI *SetProcessInformationFn)(HANDLE, int, LPVOID, DWORD);
+    static BOOL done = FALSE;
+    VM_PROCESS_POWER_THROTTLING_STATE state;
+    SetProcessInformationFn set_info;
+
+    if (done)
+        return;
+    done = TRUE;
+    set_info = (SetProcessInformationFn)(void *)GetProcAddress(
+        GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation");
+    if (!set_info)
+        return;
+    ZeroMemory(&state, sizeof(state));
+    state.Version = 1;
+    state.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    state.StateMask = 0;
+    set_info(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state));
+}
+
 static DWORD WINAPI input_thread_proc(LPVOID param)
 {
     MSG msg;
@@ -1771,6 +1975,8 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
 
     (void)param;
     s_input_tid = GetCurrentThreadId();
+    // A starved hook thread delays every key press system-wide.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     create_power_window();
     create_indicator_window();
     start_movement_thread();
@@ -1821,6 +2027,7 @@ BOOL input_start(void)
 
     if (s_input_thread)
         return TRUE;
+    enable_timer_resolution();
     s_started_ok = FALSE;
     s_ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (!s_ready_event)
