@@ -25,7 +25,7 @@
 #define UIA_MODE_NONE 0
 #define UIA_SCAN_TIMEOUT_MS 1500
 #define UIA_MAX_TARGETS 2000
-#define UIA_HELPER_THREADS 3
+#define UIA_HELPER_THREADS 8
 
 #ifndef UIA_BoundingRectanglePropertyId
 #define UIA_BoundingRectanglePropertyId 30001
@@ -1123,7 +1123,9 @@ static void report_skip(UiaWindowCallback cb, void *cb_user,
 typedef struct {
     HWND hwnd;
     int z;
-    HANDLE done;
+    int win_index;              // caller-only; index into the enumerated WinInfo
+    volatile LONG finished;     // set by the scanning thread before signaling
+    LONG merged;                // caller-only
     DWORD elapsed_ms;
     ScanResult found;
 } ScanTask;
@@ -1135,11 +1137,12 @@ typedef struct {
     RECT monitor;
     UiaContinueCallback keep_going;
     void *keep_user;
+    UINT keep_scan_id;          // keep_user's pointee; see uia_scan_monitor
     ScanTask *tasks;
     int task_count;
     volatile LONG next;
     volatile LONG refs;
-    HANDLE refs_event;
+    HANDLE done_event;          // auto-reset, signaled by every finished task
 } ScanJob;
 
 static HANDLE g_helper_threads[UIA_HELPER_THREADS];
@@ -1150,10 +1153,24 @@ static ScanJob *g_job;
 static CRITICAL_SECTION g_pool_cs;
 static BOOL g_pool_cs_ready;
 
+// Whoever drops the last reference frees the whole job, including the result
+// arrays, the done event and the zrects. A helper finishing after the caller
+// has already returned therefore still has everything it touches.
 static void job_release_ref(ScanJob *job)
 {
-    if (InterlockedDecrement(&job->refs) == 0)
-        SetEvent(job->refs_event);
+    int i;
+
+    if (InterlockedDecrement(&job->refs) != 0)
+        return;
+    if (job->tasks) {
+        for (i = 0; i < job->task_count; ++i)
+            free(job->tasks[i].found.items);
+        free(job->tasks);
+    }
+    if (job->done_event)
+        CloseHandle(job->done_event);
+    free(job->zrects);
+    free(job);
 }
 
 static BOOL pool_is_stopping(void)
@@ -1205,14 +1222,16 @@ static DWORD WINAPI uia_helper(void *arg)
             task = &job->tasks[index];
             if (pool_is_stopping() ||
                 (job->keep_going && !job->keep_going(job->keep_user))) {
-                SetEvent(task->done);
+                InterlockedExchange(&task->finished, 1);
+                SetEvent(job->done_event);
                 continue;
             }
             started = GetTickCount();
             scan_window(job->engine, task->hwnd, job->zrects, task->z,
                         &job->monitor, &task->found);
             task->elapsed_ms = GetTickCount() - started;
-            SetEvent(task->done);
+            InterlockedExchange(&task->finished, 1);
+            SetEvent(job->done_event);
         }
         job_release_ref(job);
     }
@@ -1305,7 +1324,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     int *task_of_win = NULL;
     int order_count = 0;
     int task_count = 0;
-    int fg_task = -1;
+    int merged_count = 0;
     ScanJob *job = NULL;
     int i;
     int k;
@@ -1398,104 +1417,96 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     job = (ScanJob *)calloc(1, sizeof(*job));
     if (!job)
         goto done;
+    job->refs = 1;
     job->engine = engine;
     job->zrects = zrects;
+    zrects = NULL;              // owned by the job from here on
     job->zcount = zcount;
     job->monitor = mi.rcMonitor;
     job->keep_going = keep_going;
-    job->keep_user = keep_user;
+    // keep_user points into the worker's stack. Copy what the callback reads
+    // (the scan id) into the job so a late helper never touches that stack.
+    if (keep_going) {
+        job->keep_scan_id = keep_user ? *(const UINT *)keep_user : 0;
+        job->keep_user = &job->keep_scan_id;
+    }
     job->task_count = task_count;
+    job->done_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!job->done_event)
+        goto done;
     if (task_count > 0) {
         job->tasks = (ScanTask *)calloc((size_t)task_count,
                                         sizeof(*job->tasks));
         if (!job->tasks)
             goto done;
-        for (i = 0; i < task_count; ++i) {
-            job->tasks[i].done = CreateEventW(NULL, FALSE, FALSE, NULL);
-            if (!job->tasks[i].done)
-                goto done;
-        }
         for (k = 0; k < order_count; ++k) {
             int ti = task_of_win[order[k]];
             if (ti >= 0) {
                 job->tasks[ti].hwnd = ctx.items[order[k]].hwnd;
                 job->tasks[ti].z = ctx.items[order[k]].z;
+                job->tasks[ti].win_index = order[k];
             }
         }
-    }
-    job->refs_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!job->refs_event)
-        goto done;
-
-    // Claim the foreground task before the helpers see the job.
-    if (fg_index >= 0 && task_of_win[fg_index] >= 0) {
-        fg_task = task_of_win[fg_index];
-        job->next = fg_task + 1;
     }
 
     EnterCriticalSection(&g_pool_cs);
     g_job = job;
-    job->refs = 1;
     LeaveCriticalSection(&g_pool_cs);
     if (g_helper_count > 0 && g_job_sem)
         ReleaseSemaphore(g_job_sem, (LONG)g_helper_count, NULL);
 
-    // The foreground window starts first, on this thread.
-    if (fg_task >= 0) {
-        ScanTask *task = &job->tasks[fg_task];
-        if (!(keep_going && !keep_going(keep_user))) {
-            DWORD started = GetTickCount();
-            scan_window(engine, task->hwnd, job->zrects, task->z,
-                        &job->monitor, &task->found);
-            task->elapsed_ms = GetTickCount() - started;
-        }
-        SetEvent(task->done);
+    // Skips are independent of the scan order; report them up front.
+    for (k = 0; k < order_count; ++k) {
+        WinInfo *win = &ctx.items[order[k]];
+        if (!win->do_scan)
+            report_skip(cb, cb_user, win, result);
     }
 
-    for (k = 0; k < order_count; ++k) {
-        int wi = order[k];
-        WinInfo *win = &ctx.items[wi];
-        int ti = task_of_win[wi];
-        ScanTask *task;
+    // Merge in completion order. Tasks that finished together are merged in
+    // task order, so the foreground window (task 0) still goes first.
+    for (;;) {
+        int ti;
 
-        if (keep_going && !keep_going(keep_user))
+        if (keep_going && !keep_going(job->keep_user))
             break;
-        if (!win->do_scan) {
-            report_skip(cb, cb_user, win, result);
-            continue;
-        }
+        if (pool_is_stopping())
+            break;
+        if (merged_count >= job->task_count)
+            break;
 
-        task = &job->tasks[ti];
-        if (ti != fg_task) {
-            for (;;) {
-                LONG next = job->next;
-                if (next == ti &&
-                    InterlockedCompareExchange(&job->next, ti + 1, ti) ==
-                        ti) {
-                    if (!(keep_going && !keep_going(keep_user))) {
-                        DWORD started = GetTickCount();
-                        scan_window(engine, task->hwnd, job->zrects, task->z,
-                                    &job->monitor, &task->found);
-                        task->elapsed_ms = GetTickCount() - started;
-                    }
-                    SetEvent(task->done);
-                    break;
-                }
-                if (next > ti) {
-                    WaitForSingleObject(task->done, INFINITE);
-                    break;
-                }
-                Sleep(0);
-            }
-            if (keep_going && !keep_going(keep_user))
+        if (g_helper_count == 0) {
+            LONG index;
+
+            if (job->next >= job->task_count)
                 break;
+            index = InterlockedIncrement(&job->next) - 1;
+            if (index < job->task_count) {
+                ScanTask *task = &job->tasks[index];
+                DWORD started = GetTickCount();
+                scan_window(job->engine, task->hwnd, job->zrects, task->z,
+                            &job->monitor, &task->found);
+                task->elapsed_ms = GetTickCount() - started;
+                InterlockedExchange(&task->finished, 1);
+            }
+        } else {
+            WaitForSingleObject(job->done_event, 20);
         }
 
-        {
-            int before = result->count;
+        for (ti = 0; ti < job->task_count; ++ti) {
+            ScanTask *task = &job->tasks[ti];
+            WinInfo *win;
+            int before;
             int changes = 0;
             int j;
 
+            if (!InterlockedCompareExchange(&task->finished, 0, 0))
+                continue;
+            if (task->merged)
+                continue;
+            task->merged = 1;
+
+            win = &ctx.items[task->win_index];
+            before = result->count;
             for (j = 0; j < task->found.count; ++j) {
                 if (target_add(result, &task->found.items[j]))
                     ++changes;
@@ -1515,32 +1526,21 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                 event.targets = result->items;
                 cb(cb_user, &event);
             }
+            ++merged_count;
         }
     }
 
     EnterCriticalSection(&g_pool_cs);
-    g_job = NULL;
+    if (g_job == job)
+        g_job = NULL;
     LeaveCriticalSection(&g_pool_cs);
     job_release_ref(job);
-    WaitForSingleObject(job->refs_event, INFINITE);
+    job = NULL;
 
 done:
-    if (job) {
-        if (job->tasks) {
-            for (i = 0; i < job->task_count; ++i) {
-                if (job->tasks[i].done)
-                    CloseHandle(job->tasks[i].done);
-                free(job->tasks[i].found.items);
-            }
-            free(job->tasks);
-        }
-        if (job->refs_event)
-            CloseHandle(job->refs_event);
-        free(job->zrects);
-        free(job);
-    } else {
-        free(zrects);
-    }
+    if (job)
+        job_release_ref(job);
+    free(zrects);
     free(task_of_win);
     free(order);
     free(zlist);
