@@ -250,6 +250,7 @@ void uia_cancel(void);
 // should go to *target instead. One caller thread at a time (the movement
 // thread). uia_stop stops it too.
 BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms, POINT *target);
+void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);
 
 // ---------------------------------------------------------------------------

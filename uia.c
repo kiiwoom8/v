@@ -2038,36 +2038,42 @@ void uia_cancel(void)
 #define UIA_ScrollVerticallyScrollablePropertyId 30058
 #endif
 #define UIA_TREESCOPE_SUBTREE 7
-#define SCROLL_CACHE_MS 2000
 #define SCROLL_MIN_SIZE 16
+#define SCROLL_CACHE_ROOTS 8
+#define SCROLL_STALE_MS 10000   // older than this: refresh and wait
+#define SCROLL_FRESH_MS 1000    // older than this: refresh in the background
 
 typedef struct {
-    UINT  id;          // 0 = none
-    POINT pt;
-    BOOL  vertical;
-    HWND  root;
-} ScrollRequest;
+    RECT rc;
+    BOOL vertical;      // scrolls vertically
+    BOOL horizontal;    // scrolls horizontally
+} ScrollArea;
 
 typedef struct {
-    UINT  id;
-    BOOL  redirect;
-    POINT target;
-} ScrollResult;
+    BOOL        used;
+    HWND        root;
+    ScrollArea *areas;
+    int         count;
+    int         cap;
+    BOOL        valid;       // a refresh has completed at least once
+    DWORD       tick;        // completion tick
+    DWORD       last_used;   // LRU tick
+    UINT        gen;         // incremented when a refresh completes
+    BOOL        refreshing;  // queued or in flight
+    int         waiters;     // uia_scroll_target callers waiting for it
+    HANDLE      done;        // manual reset; set when a refresh completes
+} ScrollCache;
 
 static HANDLE g_sc_thread;
 static HANDLE g_sc_wake;
-static HANDLE g_sc_done;
 static CRITICAL_SECTION g_sc_cs;
-static volatile LONG g_sc_state;      // 0 = off, 1 = starting, 2 = running
+static volatile LONG g_sc_state;      // 0 = off, 1 = starting, 2 = running, 3 = failed
 static volatile LONG g_sc_quit;
-static ScrollRequest g_sc_request;
-static ScrollResult  g_sc_result;
-static UINT g_sc_next_id;
+static ScrollCache g_sc_cache[SCROLL_CACHE_ROOTS];
 
-// The last answer, reused while the pointer stays put (repeated taps).
-static ScrollRequest g_sc_cached;
-static ScrollResult  g_sc_cached_result;
-static DWORD g_sc_cached_tick;
+// The refresh request for the worker: one at a time, latest pending root wins.
+static HWND g_sc_req_root;
+static BOOL g_sc_req_pending;
 
 static LONG64 point_rect_distance2(POINT pt, const RECT *rc)
 {
@@ -2107,66 +2113,186 @@ static POINT point_into_rect(POINT pt, const RECT *rc)
     return out;
 }
 
-static void scroll_find(IUIAutomation *automation,
-                        IUIAutomationCondition *condition,
-                        IUIAutomationCacheRequest *cache,
-                        const ScrollRequest *req, ScrollResult *res)
+static BOOL scroll_list_add(ScrollArea **items, int *count, int *cap,
+                            const ScrollArea *area)
 {
-    IUIAutomationElement *root = NULL;
+    ScrollArea *p;
+    int ncap;
+
+    if (*count == *cap) {
+        ncap = *cap ? *cap * 2 : 16;
+        p = realloc(*items, (size_t)ncap * sizeof(*p));
+        if (!p)
+            return FALSE;
+        *items = p;
+        *cap = ncap;
+    }
+    (*items)[*count] = *area;
+    ++*count;
+    return TRUE;
+}
+
+// Collects every on-screen scrollable area inside the window. Runs on the
+// worker thread; the list is handed to the cache under the lock.
+static void scroll_collect(IUIAutomation *automation,
+                           IUIAutomationCondition *condition,
+                           IUIAutomationCacheRequest *cache,
+                           HWND root, ScrollArea **items, int *count, int *cap)
+{
+    IUIAutomationElement *root_el = NULL;
     IUIAutomationElementArray *array = NULL;
     RECT win;
-    LONG64 best_dist = -1, inside_area = -1;
-    RECT best;
     int i, n = 0;
-    int prop = req->vertical ? UIA_ScrollVerticallyScrollablePropertyId
-                             : UIA_ScrollHorizontallyScrollablePropertyId;
 
-    res->redirect = FALSE;
-    SetRectEmpty(&best);
-    if (!GetWindowRect(req->root, &win))
+    *items = NULL;
+    *count = 0;
+    *cap = 0;
+    if (!GetWindowRect(root, &win))
         return;
     if (FAILED(automation->lpVtbl->ElementFromHandle(
-            automation, (UIA_HWND)req->root, &root)) || !root)
+            automation, (UIA_HWND)root, &root_el)) || !root_el)
         return;
-    if (FAILED(root->lpVtbl->FindAllBuildCache(
-            root, UIA_TREESCOPE_SUBTREE, condition, cache, &array)) || !array) {
-        root->lpVtbl->Release(root);
+    if (FAILED(root_el->lpVtbl->FindAllBuildCache(
+            root_el, UIA_TREESCOPE_SUBTREE, condition, cache, &array)) ||
+        !array) {
+        root_el->lpVtbl->Release(root_el);
         return;
     }
     array->lpVtbl->get_Length(array, &n);
     for (i = 0; i < n; ++i) {
         IUIAutomationElement *el = NULL;
+        ScrollArea area;
         RECT rc;
 
         if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
             continue;
-        if (cached_bool_property(el, prop) &&
+        area.vertical = cached_bool_property(
+            el, UIA_ScrollVerticallyScrollablePropertyId);
+        area.horizontal = cached_bool_property(
+            el, UIA_ScrollHorizontallyScrollablePropertyId);
+        if ((area.vertical || area.horizontal) &&
             SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc)) &&
             IntersectRect(&rc, &rc, &win) &&
             rc.right - rc.left >= SCROLL_MIN_SIZE &&
             rc.bottom - rc.top >= SCROLL_MIN_SIZE) {
-            if (PtInRect(&rc, req->pt)) {
-                LONG64 area = rect_area(&rc);
-                if (inside_area < 0 || area < inside_area)
-                    inside_area = area;
-            } else {
-                LONG64 d = point_rect_distance2(req->pt, &rc);
-                if (best_dist < 0 || d < best_dist) {
-                    best_dist = d;
-                    best = rc;
-                }
+            area.rc = rc;
+            if (!scroll_list_add(items, count, cap, &area)) {
+                el->lpVtbl->Release(el);
+                break;
             }
         }
         el->lpVtbl->Release(el);
     }
     array->lpVtbl->Release(array);
-    root->lpVtbl->Release(root);
+    root_el->lpVtbl->Release(root_el);
+}
 
-    // Already over something that scrolls this way: the wheel gets there.
-    if (inside_area >= 0 || best_dist < 0)
+static ScrollCache *scroll_cache_find(HWND root)
+{
+    int i;
+
+    for (i = 0; i < SCROLL_CACHE_ROOTS; ++i)
+        if (g_sc_cache[i].used && g_sc_cache[i].root == root)
+            return &g_sc_cache[i];
+    return NULL;
+}
+
+// Reuses a free slot, or evicts the least recently used entry that nobody is
+// refreshing or waiting for.
+static ScrollCache *scroll_cache_alloc(HWND root, DWORD now)
+{
+    ScrollCache *e = NULL;
+    int i, victim = -1;
+    DWORD oldest = 0;
+
+    for (i = 0; i < SCROLL_CACHE_ROOTS; ++i) {
+        if (!g_sc_cache[i].used) {
+            e = &g_sc_cache[i];
+            break;
+        }
+    }
+    if (!e) {
+        for (i = 0; i < SCROLL_CACHE_ROOTS; ++i) {
+            ScrollCache *c = &g_sc_cache[i];
+            if (c->refreshing || c->waiters > 0)
+                continue;
+            if (victim < 0 || (LONG)(c->last_used - oldest) < 0) {
+                victim = i;
+                oldest = c->last_used;
+            }
+        }
+        if (victim < 0)
+            return NULL;
+        e = &g_sc_cache[victim];
+    }
+    free(e->areas);
+    e->areas = NULL;
+    e->count = 0;
+    e->cap = 0;
+    e->used = TRUE;
+    e->root = root;
+    e->valid = FALSE;
+    e->tick = 0;
+    e->last_used = now;
+    e->gen = 0;
+    e->refreshing = FALSE;
+    e->waiters = 0;
+    ResetEvent(e->done);
+    return e;
+}
+
+// Queues a refresh for root, replacing a pending request for another root.
+// Requests for the same root coalesce. Caller holds g_sc_cs.
+static void scroll_queue_locked(HWND root, DWORD now)
+{
+    ScrollCache *e = scroll_cache_find(root);
+
+    if (!e)
+        e = scroll_cache_alloc(root, now);
+    if (!e || e->refreshing)
         return;
-    res->redirect = TRUE;
-    res->target = point_into_rect(req->pt, &best);
+    if (g_sc_req_pending && g_sc_req_root != root) {
+        ScrollCache *old = scroll_cache_find(g_sc_req_root);
+        if (old)
+            old->refreshing = FALSE;
+    }
+    e->refreshing = TRUE;
+    ResetEvent(e->done);
+    g_sc_req_root = root;
+    g_sc_req_pending = TRUE;
+    SetEvent(g_sc_wake);
+}
+
+// The same decision scroll_find used to make, from a cached area list.
+static BOOL scroll_area_answer(const ScrollCache *e, POINT pt, BOOL vertical,
+                               POINT *target)
+{
+    LONG64 best_dist = -1, inside_area = -1;
+    RECT best;
+    int i;
+
+    SetRectEmpty(&best);
+    for (i = 0; i < e->count; ++i) {
+        const ScrollArea *a = &e->areas[i];
+
+        if (!(vertical ? a->vertical : a->horizontal))
+            continue;
+        if (PtInRect(&a->rc, pt)) {
+            LONG64 area = rect_area(&a->rc);
+            if (inside_area < 0 || area < inside_area)
+                inside_area = area;
+        } else {
+            LONG64 d = point_rect_distance2(pt, &a->rc);
+            if (best_dist < 0 || d < best_dist) {
+                best_dist = d;
+                best = a->rc;
+            }
+        }
+    }
+    if (inside_area >= 0 || best_dist < 0)
+        return FALSE;
+    *target = point_into_rect(pt, &best);
+    return TRUE;
 }
 
 static BOOL scroll_engine_init(IUIAutomation **automation,
@@ -2248,22 +2374,42 @@ static DWORD WINAPI scroll_worker(void *arg)
 
     while (WaitForSingleObject(g_sc_wake, INFINITE) == WAIT_OBJECT_0 &&
            !InterlockedCompareExchange(&g_sc_quit, 0, 0)) {
-        ScrollRequest req;
-        ScrollResult res;
+        ScrollArea *items = NULL;
+        int count = 0, cap = 0;
+        HWND root;
 
         EnterCriticalSection(&g_sc_cs);
-        req = g_sc_request;
+        root = g_sc_req_pending ? g_sc_req_root : NULL;
+        g_sc_req_pending = FALSE;
+        g_sc_req_root = NULL;
         LeaveCriticalSection(&g_sc_cs);
-        if (!req.id)
+        if (!root)
             continue;
-        memset(&res, 0, sizeof(res));
-        res.id = req.id;
+
         if (ready)
-            scroll_find(automation, condition, cache, &req, &res);
+            scroll_collect(automation, condition, cache, root,
+                           &items, &count, &cap);
+
         EnterCriticalSection(&g_sc_cs);
-        g_sc_result = res;
+        {
+            ScrollCache *e = scroll_cache_find(root);
+
+            if (e) {
+                free(e->areas);
+                e->areas = items;
+                e->count = count;
+                e->cap = cap;
+                e->valid = TRUE;
+                e->tick = GetTickCount();
+                e->last_used = e->tick;
+                ++e->gen;
+                e->refreshing = FALSE;
+                SetEvent(e->done);
+                items = NULL;
+            }
+        }
         LeaveCriticalSection(&g_sc_cs);
-        SetEvent(g_sc_done);
+        free(items);
     }
 
     if (cache)
@@ -2277,19 +2423,60 @@ static DWORD WINAPI scroll_worker(void *arg)
     return 0;
 }
 
+static BOOL scroll_worker_init(void)
+{
+    int i;
+
+    InitializeCriticalSection(&g_sc_cs);
+    memset(g_sc_cache, 0, sizeof(g_sc_cache));
+    g_sc_req_root = NULL;
+    g_sc_req_pending = FALSE;
+    g_sc_quit = 0;
+    g_sc_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!g_sc_wake) {
+        DeleteCriticalSection(&g_sc_cs);
+        return FALSE;
+    }
+    for (i = 0; i < SCROLL_CACHE_ROOTS; ++i) {
+        g_sc_cache[i].done = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!g_sc_cache[i].done) {
+            while (i-- > 0)
+                CloseHandle(g_sc_cache[i].done);
+            CloseHandle(g_sc_wake);
+            g_sc_wake = NULL;
+            DeleteCriticalSection(&g_sc_cs);
+            return FALSE;
+        }
+    }
+    g_sc_thread = CreateThread(NULL, 0, scroll_worker, NULL, 0, NULL);
+    if (!g_sc_thread) {
+        for (i = 0; i < SCROLL_CACHE_ROOTS; ++i) {
+            CloseHandle(g_sc_cache[i].done);
+            g_sc_cache[i].done = NULL;
+        }
+        CloseHandle(g_sc_wake);
+        g_sc_wake = NULL;
+        DeleteCriticalSection(&g_sc_cs);
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static BOOL scroll_worker_start(void)
 {
-    if (InterlockedCompareExchange(&g_sc_state, 1, 0) == 0) {
-        InitializeCriticalSection(&g_sc_cs);
-        g_sc_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
-        g_sc_done = CreateEventW(NULL, FALSE, FALSE, NULL);
-        g_sc_quit = 0;
-        g_sc_thread = (g_sc_wake && g_sc_done)
-            ? CreateThread(NULL, 0, scroll_worker, NULL, 0, NULL) : NULL;
-        InterlockedExchange(&g_sc_state, g_sc_thread ? 2 : 3);
-    }
+    if (InterlockedCompareExchange(&g_sc_state, 1, 0) == 0)
+        InterlockedExchange(&g_sc_state, scroll_worker_init() ? 2 : 3);
     while (InterlockedCompareExchange(&g_sc_state, 1, 1) == 1)
         Sleep(0);
+    return InterlockedCompareExchange(&g_sc_state, 2, 2) == 2;
+}
+
+// Like scroll_worker_start but never spins. Returns FALSE while another thread
+// is still starting the worker.
+static BOOL scroll_worker_start_nonblocking(void)
+{
+    if (InterlockedCompareExchange(&g_sc_state, 1, 0) == 0)
+        InterlockedExchange(&g_sc_state, scroll_worker_init() ? 2 : 3);
     return InterlockedCompareExchange(&g_sc_state, 2, 2) == 2;
 }
 
@@ -2322,56 +2509,110 @@ static HWND scroll_root_for(POINT pt)
 BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
                        POINT *target)
 {
-    ScrollRequest req;
-    ScrollResult res;
-    DWORD now = GetTickCount();
-    UINT id;
+    HWND root;
+    ScrollCache *e;
+    HANDLE done;
+    DWORD start;
+    UINT gen;
+    BOOL redirect;
 
-    req.root = scroll_root_for(pt);
-    if (!req.root)
+    root = scroll_root_for(pt);
+    if (!root)
         return FALSE;
-    req.pt = pt;
-    req.vertical = vertical;
-    if (g_sc_cached.id && g_sc_cached.root == req.root &&
-        g_sc_cached.vertical == vertical &&
-        abs(g_sc_cached.pt.x - pt.x) <= 2 && abs(g_sc_cached.pt.y - pt.y) <= 2 &&
-        now - g_sc_cached_tick < SCROLL_CACHE_MS) {
-        *target = g_sc_cached_result.target;
-        return g_sc_cached_result.redirect;
-    }
     if (!scroll_worker_start())
         return FALSE;
 
-    id = ++g_sc_next_id;
-    if (id == 0)
-        id = ++g_sc_next_id;
-    req.id = id;
+    start = GetTickCount();
     EnterCriticalSection(&g_sc_cs);
-    g_sc_request = req;
+    e = scroll_cache_find(root);
+    if (e && e->valid &&
+        (DWORD)(start - e->tick) < SCROLL_STALE_MS) {
+        if ((DWORD)(start - e->tick) > SCROLL_FRESH_MS && !e->refreshing)
+            scroll_queue_locked(root, start);
+        e->last_used = start;
+        redirect = scroll_area_answer(e, pt, vertical, target);
+        LeaveCriticalSection(&g_sc_cs);
+        return redirect;
+    }
+    if (!e) {
+        e = scroll_cache_alloc(root, start);
+        if (!e) {
+            LeaveCriticalSection(&g_sc_cs);
+            return FALSE;
+        }
+    }
+    if (!e->refreshing)
+        scroll_queue_locked(root, start);
+    e->last_used = start;
+    gen = e->gen;
+    ++e->waiters;
+    done = e->done;
     LeaveCriticalSection(&g_sc_cs);
-    ResetEvent(g_sc_done);
-    SetEvent(g_sc_wake);
 
     for (;;) {
-        DWORD waited = GetTickCount() - now;
-        if (waited >= timeout_ms ||
-            WaitForSingleObject(g_sc_done, timeout_ms - waited) != WAIT_OBJECT_0)
-            return FALSE;
-        EnterCriticalSection(&g_sc_cs);
-        res = g_sc_result;
-        LeaveCriticalSection(&g_sc_cs);
-        if (res.id == id)
+        DWORD elapsed = GetTickCount() - start;
+
+        if (elapsed >= timeout_ms ||
+            WaitForSingleObject(done, timeout_ms - elapsed) != WAIT_OBJECT_0)
             break;
+        EnterCriticalSection(&g_sc_cs);
+        e = scroll_cache_find(root);
+        if (e && e->valid && e->gen != gen) {
+            e->last_used = GetTickCount();
+            redirect = scroll_area_answer(e, pt, vertical, target);
+            --e->waiters;
+            LeaveCriticalSection(&g_sc_cs);
+            return redirect;
+        }
+        LeaveCriticalSection(&g_sc_cs);
     }
-    g_sc_cached = req;
-    g_sc_cached_result = res;
-    g_sc_cached_tick = GetTickCount();
-    *target = res.target;
-    return res.redirect;
+
+    EnterCriticalSection(&g_sc_cs);
+    e = scroll_cache_find(root);
+    if (e && e->waiters > 0)
+        --e->waiters;
+    LeaveCriticalSection(&g_sc_cs);
+    return FALSE;
+}
+
+// Starts caching the scrollable areas of the window under pt. Never waits and
+// makes no UI Automation calls on the caller's thread.
+void uia_scroll_prefetch(POINT pt)
+{
+    HWND root;
+    ScrollCache *e;
+    DWORD now;
+
+    root = scroll_root_for(pt);
+    if (!root)
+        return;
+    if (!scroll_worker_start_nonblocking())
+        return;
+    now = GetTickCount();
+    EnterCriticalSection(&g_sc_cs);
+    e = scroll_cache_find(root);
+    if (e) {
+        e->last_used = now;
+        if (e->refreshing ||
+            (e->valid && (DWORD)(now - e->tick) < SCROLL_FRESH_MS)) {
+            LeaveCriticalSection(&g_sc_cs);
+            return;
+        }
+        scroll_queue_locked(root, now);
+    } else {
+        e = scroll_cache_alloc(root, now);
+        if (e)
+            scroll_queue_locked(root, now);
+    }
+    LeaveCriticalSection(&g_sc_cs);
 }
 
 void uia_scroll_stop(void)
 {
+    int i;
+
+    while (InterlockedCompareExchange(&g_sc_state, 1, 1) == 1)
+        Sleep(0);
     if (InterlockedCompareExchange(&g_sc_state, 0, 0) != 2)
         return;
     InterlockedExchange(&g_sc_quit, 1);
@@ -2380,10 +2621,25 @@ void uia_scroll_stop(void)
         return;
     CloseHandle(g_sc_thread);
     CloseHandle(g_sc_wake);
-    CloseHandle(g_sc_done);
     g_sc_thread = NULL;
     g_sc_wake = NULL;
-    g_sc_done = NULL;
+    EnterCriticalSection(&g_sc_cs);
+    for (i = 0; i < SCROLL_CACHE_ROOTS; ++i) {
+        free(g_sc_cache[i].areas);
+        g_sc_cache[i].areas = NULL;
+        g_sc_cache[i].count = 0;
+        g_sc_cache[i].cap = 0;
+        g_sc_cache[i].used = FALSE;
+        g_sc_cache[i].refreshing = FALSE;
+        g_sc_cache[i].waiters = 0;
+        if (g_sc_cache[i].done) {
+            CloseHandle(g_sc_cache[i].done);
+            g_sc_cache[i].done = NULL;
+        }
+    }
+    g_sc_req_root = NULL;
+    g_sc_req_pending = FALSE;
+    LeaveCriticalSection(&g_sc_cs);
     DeleteCriticalSection(&g_sc_cs);
     InterlockedExchange(&g_sc_state, 0);
 }
