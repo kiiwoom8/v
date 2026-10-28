@@ -97,6 +97,13 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // Scroll speed ramps from its base toward its maximum after this delay. A tap
 // still delivers at least one notch (fast_scroll_lines notches for the fast keys).
 #define SCROLL_HOLD_DELAY_MS 150.0
+// A double tap glides to the end instead of jumping: its fast stream starts at
+// fast_scroll_speed and grows exponentially with this time constant. The exact
+// distance delivered after t is v0 * tau * (e^(t/tau) - 1); it stops once it
+// reaches SCROLL_JUMP_UNITS, 64 of the largest signed 16-bit wheel deltas.
+// Apps clamp at their end, so the tail beyond it is invisible.
+#define SCROLL_JUMP_TAU_MS 50.0
+#define SCROLL_JUMP_UNITS (64.0 * 32760.0)
 // How long Alt scrolling waits for the nearest scrollable area before it
 // scrolls under the cursor instead.
 #define AUTO_TARGET_TIMEOUT_MS 500
@@ -128,9 +135,10 @@ static volatile LONG s_scroll_flags = 0;
 static volatile LONG s_scroll_auto = 0;
 static volatile LONG s_scroll_pending = 0;
 static volatile LONG s_target_gen = 0;
-// A double tap of an Alt fast-scroll key jumps to the end of the page instead
-// of scrolling another step; the movement thread emits it when it starts the
-// press and clears the bit.
+// A double tap of an Alt fast-scroll key goes to the end of the page instead
+// of scrolling another step. With smooth scrolling the movement thread glides
+// there on that direction's fast stream; without it, it sends the whole jump at
+// once. The bit marks the press and is cleared when the thread starts it.
 static volatile LONG s_scroll_jump = 0;
 static volatile LONG s_move_exit = 0;
 
@@ -310,8 +318,9 @@ static void send_wheel(BOOL vertical, int delta)
     SendInput(1, &in, sizeof(in));
 }
 
-// Jumping to the end is 64 events of the largest delta a signed 16-bit wheel
-// value can carry (273 notches); apps clamp at their end.
+// Without smooth scrolling, jumping to the end is 64 events of the largest
+// delta a signed 16-bit wheel value can carry (273 notches); apps clamp at
+// their end. Smooth scrolling glides there instead (see SCROLL_JUMP_*).
 static void send_wheel_jump(BOOL vertical, int delta)
 {
     INPUT in[64];
@@ -1615,10 +1624,13 @@ static DWORD WINAPI movement_thread(LPVOID param)
     double scrAccX = 0.0, scrAccY = 0.0;
     double scrFed[6] = { 0 };
     double scrMin[6] = { 0 };
+    double scrJumpDelivered[6] = { 0 };
     DWORD scrStartUs[6] = { 0 };
     DWORD scrLastUs[6] = { 0 };
+    DWORD scrJumpStartUs[6] = { 0 };
     LONG scrSeenGen[6] = { 0 };
     unsigned char scrActive[6] = { 0 };
+    unsigned char scrJump[6] = { 0 };
     BOOL scrAimX = FALSE, scrAimY = FALSE;
     BOOL scrFrameValid = FALSE;
     LONGLONG scrFrame = 0;
@@ -1723,6 +1735,14 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 holdX = holdY = 0.0;
                 scrAccX = scrAccY = 0.0;
                 prevSignX = prevSignY = 0;
+                // A glide does not survive a suspend; the gap would otherwise
+                // arrive all at once.
+                for (idx = 0; idx < 6; idx++) {
+                    if (!scrJump[idx])
+                        continue;
+                    scrJump[idx] = 0;
+                    scrActive[idx] = 0;
+                }
                 wait_tick(timer);
                 continue;
             }
@@ -1859,28 +1879,55 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
                 if (scrSeenGen[idx] != gen_i) {
                     LONG jump;
-                    int k, delta;
+                    int j, k, delta;
 
                     // An Alt press starts only once its target lookup is
                     // done; its pending bit is cleared right after the lookup.
                     if (pending & (1 << idx))
                         continue;
                     scrSeenGen[idx] = gen_i;
+
+                    // Any new press ends a jump still gliding there; its
+                    // accumulator is dropped so the next stream starts clean.
+                    // Jumps are vertical only.
+                    for (j = 0; j < 6; j++) {
+                        if (!scrJump[j])
+                            continue;
+                        scrJump[j] = 0;
+                        scrActive[j] = 0;
+                        scrAccY = 0.0;
+                    }
+
                     jump = InterlockedCompareExchange(&s_scroll_jump, 0, 0);
                     if (jump & (1 << idx)) {
-                        // Second tap: stop the axis and jump to the end.
                         atomic_and(&s_scroll_jump, ~(LONG)(1 << idx));
-                        scrActive[0] = scrActive[1] = 0;
-                        scrActive[4] = scrActive[5] = 0;
-                        scrAccY = 0.0;
-                        delta = idx == 4 ? 32760 : -32760;
-                        dir_aimed = (aimed & (1 << idx)) != 0;
-                        if (dir_aimed && target_ok) {
-                            for (k = 0; k < 64; k++)
-                                post_wheel(target, TRUE, delta);
-                        } else {
-                            send_wheel_jump(TRUE, delta);
+                        if (!g_cfg.smooth_scroll) {
+                            // No smooth scrolling: stop the axis and send
+                            // the whole jump at once.
+                            scrActive[0] = scrActive[1] = 0;
+                            scrActive[4] = scrActive[5] = 0;
+                            scrAccY = 0.0;
+                            delta = idx == 4 ? 32760 : -32760;
+                            dir_aimed = (aimed & (1 << idx)) != 0;
+                            if (dir_aimed && target_ok) {
+                                for (k = 0; k < 64; k++)
+                                    post_wheel(target, TRUE, delta);
+                            } else {
+                                send_wheel_jump(TRUE, delta);
+                            }
+                            continue;
                         }
+                        // Smooth: glide on this direction's fast stream from
+                        // wherever the first tap left the axis, while the
+                        // other vertical streams stop.
+                        scrActive[0] = scrActive[1] = 0;
+                        scrActive[idx == 4 ? 5 : 4] = 0;
+                        scrActive[idx] = 1;
+                        scrJump[idx] = 1;
+                        scrJumpStartUs[idx] = now_us;
+                        scrJumpDelivered[idx] = 0.0;
+                        scrFed[idx] = 0.0;
+                        scrLastUs[idx] = now_us;
                         continue;
                     }
                     scrMin[idx] = (double)abs(scroll_notch(idx));
@@ -1909,6 +1956,39 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
                 if (!scrActive[idx])
                     continue;
+                if (scrJump[idx]) {
+                    // A glide ignores the key: its exact distance after t is
+                    // v0 * tau * (e^(t/tau) - 1), fed frame by frame until it
+                    // has covered the whole jump. Ticks do not affect accuracy.
+                    double tau = SCROLL_JUMP_TAU_MS / 1000.0;
+                    double total, jdelta;
+                    DWORD elapsed_us;
+
+                    last_us = scrLastUs[idx];
+                    scrLastUs[idx] = now_us;
+                    if ((DWORD)(now_us - last_us) >
+                        (DWORD)(SUSPEND_RESET_SEC * 1000000.0))
+                        continue;
+                    elapsed_us = (DWORD)(now_us - scrJumpStartUs[idx]);
+                    total = fast_base * tau *
+                        (exp((double)elapsed_us / 1000.0 / tau) - 1.0);
+                    if (total > SCROLL_JUMP_UNITS)
+                        total = SCROLL_JUMP_UNITS;
+                    jdelta = total - scrJumpDelivered[idx];
+                    scrJumpDelivered[idx] = total;
+                    dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
+                    dir_aimed = (aimed & (1 << idx)) != 0;
+                    if (jdelta > 0.0) {
+                        scrAccY += dir * jdelta;
+                        if (dir_aimed)
+                            scrAimY = TRUE;
+                    }
+                    if (total >= SCROLL_JUMP_UNITS) {
+                        scrJump[idx] = 0;
+                        scrActive[idx] = 0;
+                    }
+                    continue;
+                }
                 if (!held && scrFed[idx] >= scrMin[idx]) {
                     // Released after the minimum: stop right away.
                     scrActive[idx] = 0;
@@ -1972,7 +2052,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 LONGLONG frame = scroll_frame_index(&clock, now);
 
                 if (!scrFrameValid || frame != scrFrame) {
-                    int dx = 0, dy = 0;
+                    int dx = 0, dy = 0, part;
 
                     scrFrameValid = TRUE;
                     scrFrame = frame;
@@ -1988,17 +2068,25 @@ static DWORD WINAPI movement_thread(LPVOID param)
                             (scrAccX >= 0.0 ? SCROLL_EPS : -SCROLL_EPS));
                         scrAccX -= (double)dx;
                     }
-                    if (dy != 0) {
+                    // A wheel delta is a signed 16-bit value, so a frame's
+                    // distance may take several events.
+                    while (dy != 0) {
+                        part = dy > 32760 ? 32760 :
+                               dy < -32760 ? -32760 : dy;
                         if (scrAimY && target_ok)
-                            post_wheel(target, TRUE, dy);
+                            post_wheel(target, TRUE, part);
                         else
-                            send_wheel(TRUE, dy);
+                            send_wheel(TRUE, part);
+                        dy -= part;
                     }
-                    if (dx != 0) {
+                    while (dx != 0) {
+                        part = dx > 32760 ? 32760 :
+                               dx < -32760 ? -32760 : dx;
                         if (scrAimX && target_ok)
-                            post_wheel(target, FALSE, dx);
+                            post_wheel(target, FALSE, part);
                         else
-                            send_wheel(FALSE, dx);
+                            send_wheel(FALSE, part);
+                        dx -= part;
                     }
                 }
             } else {
