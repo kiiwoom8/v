@@ -35,10 +35,16 @@ in the background with no console window, is configured by a plain-text
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
 | `Shift+CapsLock` | Real CapsLock (passes through) |
 | `Ctrl+Alt+Q` | Quit |
+| `Ctrl+Alt+L` | Lock the keyboard: every key is ignored until `Ctrl+Alt+L` is pressed again |
 | pause hotkey (unbound by default) | Pause / resume everything |
 
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. Hotkeys are configurable in `vim.ini`.
+
+While the keyboard is locked (for cleaning it, or with a cat around) the tray
+icon turns grey and a balloon says how to unlock; the tray menu's **Lock
+keyboard** item also unlocks it with the mouse. Windows still handles
+`Ctrl+Alt+Del` itself, and the mouse keeps working.
 
 Alt scrolling uses the mouse-mode keys (`key_left`, `key_down`, `key_up`,
 `key_right`, `key_scroll_up`, `key_scroll_down`), so remapping those remaps it
@@ -166,7 +172,7 @@ settings automatically (a balloon confirms, or shows any problems). The file
 created on first run documents every option with a comment. The most useful
 ones:
 
-- `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `mouse_mode_key`
+- `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `lock_hotkey`, `mouse_mode_key`
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement)
 - `scroll_speed`, `scroll_max_speed`
 - `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
@@ -193,6 +199,7 @@ Left- or right-click the tray icon:
 - Show click hints (with the configured hotkey)
 - Mouse mode (checked when on)
 - Pause (checked when paused)
+- Lock keyboard (checked while locked; click to unlock)
 - Keyboard shortcuts...
 - Text shortcuts... (add, change or delete [text shortcuts](#text-shortcuts))
 - Edit settings... (opens `vim.ini`, falling back to Notepad)

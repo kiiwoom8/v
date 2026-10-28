@@ -54,6 +54,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_SET_PAUSED  (WM_APP + 21)
 #define WM_INPUT_CONFIG      (WM_APP + 22)
 #define WM_INPUT_IND_UPDATE  (WM_APP + 24)
+#define WM_INPUT_SET_LOCKED  (WM_APP + 25)
 
 #define MOVE_LEFT  0x01
 #define MOVE_DOWN  0x02
@@ -87,6 +88,7 @@ enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS, OWN_AL
 #define LEFT_SRC_TOG  2
 
 static volatile LONG s_paused = 0;
+static volatile LONG s_locked = 0;
 static volatile LONG s_mouse_mode = 0;
 static volatile LONG s_capture = 0;
 static volatile LONG s_left_held = 0;
@@ -145,6 +147,7 @@ static void uninstall_hook(void);
 static void reset_key_state(void);
 static void suspend_input(void);
 static void resume_input(void);
+static BOOL handle_up(UINT vk);
 
 static BOOL flag_get(volatile LONG *p)
 {
@@ -786,8 +789,68 @@ static void shortcut_end(void)
         free(text);
 }
 
+// Runs on the hook thread.
+static void apply_locked(BOOL locked)
+{
+    LONG value = locked ? 1 : 0;
+
+    if (InterlockedExchange(&s_locked, value) == value)
+        return;
+    if (value) {
+        leave_mouse_mode();
+        shortcut_reset();
+        if (flag_get(&s_capture)) {
+            flag_set(&s_capture, FALSE);
+            post_main(WM_APP_HINT_CLOSE, 0, 0);
+        }
+    }
+    app_log(L"input: keyboard %s", value ? L"locked" : L"unlocked");
+    notify_state();
+}
+
+// While locked the swallowed modifiers never reach GetAsyncKeyState, so the
+// hook's own key state says which are held.
+static UINT locked_mods(void)
+{
+    UINT mods = 0;
+    if (s_down[VK_LSHIFT] || s_down[VK_RSHIFT])
+        mods |= KMOD_SHIFT;
+    if (s_down[VK_LCONTROL] || s_down[VK_RCONTROL])
+        mods |= KMOD_CTRL;
+    if (s_down[VK_LMENU] || s_down[VK_RMENU])
+        mods |= KMOD_ALT;
+    if (s_down[VK_LWIN] || s_down[VK_RWIN])
+        mods |= KMOD_WIN;
+    return mods;
+}
+
+// Every key is swallowed except the lock hotkey (which unlocks). Keys that
+// were already down when the lock started still get their release through.
+static BOOL handle_locked(UINT vk, BOOL down, BOOL repeat)
+{
+    if (!down) {
+        if (s_owner[vk] == OWN_SWALLOW) {
+            s_owner[vk] = OWN_NONE;
+            return TRUE;
+        }
+        return handle_up(vk);
+    }
+    if (repeat)
+        return s_owner[vk] != OWN_PASS;
+    s_owner[vk] = OWN_SWALLOW;
+    if (!is_modifier(vk) && hotkey_match(&g_cfg.lock_hotkey, vk, locked_mods()))
+        apply_locked(FALSE);
+    return TRUE;
+}
+
 static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
 {
+    if (hotkey_match(&g_cfg.lock_hotkey, vk, mods)) {
+        if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
+            send_mask_key();
+        apply_locked(TRUE);
+        return TRUE;
+    }
     if (hotkey_match(&g_cfg.quit_hotkey, vk, mods)) {
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
@@ -817,6 +880,7 @@ static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
 static BOOL alt_hotkey_configured(void)
 {
     return (g_cfg.hint_hotkey.mods & KMOD_ALT) ||
+           (g_cfg.lock_hotkey.mods & KMOD_ALT) ||
            (g_cfg.quit_hotkey.mods & KMOD_ALT) ||
            (g_cfg.pause_hotkey.mods & KMOD_ALT);
 }
@@ -988,6 +1052,13 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
         return FALSE;
     if (flags & LLKHF_INJECTED)
         return FALSE;
+    if (flag_get(&s_locked)) {
+        BOOL repeat = down && s_down[vk] != 0;
+        if (!down && !s_down[vk])
+            return TRUE;
+        s_down[vk] = down ? 1 : 0;
+        return handle_locked(vk, down, repeat);
+    }
     if (down) {
         BOOL repeat = s_down[vk] != 0;
         s_down[vk] = 1;
@@ -1626,6 +1697,10 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 set_mouse_mode(msg.wParam != 0);
                 continue;
             }
+            if (msg.message == WM_INPUT_SET_LOCKED) {
+                apply_locked(msg.wParam != 0);
+                continue;
+            }
             if (msg.message == WM_INPUT_SET_PAUSED) {
                 if (msg.wParam)
                     leave_mouse_mode();
@@ -1729,6 +1804,19 @@ void input_set_paused(BOOL paused)
 BOOL input_is_paused(void)
 {
     return flag_get(&s_paused);
+}
+
+void input_set_locked(BOOL locked)
+{
+    if (s_input_tid && GetCurrentThreadId() != s_input_tid)
+        PostThreadMessageW(s_input_tid, WM_INPUT_SET_LOCKED, locked ? 1 : 0, 0);
+    else
+        apply_locked(locked);
+}
+
+BOOL input_is_locked(void)
+{
+    return flag_get(&s_locked);
 }
 
 void input_set_mouse_mode(BOOL on)

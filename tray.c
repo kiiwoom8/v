@@ -24,6 +24,7 @@
 #define IDM_STARTUP    1007
 #define IDM_QUIT       1008
 #define IDM_TEXT       1009
+#define IDM_LOCK       1010
 
 #define HELP_MAX_ROWS  64
 
@@ -258,7 +259,7 @@ static HICON create_icon(int r, int g, int b, int alpha)
 
 static HICON icon_for_state(void)
 {
-    if (input_is_paused())
+    if (input_is_paused() || input_is_locked())
         return g_icons[2];
     if (input_mouse_mode_active())
         return g_icons[1];
@@ -284,7 +285,9 @@ static void build_tooltip(WCHAR *dst, int cch)
     format_hotkey(&g_cfg.hint_hotkey, hint, 64);
     format_key(g_cfg.mouse_mode_key, mode, 64);
     _snwprintf(text, 255, L"vim mouse - %s hints, %s mouse mode%s",
-               hint, mode, input_is_paused() ? L" (paused)" : L"");
+               hint, mode,
+               input_is_locked() ? L" (keyboard locked)" :
+               input_is_paused() ? L" (paused)" : L"");
     text[255] = L'\0';
     copy_wstr(dst, cch, text);
 }
@@ -362,6 +365,25 @@ void tray_update(void)
     if (!g_icon_added) {
         tray_add();
         return;
+    }
+
+    // Say so whenever the keyboard lock changes: a locked keyboard looks broken.
+    {
+        static BOOL was_locked;
+        BOOL locked = input_is_locked();
+        if (locked != was_locked) {
+            WCHAR hk[64], text[160];
+            was_locked = locked;
+            format_hotkey(&g_cfg.lock_hotkey, hk, 64);
+            if (locked)
+                _snwprintf(text, 159, L"Press %s again (or use the tray menu) "
+                           L"to unlock.", hk);
+            else
+                _snwprintf(text, 159, L"Typing works again.");
+            text[159] = L'\0';
+            tray_balloon(locked ? L"Keyboard locked" : L"Keyboard unlocked",
+                         text);
+        }
     }
 
     nid_init(&nid, NIF_ICON | NIF_TIP);
@@ -530,6 +552,9 @@ static void show_menu(void)
     format_hotkey(&g_cfg.pause_hotkey, hk, 64);
     append_item(menu, IDM_PAUSE, L"Pause", hk, input_is_paused());
 
+    format_hotkey(&g_cfg.lock_hotkey, hk, 64);
+    append_item(menu, IDM_LOCK, L"Lock keyboard", hk, input_is_locked());
+
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     append_item(menu, IDM_SHORTCUTS, L"Keyboard shortcuts...", NULL, FALSE);
     append_item(menu, IDM_TEXT, L"Text shortcuts...", NULL, FALSE);
@@ -576,6 +601,9 @@ BOOL tray_on_command(WORD id)
         return TRUE;
     case IDM_TEXT:
         snippet_editor_open();
+        return TRUE;
+    case IDM_LOCK:
+        input_set_locked(!input_is_locked());
         return TRUE;
     case IDM_EDIT:
         edit_settings();
@@ -669,6 +697,9 @@ static void build_help_rows(void)
     buf[127] = L'\0';
     help_add_row(buf, L"Real CapsLock (passes through)");
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
+    if (g_cfg.lock_hotkey.vk)
+        help_add_hotkey(&g_cfg.lock_hotkey,
+                        L"Lock / unlock the keyboard (all keys ignored)");
     if (g_cfg.pause_hotkey.vk)
         help_add_hotkey(&g_cfg.pause_hotkey, L"Pause / resume everything");
     if (g_cfg.alt_scroll) {

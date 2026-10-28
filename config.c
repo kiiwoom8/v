@@ -521,6 +521,7 @@ void config_set_defaults(Config *c)
     parse_hotkey(L"Ctrl+Alt+Q", &c->quit_hotkey);
     c->pause_hotkey.vk = 0;
     c->pause_hotkey.mods = 0;
+    parse_hotkey(L"Ctrl+Alt+L", &c->lock_hotkey);
     c->mouse_mode_key = VK_CAPITAL;
     c->indicator = INDICATOR_CURSOR;
     c->log = 0;
@@ -746,6 +747,8 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_hotkey(&c->quit_hotkey, line, key, val);
     else if (_wcsicmp(key, L"pause_hotkey") == 0)
         apply_hotkey(&c->pause_hotkey, line, key, val);
+    else if (_wcsicmp(key, L"lock_hotkey") == 0)
+        apply_hotkey(&c->lock_hotkey, line, key, val);
     else if (_wcsicmp(key, L"mouse_mode_key") == 0)
         apply_key(&c->mouse_mode_key, line, key, val);
     else if (_wcsicmp(key, L"indicator") == 0) {
@@ -1253,6 +1256,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Hotkey that pauses or resumes everything. none = disabled.\r\n");
     format_hotkey(&d.pause_hotkey, key, (int)(sizeof(key) / sizeof(key[0])));
     appendf(buf, cch, L"pause_hotkey = %ls\r\n", key);
+    appendf(buf, cch, L"; Hotkey that locks the keyboard (every key is ignored) and, pressed\r\n");
+    appendf(buf, cch, L"; again, unlocks it. The tray menu can unlock it too. none = disabled.\r\n");
+    format_hotkey(&d.lock_hotkey, key, (int)(sizeof(key) / sizeof(key[0])));
+    appendf(buf, cch, L"lock_hotkey = %ls\r\n", key);
     appendf(buf, cch, L"; The key that toggles mouse mode: tap toggles, hold for momentary.\r\n");
     format_key(d.mouse_mode_key, key, (int)(sizeof(key) / sizeof(key[0])));
     appendf(buf, cch, L"mouse_mode_key = %ls\r\n", key);

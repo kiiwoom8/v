@@ -78,6 +78,7 @@ typedef struct {
     Hotkey hint_hotkey;        // default Alt+F
     Hotkey quit_hotkey;        // default Ctrl+Alt+Q
     Hotkey pause_hotkey;       // default unbound
+    Hotkey lock_hotkey;        // default Ctrl+Alt+L; locks / unlocks the keyboard
     UINT   mouse_mode_key;     // default VK_CAPITAL; tap toggles, hold = momentary
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    log;                // 1 = also write log lines to vim.log; default 0
@@ -169,6 +170,9 @@ BOOL input_start(void);                 // FALSE if the keyboard hook could not 
 void input_stop(void);
 void input_set_paused(BOOL paused);     // paused: every key passes through except quit/pause hotkeys
 BOOL input_is_paused(void);
+// Keyboard lock: every key is swallowed except the lock hotkey, which unlocks.
+void input_set_locked(BOOL locked);
+BOOL input_is_locked(void);
 void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)
