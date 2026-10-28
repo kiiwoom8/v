@@ -286,6 +286,9 @@ void help_toggle(void);
 void snippet_editor_open(void);         // opens or brings the editor to front
 BOOL snippet_editor_dialog_message(MSG *msg);  // IsDialogMessage for its window
 void snippet_editor_close(void);
+// Rebuilds the list after the shortcut table changed on disk, keeping the
+// selection and the text in the edit fields; no-op if the editor is closed.
+void snippet_editor_refresh(void);
 // Inserts a text shortcut's text into the focused window: pastes it through
 // the clipboard (restored afterwards), or types it (shortcut_method = type).
 void snippet_insert(const WCHAR *text);
