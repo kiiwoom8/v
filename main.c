@@ -425,8 +425,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         stop_watch_thread();
         snippet_editor_close();
         hint_shutdown();
-        uia_stop();
+        // Stop input first: its movement thread calls into UIA until joined.
         input_stop();
+        uia_stop();
         tray_shutdown();
         PostQuitMessage(0);
         return 0;
