@@ -20,26 +20,25 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW32
-          update: true
-          install: mingw-w64-i686-gcc mingw-w64-i686-make zip
+      # MSYS2 no longer ships the 32-bit MinGW toolchain, so cross-compile the
+      # 32-bit vim.exe on Linux.
+      - name: Install MinGW
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-i686 zip
 
       - name: Build
-        shell: msys2 {0}
         run: |
-          mingw32-make
+          make CC=i686-w64-mingw32-gcc
           test -f vim.exe
 
       - name: Package
-        shell: msys2 {0}
         run: zip vim-mouse.zip vim.exe build.bat README.md
 
       - name: Move the latest tag to this commit
