@@ -1,6 +1,7 @@
 // uia.c - UI Automation element scan on a worker thread (see common.h).
 
 #include "common.h"
+#include <math.h>
 #include <objbase.h>
 #include <oleauto.h>
 #include <stdlib.h>
@@ -572,16 +573,17 @@ static BOOL inside_any(const RECT *rects, int count, const RECT *rc)
 }
 
 // A kept clickable card must not click its own inner targets (title, menu
-// button), so try points that stay on the free part of the card.
-static POINT choose_outer_click_point(const ScanTarget *cands, int count,
+// button), so try points that stay on the free part of the card. matches
+// holds every smaller target whose click point is on the card.
+static POINT choose_outer_click_point(const ScanTarget *cands,
+                                      const int *matches, int match_count,
                                       int self, const RECT *zrects, int z)
 {
     const RECT *rc = &cands[self].target.rc;
     LONG w = rc->right - rc->left;
     LONG h = rc->bottom - rc->top;
-    LONG64 area = rect_area(rc);
     POINT pts[9];
-    int i, j;
+    int i, m;
 
     pts[0].x = rc->left + w / 2;
     pts[0].y = rc->top + h / 2;
@@ -606,10 +608,8 @@ static POINT choose_outer_click_point(const ScanTarget *cands, int count,
         BOOL clear = TRUE;
         if (!PtInRect(rc, pts[i]) || !point_visible(zrects, z, pts[i]))
             continue;
-        for (j = 0; j < count; ++j) {
-            if (j == self || rect_area(&cands[j].target.rc) >= area ||
-                !PtInRect(rc, cands[j].target.click))
-                continue;
+        for (m = 0; m < match_count; ++m) {
+            int j = matches[m];
             if (PtInRect(&cands[j].target.rc, pts[i])) {
                 clear = FALSE;
                 break;
@@ -619,6 +619,235 @@ static POINT choose_outer_click_point(const ScanTarget *cands, int count,
             return pts[i];
     }
     return cands[self].target.click;
+}
+
+// Uniform grid of click points. The container pass only cares about smaller
+// targets whose click point is inside a candidate, so a leaf visits the few
+// cells under its own rect instead of every other candidate.
+typedef struct {
+    int cols;
+    int rows;
+    LONG64 min_x;
+    LONG64 min_y;
+    LONG64 max_x;
+    LONG64 max_y;
+    LONG64 cell_w;
+    LONG64 cell_h;
+    int *start;
+    int *order;
+} ClickGrid;
+
+static int click_grid_cell(const ClickGrid *grid, POINT pt)
+{
+    int cx = (int)(((LONG64)pt.x - grid->min_x) / grid->cell_w);
+    int cy = (int)(((LONG64)pt.y - grid->min_y) / grid->cell_h);
+
+    if (cx < 0)
+        cx = 0;
+    else if (cx >= grid->cols)
+        cx = grid->cols - 1;
+    if (cy < 0)
+        cy = 0;
+    else if (cy >= grid->rows)
+        cy = grid->rows - 1;
+    return cy * grid->cols + cx;
+}
+
+static BOOL click_grid_build(const ScanTarget *cands, int count,
+                             ClickGrid *grid)
+{
+    LONG64 width, height;
+    double aspect, side;
+    int i, cols, rows, cells;
+    int *start = NULL;
+    int *cursor = NULL;
+    int *order = NULL;
+
+    grid->start = NULL;
+    grid->order = NULL;
+    if (count <= 0)
+        return FALSE;
+
+    grid->min_x = grid->max_x = cands[0].target.click.x;
+    grid->min_y = grid->max_y = cands[0].target.click.y;
+    for (i = 1; i < count; ++i) {
+        LONG64 x = cands[i].target.click.x;
+        LONG64 y = cands[i].target.click.y;
+        if (x < grid->min_x)
+            grid->min_x = x;
+        if (x > grid->max_x)
+            grid->max_x = x;
+        if (y < grid->min_y)
+            grid->min_y = y;
+        if (y > grid->max_y)
+            grid->max_y = y;
+    }
+
+    width = grid->max_x - grid->min_x + 1;
+    height = grid->max_y - grid->min_y + 1;
+    aspect = (double)width / (double)height;
+    side = sqrt((double)count * aspect);
+    if (side < 1.0)
+        side = 1.0;
+    if (side > (double)count)
+        side = (double)count;
+    cols = (int)(side + 0.5);
+    if (cols < 1)
+        cols = 1;
+    if (cols > count)
+        cols = count;
+    rows = (count + cols - 1) / cols;
+    if (rows < 1)
+        rows = 1;
+
+    grid->cols = cols;
+    grid->rows = rows;
+    grid->cell_w = (width + cols - 1) / cols;
+    grid->cell_h = (height + rows - 1) / rows;
+    if (grid->cell_w < 1)
+        grid->cell_w = 1;
+    if (grid->cell_h < 1)
+        grid->cell_h = 1;
+
+    cells = cols * rows;
+    start = (int *)calloc((size_t)cells + 1, sizeof(*start));
+    cursor = (int *)malloc((size_t)cells * sizeof(*cursor));
+    order = (int *)malloc((size_t)count * sizeof(*order));
+    if (!start || !cursor || !order) {
+        free(start);
+        free(cursor);
+        free(order);
+        return FALSE;
+    }
+
+    for (i = 0; i < count; ++i)
+        ++start[click_grid_cell(grid, cands[i].target.click) + 1];
+    for (i = 1; i <= cells; ++i)
+        start[i] += start[i - 1];
+    memcpy(cursor, start, (size_t)cells * sizeof(*cursor));
+    for (i = 0; i < count; ++i)
+        order[cursor[click_grid_cell(grid, cands[i].target.click)]++] = i;
+
+    free(cursor);
+    grid->start = start;
+    grid->order = order;
+    return TRUE;
+}
+
+static int compare_indices(const void *a, const void *b)
+{
+    int x = *(const int *)a;
+    int y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+// Decides which candidates are containers and picks the click point for the
+// ones that are kept. Candidates are unchanged; drop and new_click receive
+// one entry per candidate, in index order.
+static void filter_containers(const ScanTarget *cands, int count,
+                              const RECT *zrects, int z,
+                              void (*debug)(const RECT *, int, const WCHAR *),
+                              BOOL *drop, POINT *new_click)
+{
+    ClickGrid grid;
+    LONG64 *areas;
+    int *matches;
+    int i;
+
+    for (i = 0; i < count; ++i) {
+        drop[i] = FALSE;
+        new_click[i] = cands[i].target.click;
+    }
+    if (count < 2)
+        return;
+
+    areas = (LONG64 *)malloc((size_t)count * sizeof(*areas));
+    matches = (int *)malloc((size_t)count * sizeof(*matches));
+    if (!areas || !matches || !click_grid_build(cands, count, &grid)) {
+        free(areas);
+        free(matches);
+        return;
+    }
+    for (i = 0; i < count; ++i)
+        areas[i] = rect_area(&cands[i].target.rc);
+
+    for (i = 0; i < count; ++i) {
+        const RECT *rc = &cands[i].target.rc;
+        LONG64 area = areas[i];
+        LONG64 covered = 0;
+        LONG64 qx0, qx1, qy0, qy1;
+        int inner = 0, first = -1, matched = 0, m;
+        int cx, cy, cx0, cx1, cy0, cy1;
+
+        qx0 = rc->left;
+        if (qx0 < grid.min_x)
+            qx0 = grid.min_x;
+        qx1 = rc->right;
+        if (qx1 > grid.max_x + 1)
+            qx1 = grid.max_x + 1;
+        qy0 = rc->top;
+        if (qy0 < grid.min_y)
+            qy0 = grid.min_y;
+        qy1 = rc->bottom;
+        if (qy1 > grid.max_y + 1)
+            qy1 = grid.max_y + 1;
+
+        if (qx1 > qx0 && qy1 > qy0) {
+            cx0 = (int)((qx0 - grid.min_x) / grid.cell_w);
+            cx1 = (int)((qx1 - 1 - grid.min_x) / grid.cell_w);
+            cy0 = (int)((qy0 - grid.min_y) / grid.cell_h);
+            cy1 = (int)((qy1 - 1 - grid.min_y) / grid.cell_h);
+            for (cy = cy0; cy <= cy1; ++cy) {
+                for (cx = cx0; cx <= cx1; ++cx) {
+                    int cell = cy * grid.cols + cx;
+                    int p;
+                    for (p = grid.start[cell]; p < grid.start[cell + 1];
+                         ++p) {
+                        int j = grid.order[p];
+                        if (j == i || areas[j] >= area ||
+                            !PtInRect(rc, cands[j].target.click))
+                            continue;
+                        matches[matched++] = j;
+                    }
+                }
+            }
+        }
+        if (matched > 1)
+            qsort(matches, (size_t)matched, sizeof(*matches),
+                  compare_indices);
+
+        for (m = 0; m < matched; ++m) {
+            const ClickTarget *t = &cands[matches[m]].target;
+            if (first >= 0 &&
+                rects_duplicate(&cands[first].target.rc,
+                                cands[first].target.click, &t->rc, t->click))
+                continue;
+            if (first < 0)
+                first = matches[m];
+            ++inner;
+            covered += rect_intersection_area(&t->rc, rc);
+        }
+
+        if (inner == 0)
+            drop[i] = FALSE;
+        else if (cands[i].actionable)
+            drop[i] = !(inner == 1 || covered * 2 < area);
+        else
+            drop[i] = !(inner == 1 && covered * 4 < area);
+
+        new_click[i] = cands[i].target.click;
+        if (!drop[i] && inner > 0)
+            new_click[i] = choose_outer_click_point(
+                cands, matches, matched, i, zrects, z);
+        if (drop[i] && debug)
+            debug(rc, cands[i].control_type,
+                  inner >= 2 ? L"container" : L"wrapper");
+    }
+
+    free(matches);
+    free(areas);
+    free(grid.order);
+    free(grid.start);
 }
 
 // Apps that answer UI Automation very slowly with next to nothing (games,
@@ -916,43 +1145,9 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     new_click = cand_count ? (POINT *)malloc((size_t)cand_count *
                                              sizeof(*new_click))
                            : NULL;
-    if (drop && new_click) {
-        for (i = 0; i < cand_count; ++i) {
-            LONG64 area = rect_area(&cands[i].target.rc);
-            LONG64 covered = 0;
-            int inner = 0, first = -1, j;
-            for (j = 0; j < cand_count; ++j) {
-                const ClickTarget *t = &cands[j].target;
-                if (j == i || rect_area(&t->rc) >= area ||
-                    !PtInRect(&cands[i].target.rc, t->click))
-                    continue;
-                if (first >= 0 &&
-                    rects_duplicate(&cands[first].target.rc,
-                                    cands[first].target.click, &t->rc,
-                                    t->click))
-                    continue;
-                if (first < 0)
-                    first = j;
-                ++inner;
-                covered += rect_intersection_area(
-                    &t->rc, &cands[i].target.rc);
-            }
-            if (inner == 0)
-                drop[i] = FALSE;
-            else if (cands[i].actionable)
-                drop[i] = !(inner == 1 || covered * 2 < area);
-            else
-                drop[i] = !(inner == 1 && covered * 4 < area);
-
-            new_click[i] = cands[i].target.click;
-            if (!drop[i] && inner > 0)
-                new_click[i] = choose_outer_click_point(
-                    cands, cand_count, i, zrects, z);
-            if (drop[i] && g_scan_debug)
-                g_scan_debug(&cands[i].target.rc, cands[i].control_type,
-                             inner >= 2 ? L"container" : L"wrapper");
-        }
-    }
+    if (drop && new_click)
+        filter_containers(cands, cand_count, zrects, z, g_scan_debug,
+                          drop, new_click);
     for (i = 0; i < cand_count; ++i) {
         if (!drop || !drop[i]) {
             cands[kept] = cands[i];
