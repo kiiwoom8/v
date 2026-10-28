@@ -1510,18 +1510,21 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; reor = \uB2E4\uC2DC \uC8FC\uBB38\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?\r\n");
 }
 
-// Reads a UTF-8 file (BOM optional) into a malloc'd, NUL-terminated string
-// without a leading BOM.
+// Reads vim.ini or an imported shortcut file into a malloc'd, NUL-terminated
+// string without a leading BOM. UTF-16 (with BOM) is decoded as such; UTF-8
+// without a BOM falls back to the system code page so files saved by older
+// editors are not lost. A UTF-8 BOM with bad bytes is an error.
 enum { READ_OK = 0, READ_NOT_FOUND, READ_OPEN_FAILED, READ_FAILED,
        READ_BAD_UTF8 };
 
-static int read_text_file(const WCHAR *path, WCHAR **out)
+static int read_text_file(const WCHAR *path, WCHAR **out, BOOL warn_ansi)
 {
     HANDLE h;
     DWORD size, total = 0, got = 0;
     char *raw;
     WCHAR *text;
     int len_bytes, widelen, skip = 0;
+    BOOL utf16le = FALSE, utf16be = FALSE, utf8bom = FALSE, ansi = FALSE;
 
     *out = NULL;
     h = CreateFileW(path, GENERIC_READ,
@@ -1555,15 +1558,65 @@ static int read_text_file(const WCHAR *path, WCHAR **out)
     CloseHandle(h);
 
     len_bytes = (int)total;
-    if (len_bytes >= 3 && (unsigned char)raw[0] == 0xEF &&
-        (unsigned char)raw[1] == 0xBB && (unsigned char)raw[2] == 0xBF)
+    if (len_bytes >= 2 && (unsigned char)raw[0] == 0xFF &&
+        (unsigned char)raw[1] == 0xFE) {
+        utf16le = TRUE;
+        skip = 2;
+    } else if (len_bytes >= 2 && (unsigned char)raw[0] == 0xFE &&
+               (unsigned char)raw[1] == 0xFF) {
+        utf16be = TRUE;
+        skip = 2;
+    } else if (len_bytes >= 3 && (unsigned char)raw[0] == 0xEF &&
+               (unsigned char)raw[1] == 0xBB &&
+               (unsigned char)raw[2] == 0xBF) {
+        utf8bom = TRUE;
         skip = 3;
+    }
 
-    widelen = MultiByteToWideChar(CP_UTF8, 0, raw + skip, len_bytes - skip,
-                                  NULL, 0);
-    if (widelen == 0 && len_bytes > skip) {
+    if (utf16le || utf16be) {
+        int n, i;
+
+        if ((len_bytes - skip) % 2 != 0) {
+            free(raw);
+            return READ_BAD_UTF8;
+        }
+        n = (len_bytes - skip) / 2;
+        text = (WCHAR *)malloc(((size_t)n + 1) * sizeof(WCHAR));
+        if (text == NULL) {
+            free(raw);
+            return READ_FAILED;
+        }
+        memcpy(text, raw + skip, (size_t)n * sizeof(WCHAR));
+        if (utf16be) {
+            for (i = 0; i < n; i++)
+                text[i] = (WCHAR)((text[i] << 8) | (text[i] >> 8));
+        }
+        text[n] = 0;
         free(raw);
-        return READ_BAD_UTF8;
+        *out = text;
+        return READ_OK;
+    }
+
+    widelen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, raw + skip,
+                                  len_bytes - skip, NULL, 0);
+    if (widelen == 0 && len_bytes > skip) {
+        if (utf8bom) {
+            free(raw);
+            return READ_BAD_UTF8;
+        }
+        // Not UTF-8: an older Notepad's ANSI file. The shortcut editor
+        // rewrites it as UTF-8, so say so before that happens.
+        skip = 0;
+        ansi = TRUE;
+        widelen = MultiByteToWideChar(CP_ACP, 0, raw, len_bytes, NULL, 0);
+        if (widelen == 0) {
+            free(raw);
+            return READ_FAILED;
+        }
+        if (warn_ansi)
+            warn_add(0, L"the settings file is not UTF-8; read as the system "
+                        L"code page, it will be saved as UTF-8 when "
+                        L"shortcuts are saved");
     }
     text = (WCHAR *)malloc(((size_t)widelen + 1) * sizeof(WCHAR));
     if (text == NULL) {
@@ -1571,8 +1624,9 @@ static int read_text_file(const WCHAR *path, WCHAR **out)
         return READ_FAILED;
     }
     if (widelen > 0)
-        MultiByteToWideChar(CP_UTF8, 0, raw + skip, len_bytes - skip,
-                            text, widelen);
+        MultiByteToWideChar(ansi ? CP_ACP : CP_UTF8,
+                            ansi ? 0 : MB_ERR_INVALID_CHARS, raw + skip,
+                            len_bytes - skip, text, widelen);
     text[widelen] = 0;
     free(raw);
     if (text[0] == 0xFEFF)
@@ -1699,15 +1753,6 @@ static BOOL is_shortcuts_header(const WCHAR *line, size_t n)
     return _wcsicmp(name, L"shortcuts") == 0;
 }
 
-static BOOL is_blank(const WCHAR *line, size_t n)
-{
-    size_t i = 0;
-
-    while (i < n && is_space(line[i]))
-        i++;
-    return i >= n;
-}
-
 static BOOL is_comment_or_blank(const WCHAR *line, size_t n)
 {
     size_t i = 0;
@@ -1737,11 +1782,12 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
     const WCHAR *trailer = NULL;
     WBuf out;
     BOOL skipping = FALSE;
+    BOOL seen = FALSE;
     BOOL ok;
     int i;
 
     ZeroMemory(&out, sizeof(out));
-    switch (read_text_file(path, &text)) {
+    switch (read_text_file(path, &text, FALSE)) {
     case READ_OK:
         break;
     case READ_NOT_FOUND:
@@ -1755,8 +1801,10 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
     }
 
     // Keep every line except the old [shortcuts] section, byte for byte.
-    // A blank line and the comments after it at the end of that section
-    // belong to the next section header, so they stay too.
+    // The run of comment and blank lines directly before the next section
+    // header belongs to that header, so it stays too. Before the first
+    // shortcut it is the header shortcuts_save writes itself, which must not
+    // be copied and then written a second time.
     p = text;
     while (*p) {
         const WCHAR *e = p;
@@ -1774,6 +1822,7 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
                 wbuf_add(&out, trailer, (size_t)(p - trailer));
             trailer = NULL;
             skipping = is_shortcuts_header(p, n);
+            seen = FALSE;
             if (skipping) {
                 p = e;
                 continue;
@@ -1781,10 +1830,12 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
         }
         if (!skipping)
             wbuf_add(&out, p, (size_t)(e - p));
-        else if (!is_comment_or_blank(p, n))
+        else if (!is_comment_or_blank(p, n)) {
+            seen = TRUE;
             trailer = NULL;
-        else if (trailer == NULL && is_blank(p, n))
+        } else if (seen && trailer == NULL) {
             trailer = p;
+        }
         p = e;
     }
     free(text);
@@ -1841,7 +1892,7 @@ BOOL config_load(Config *c, BOOL *created)
     sc_free(g_sc_new, &g_sc_new_count);
     path = config_path();
 
-    switch (read_text_file(path, &text)) {
+    switch (read_text_file(path, &text, TRUE)) {
     case READ_OK:
         break;
     case READ_NOT_FOUND:
@@ -1945,7 +1996,7 @@ ShortcutEntry *shortcuts_read_file(const WCHAR *path, int *count,
 
     *count = 0;
     *skipped = 0;
-    if (read_text_file(path, &text) != READ_OK)
+    if (read_text_file(path, &text, FALSE) != READ_OK)
         return NULL;
     entries = (ShortcutEntry *)calloc(SHORTCUT_MAX, sizeof(ShortcutEntry));
     if (entries == NULL) {
