@@ -8,6 +8,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <wchar.h>
 
 HWND      g_main_wnd;
@@ -307,6 +308,18 @@ static void stop_watch_thread(void)
 // ---------------------------------------------------------------------------
 // Public app helpers
 
+// When we rewrote vim.ini ourselves (text shortcut editor); the watcher's
+// reload that follows stays quiet.
+static DWORD g_self_write_tick;
+static BOOL  g_self_write;
+
+void app_config_written(void)
+{
+    g_self_write_tick = GetTickCount();
+    g_self_write = TRUE;
+    app_reload_config(FALSE);
+}
+
 void app_reload_config(BOOL notify)
 {
     Config tmp;
@@ -396,13 +409,19 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         help_toggle();
         return 0;
     case WM_APP_RELOAD_CONFIG:
-        app_reload_config(TRUE);
+        app_reload_config(!(g_self_write &&
+                            GetTickCount() - g_self_write_tick < 3000));
+        return 0;
+    case WM_APP_TYPE_TEXT:
+        input_type_text((const WCHAR *)lp);
+        free((void *)lp);
         return 0;
     case WM_CLOSE:
         app_quit();
         return 0;
     case WM_DESTROY:
         stop_watch_thread();
+        snippet_editor_close();
         hint_shutdown();
         uia_stop();
         input_stop();
@@ -505,6 +524,8 @@ int main(void)
     app_log(L"main: started");
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (snippet_editor_dialog_message(&msg))
+            continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

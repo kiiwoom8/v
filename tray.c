@@ -23,6 +23,7 @@
 #define IDM_RELOAD     1006
 #define IDM_STARTUP    1007
 #define IDM_QUIT       1008
+#define IDM_TEXT       1009
 
 #define HELP_MAX_ROWS  64
 
@@ -531,6 +532,7 @@ static void show_menu(void)
 
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     append_item(menu, IDM_SHORTCUTS, L"Keyboard shortcuts...", NULL, FALSE);
+    append_item(menu, IDM_TEXT, L"Text shortcuts...", NULL, FALSE);
     append_item(menu, IDM_EDIT, L"Edit settings...", NULL, FALSE);
     append_item(menu, IDM_RELOAD, L"Reload settings", NULL, FALSE);
     append_item(menu, IDM_STARTUP, L"Start with Windows", NULL,
@@ -571,6 +573,9 @@ BOOL tray_on_command(WORD id)
     }
     case IDM_SHORTCUTS:
         help_toggle();
+        return TRUE;
+    case IDM_TEXT:
+        snippet_editor_open();
         return TRUE;
     case IDM_EDIT:
         edit_settings();
@@ -666,6 +671,23 @@ static void build_help_rows(void)
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.pause_hotkey.vk)
         help_add_hotkey(&g_cfg.pause_hotkey, L"Pause / resume everything");
+    if (g_cfg.alt_scroll) {
+        WCHAR k1[16], k2[16], k3[16], k4[16];
+        format_key(g_cfg.key_left, k1, 16);
+        format_key(g_cfg.key_down, k2, 16);
+        format_key(g_cfg.key_up, k3, 16);
+        format_key(g_cfg.key_right, k4, 16);
+        _snwprintf(buf, 127, L"Alt + %s %s %s %s", k1, k2, k3, k4);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Scroll left / down / up / right");
+        format_key(g_cfg.key_scroll_up, k1, 16);
+        format_key(g_cfg.key_scroll_down, k2, 16);
+        _snwprintf(buf, 127, L"Alt + %s / %s", k1, k2);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Fast scroll up / down");
+    }
+    help_add_row(L"Alt + abbreviation",
+                 L"Type a text shortcut (tray: Text shortcuts...)");
 
     help_add_header(L"Mouse mode");
     help_add_key(g_cfg.key_left, L"Move cursor left");

@@ -28,6 +28,9 @@ in the background with no console window, is configured by a plain-text
 | Key | Action |
 |---|---|
 | `Alt+F` | Open click hints on the monitor under the cursor; press again for the grid, again to close |
+| `Alt+h` / `Alt+j` / `Alt+k` / `Alt+l` | Scroll left / down / up / right, anywhere (tap = one notch, hold = continuous) |
+| `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
+| `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
 | `Shift+CapsLock` | Real CapsLock (passes through) |
@@ -36,6 +39,11 @@ in the background with no console window, is configured by a plain-text
 
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. Hotkeys are configurable in `vim.ini`.
+
+Alt scrolling uses the mouse-mode keys (`key_left`, `key_down`, `key_up`,
+`key_right`, `key_scroll_up`, `key_scroll_down`), so remapping those remaps it
+too. It works with or without mouse mode; `alt_scroll = 0` turns it off and
+lets those Alt combinations reach the app again.
 
 ### Mouse mode
 
@@ -115,6 +123,42 @@ pointer (a drop target), so `v` ... hints ... `v` drags across the screen.
 replayed once it finishes. The status bar at the bottom explains the current
 step.
 
+## Text shortcuts
+
+Text shortcuts type a saved text from a short abbreviation. Hold `Alt`, type
+the abbreviation, and release `Alt`: the text is typed into the focused
+window. For example, with `reor` set to `다시 주문하시겠습니까?`, holding Alt
+and typing `reor` types `다시 주문하시겠습니까?` when Alt is released. Any
+text works, including Korean and other non-Latin scripts, and several lines.
+
+- Abbreviations are 1-31 letters (`a`-`z`, not case sensitive) or digits.
+- While Alt is held, `Backspace` removes the last typed letter and `Esc` (or
+  any key that is not a letter or digit) cancels; nothing is typed then.
+- A shortcut only starts when its first letter is not already an Alt key of
+  vim mouse: `Alt+F` (hints) and the Alt scroll keys (`h j k l u d`) keep
+  their meaning, so abbreviations should not start with those letters. Letters
+  after the first can be anything.
+- Alt plus a letter that starts no abbreviation reaches the app as usual (menu
+  accelerators keep working).
+
+Manage them from the tray menu: **Text shortcuts...** opens a window that lists
+them. Select one to edit it, fill in the abbreviation and the text, then press
+**Add / Update** (Enter) to save it, **Delete** to remove the selected one, or
+**New** to clear the fields. Changes apply at once.
+
+They are stored in the `[shortcuts]` section of `vim.ini`, one per line, so
+they can also be edited by hand:
+
+```ini
+[shortcuts]
+reor = 다시 주문하시겠습니까?
+addr = 123 Main Street\nSpringfield
+```
+
+In the text, `\n` is Enter, `\t` is Tab, `\s` is a space (needed only for a
+leading or trailing space) and `\\` is a backslash. The editor window rewrites
+only the `[shortcuts]` section and keeps the rest of the file as it is.
+
 ## Settings
 
 `vim.ini` lives next to `vim.exe` and is watched: saving it reloads the
@@ -125,6 +169,9 @@ ones:
 - `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `mouse_mode_key`
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement)
 - `scroll_speed`, `scroll_max_speed`
+- `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
+  anywhere), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
+  5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for the first element results before showing them. If
@@ -137,6 +184,7 @@ ones:
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_hints`,
   `key_exit`, `key_help` remaps
 - `indicator`, `log`
+- `[shortcuts]`: text shortcuts, see [Text shortcuts](#text-shortcuts)
 
 ## Tray menu
 
@@ -146,6 +194,7 @@ Left- or right-click the tray icon:
 - Mouse mode (checked when on)
 - Pause (checked when paused)
 - Keyboard shortcuts...
+- Text shortcuts... (add, change or delete [text shortcuts](#text-shortcuts))
 - Edit settings... (opens `vim.ini`, falling back to Notepad)
 - Reload settings
 - Start with Windows (checked when enabled)
@@ -172,6 +221,12 @@ Left- or right-click the tray icon:
   `mingw32-make check` builds `tools\hint_check.exe` and
   `node tools\hint_check.mjs [url ...]` opens each page in a separate Chrome
   profile and lists the clickable elements the scan misses, with the reason.
+- **An app's Alt+H/J/K/L/U/D shortcut no longer works.** vim mouse uses those
+  for scrolling; set `alt_scroll = 0` in `vim.ini` to give them back.
+- **A text shortcut types nothing.** Its first letter may be an Alt key of vim
+  mouse (`f h j k l u d` by default); the editor warns about this when you
+  save. Programs running as administrator cannot receive typed text either
+  (see above).
 - **I need the real CapsLock.** vim mouse intercepts CapsLock; use
   `Shift+CapsLock` when you really want the CapsLock state.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
@@ -197,8 +252,11 @@ The build uses `-std=gnu11` and `-mwindows`. Source layout:
 
 - `main.c` - entry point, single instance, DPI awareness, main window, message
   routing, settings watcher, logging
-- `config.c` - settings file defaults/parsing and key-name formatting
-- `input.c` - low-level keyboard hook, mouse mode, movement, sleep/lock handling
+- `config.c` - settings file defaults/parsing, key-name formatting, text
+  shortcut table
+- `input.c` - low-level keyboard hook, mouse mode, movement, Alt scrolling,
+  text shortcut typing, sleep/lock handling
 - `hint.c` - click-hint overlay
 - `tray.c` - tray icon and menu, help window, start with Windows
+- `snippet.c` - text shortcut editor window
 - `common.h` - shared contract between modules

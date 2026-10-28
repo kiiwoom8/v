@@ -2,12 +2,14 @@
 //
 //   main.c   entry point, single instance, DPI, main window, message routing,
 //            config file watching, logging/error helpers
-//   config.c settings file (vim.ini next to the exe): defaults, parsing, key names
+//   config.c settings file (vim.ini next to the exe): defaults, parsing, key
+//            names, text shortcut table
 //   input.c  low-level keyboard hook (the single keyboard dispatcher), mouse
-//            mode, movement/scroll thread, mouse actions, mode indicator,
-//            sleep/lock handling
+//            mode, movement/scroll thread, mouse actions, Alt scrolling, text
+//            shortcut capture and typing, mode indicator, sleep/lock handling
 //   hint.c   click-hint overlay (main/UI thread)
 //   tray.c   tray icon + menu, help window, start-with-Windows
+//   snippet.c text shortcut editor window (tray "Text shortcuts...")
 
 #ifndef VIM_COMMON_H
 #define VIM_COMMON_H
@@ -48,6 +50,7 @@
 #define WM_APP_RELOAD_CONFIG    (WM_APP + 9)  // settings file changed on disk / reload requested
 #define WM_APP_HINT_AGAIN       (WM_APP + 10) // hint hotkey pressed while hints are open; -> hint_hotkey_again
 #define WM_APP_ELEMENTS         (WM_APP + 11) // lParam = ClickList* from uia.c; -> hint_on_elements (takes ownership)
+#define WM_APP_TYPE_TEXT        (WM_APP + 12) // lParam = malloc'd WCHAR* from input.c; -> input_type_text, then free
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -87,6 +90,10 @@ typedef struct {
     double slow_speed;         // while Shift is held (no acceleration), default 120
     double scroll_speed;       // default 1200  (10 notches/s)
     double scroll_max_speed;   // default 4800  (40 notches/s)
+    int    alt_scroll;         // 1 = Alt + move keys scroll anywhere, Alt + u/d fast; default 1
+    int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
+    double fast_scroll_speed;  // Alt + u/d held, default 3600
+    double fast_scroll_max_speed; // default 14400
     UINT key_left, key_down, key_up, key_right;          // h j k l
     UINT key_left_button;      // a  (hold = drag, tap = click, tap tap = double click)
     UINT key_right_click;      // s
@@ -124,7 +131,8 @@ void         config_set_defaults(Config *c);
 // If the file does not exist it is created with commented defaults and
 // *created is set to TRUE. Returns FALSE only if the file exists but could not
 // be read. Problems (unknown keys, bad values) are collected in
-// config_warnings(); bad values keep their defaults.
+// config_warnings(); bad values keep their defaults. A successful load also
+// replaces the text shortcut table below.
 BOOL         config_load(Config *c, BOOL *created);
 const WCHAR *config_path(void);       // full path of vim.ini (exe dir + exe basename + ".ini")
 const WCHAR *config_warnings(void);   // L"" if none; one problem per line, from last load
@@ -132,6 +140,26 @@ BOOL         parse_key(const WCHAR *s, UINT *vk);        // "h", ",", "CapsLock"
 BOOL         parse_hotkey(const WCHAR *s, Hotkey *out);  // "Alt+F", "Ctrl+Alt+Q", "none"
 void         format_key(UINT vk, WCHAR *buf, int cch);   // vk -> display name ("h", "CapsLock", ",")
 void         format_hotkey(const Hotkey *hk, WCHAR *buf, int cch);  // "Alt+F"; "none" if unbound
+
+// Text shortcuts: the [shortcuts] section of vim.ini, "abbreviation = text".
+// Holding Alt and typing the abbreviation types the text when Alt is released.
+// Abbreviations are 1-SHORTCUT_ABBR_MAX letters/digits, stored lower case.
+// The table is guarded by a lock: every function is safe from any thread.
+#define SHORTCUT_ABBR_MAX 31
+#define SHORTCUT_TEXT_MAX 4096
+#define SHORTCUT_MAX      200
+#define SC_PREFIX 0x1   // shortcut_lookup: some abbreviation starts with it
+#define SC_EXACT  0x2   // shortcut_lookup: an abbreviation is exactly it
+UINT         shortcut_lookup(const WCHAR *abbr, int len);   // SC_* bits, 0 = none
+WCHAR       *shortcut_text_dup(const WCHAR *abbr, int len); // malloc'd copy or NULL
+int          shortcut_count(void);
+// Copies entry i; *text is malloc'd (caller frees). FALSE if out of range.
+BOOL         shortcut_get(int i, WCHAR *abbr, int abbr_cch, WCHAR **text);
+BOOL         shortcut_abbr_valid(const WCHAR *s);
+// Rewrites only the [shortcuts] section of vim.ini with these entries (text
+// with real newlines/tabs; it is escaped on write). FALSE if writing failed.
+BOOL         shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
+                            int count);
 
 // ---------------------------------------------------------------------------
 // Input (input.c). Runs its own thread (hook + message loop) and a movement
@@ -151,6 +179,8 @@ BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or 
 // and off when it closes.
 void input_set_key_capture(BOOL on);
 void input_config_changed(void);        // g_cfg was reloaded
+// Types text into the focused window (KEYEVENTF_UNICODE; \n = Enter, \t = Tab).
+void input_type_text(const WCHAR *text);
 
 enum { BTN_LEFT = 0, BTN_RIGHT = 1, BTN_MIDDLE = 2 };
 void mouse_move_to(POINT pt);                          // absolute, physical px
@@ -209,6 +239,13 @@ void tray_balloon(const WCHAR *title, const WCHAR *text);
 void help_toggle(void);
 
 // ---------------------------------------------------------------------------
+// Text shortcut editor (snippet.c). Main/UI thread.
+
+void snippet_editor_open(void);         // opens or brings the editor to front
+BOOL snippet_editor_dialog_message(MSG *msg);  // IsDialogMessage for its window
+void snippet_editor_close(void);
+
+// ---------------------------------------------------------------------------
 // App helpers (main.c)
 
 extern HWND      g_main_wnd;
@@ -217,6 +254,7 @@ extern HINSTANCE g_hinst;
 UINT dpi_for_monitor(HMONITOR mon);           // effective DPI (96 = 100%), works on Win7+
 void app_log(const WCHAR *fmt, ...);          // OutputDebugString, plus vim.log if g_cfg.log
 void app_reload_config(BOOL notify);          // reload g_cfg, notify modules, balloon on warnings
+void app_config_written(void);                // we rewrote vim.ini: reload quietly
 void app_quit(void);
 
 #endif

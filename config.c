@@ -22,6 +22,19 @@ static WCHAR g_exe_ini[32768];
 static BOOL  g_exe_ini_ready = FALSE;
 static WCHAR g_warnings[4096];
 
+typedef struct {
+    WCHAR  abbr[SHORTCUT_ABBR_MAX + 1];
+    WCHAR *text;
+} Shortcut;
+
+// The live table (read by the keyboard hook) and the one being parsed.
+static CRITICAL_SECTION g_sc_lock;
+static LONG     g_sc_lock_state = 0;   // 0 = not created, 1 = creating, 2 = ready
+static Shortcut g_sc[SHORTCUT_MAX];
+static int      g_sc_count = 0;
+static Shortcut g_sc_new[SHORTCUT_MAX];
+static int      g_sc_new_count = 0;
+
 // ---------------------------------------------------------------------------
 // Small helpers
 
@@ -519,6 +532,10 @@ void config_set_defaults(Config *c)
     c->slow_speed = 120.0;
     c->scroll_speed = 1200.0;
     c->scroll_max_speed = 4800.0;
+    c->alt_scroll = 1;
+    c->fast_scroll_lines = 5;
+    c->fast_scroll_speed = 3600.0;
+    c->fast_scroll_max_speed = 14400.0;
 
     parse_key(L"h", &c->key_left);
     parse_key(L"j", &c->key_down);
@@ -705,7 +722,8 @@ static void apply_subgrid_keys(WCHAR *dst, int line, const WCHAR *val)
 // ---------------------------------------------------------------------------
 // INI parser
 
-enum { SEC_NONE = 0, SEC_GENERAL, SEC_MOUSE, SEC_HINTS, SEC_UNKNOWN };
+enum { SEC_NONE = 0, SEC_GENERAL, SEC_MOUSE, SEC_HINTS, SEC_SHORTCUTS,
+       SEC_UNKNOWN };
 
 static const WCHAR *section_name(int sec)
 {
@@ -713,6 +731,7 @@ static const WCHAR *section_name(int sec)
     case SEC_GENERAL: return L"general";
     case SEC_MOUSE:   return L"mouse";
     case SEC_HINTS:   return L"hints";
+    case SEC_SHORTCUTS: return L"shortcuts";
     case SEC_UNKNOWN: return L"unknown";
     default:          return L"";
     }
@@ -762,6 +781,14 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_double_positive(&c->scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"scroll_max_speed") == 0)
         apply_double_positive(&c->scroll_max_speed, line, key, val);
+    else if (_wcsicmp(key, L"alt_scroll") == 0)
+        apply_bool(&c->alt_scroll, line, key, val);
+    else if (_wcsicmp(key, L"fast_scroll_lines") == 0)
+        apply_int_range(&c->fast_scroll_lines, line, key, val, 1, 50);
+    else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
+        apply_double_positive(&c->fast_scroll_speed, line, key, val);
+    else if (_wcsicmp(key, L"fast_scroll_max_speed") == 0)
+        apply_double_positive(&c->fast_scroll_max_speed, line, key, val);
     else if (_wcsicmp(key, L"key_left") == 0)
         apply_key(&c->key_left, line, key, val);
     else if (_wcsicmp(key, L"key_down") == 0)
@@ -841,6 +868,189 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         warn_add(line, L"unknown key \"%ls\" in [hints]", key);
 }
 
+// ---------------------------------------------------------------------------
+// Text shortcuts
+
+static void sc_lock(void)
+{
+    if (InterlockedCompareExchange(&g_sc_lock_state, 1, 0) == 0) {
+        InitializeCriticalSection(&g_sc_lock);
+        InterlockedExchange(&g_sc_lock_state, 2);
+    }
+    while (InterlockedCompareExchange(&g_sc_lock_state, 2, 2) != 2)
+        Sleep(0);
+    EnterCriticalSection(&g_sc_lock);
+}
+
+static void sc_unlock(void)
+{
+    LeaveCriticalSection(&g_sc_lock);
+}
+
+static void sc_free(Shortcut *list, int *count)
+{
+    int i;
+
+    for (i = 0; i < *count; i++) {
+        free(list[i].text);
+        list[i].text = NULL;
+    }
+    *count = 0;
+}
+
+// Swaps the parsed table in. Runs only on the thread that loads the config.
+static void sc_commit(void)
+{
+    Shortcut old[SHORTCUT_MAX];
+    int old_count;
+
+    sc_lock();
+    old_count = g_sc_count;
+    memcpy(old, g_sc, sizeof(Shortcut) * (size_t)old_count);
+    memcpy(g_sc, g_sc_new, sizeof(Shortcut) * (size_t)g_sc_new_count);
+    g_sc_count = g_sc_new_count;
+    sc_unlock();
+    g_sc_new_count = 0;
+    sc_free(old, &old_count);
+}
+
+BOOL shortcut_abbr_valid(const WCHAR *s)
+{
+    int n = 0;
+
+    if (s == NULL)
+        return FALSE;
+    for (; *s; s++, n++) {
+        WCHAR ch = lower_ascii(*s);
+        if (!((ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9')))
+            return FALSE;
+    }
+    return n >= 1 && n <= SHORTCUT_ABBR_MAX;
+}
+
+// "\n" -> newline, "\t" -> tab, "\s" -> space, "\\" -> backslash.
+static void sc_unescape(const WCHAR *src, WCHAR *dst, size_t cch)
+{
+    size_t n = 0;
+
+    for (; *src && n + 1 < cch; src++) {
+        WCHAR ch = *src;
+        if (ch == L'\\' && src[1]) {
+            src++;
+            switch (*src) {
+            case L'n': ch = L'\n'; break;
+            case L't': ch = L'\t'; break;
+            case L's': ch = L' ';  break;
+            default:   ch = *src;  break;
+            }
+        }
+        dst[n++] = ch;
+    }
+    dst[n] = 0;
+}
+
+static void process_shortcut(int line, const WCHAR *key, const WCHAR *val)
+{
+    static WCHAR text[SHORTCUT_TEXT_MAX + 1];
+    Shortcut *sc;
+    int i;
+
+    if (!shortcut_abbr_valid(key)) {
+        warn_add(line, L"bad shortcut \"%ls\" (use 1-%d letters or digits)",
+                 key, SHORTCUT_ABBR_MAX);
+        return;
+    }
+    for (i = 0; i < g_sc_new_count; i++) {
+        if (_wcsicmp(g_sc_new[i].abbr, key) == 0) {
+            warn_add(line, L"shortcut \"%ls\" is defined twice", key);
+            return;
+        }
+    }
+    if (g_sc_new_count >= SHORTCUT_MAX) {
+        warn_add(line, L"more than %d shortcuts", SHORTCUT_MAX);
+        return;
+    }
+    if (wcslen(val) > SHORTCUT_TEXT_MAX)
+        warn_add(line, L"shortcut \"%ls\" is longer than %d characters",
+                 key, SHORTCUT_TEXT_MAX);
+    sc_unescape(val, text, sizeof(text) / sizeof(text[0]));
+    sc = &g_sc_new[g_sc_new_count];
+    sc->text = _wcsdup(text);
+    if (sc->text == NULL)
+        return;
+    for (i = 0; key[i]; i++)
+        sc->abbr[i] = lower_ascii(key[i]);
+    sc->abbr[i] = 0;
+    g_sc_new_count++;
+}
+
+UINT shortcut_lookup(const WCHAR *abbr, int len)
+{
+    UINT result = 0;
+    int i;
+
+    if (len <= 0)
+        return 0;
+    sc_lock();
+    for (i = 0; i < g_sc_count; i++) {
+        if (_wcsnicmp(g_sc[i].abbr, abbr, (size_t)len) != 0)
+            continue;
+        if (g_sc[i].abbr[len] == 0)
+            result |= SC_EXACT;
+        else
+            result |= SC_PREFIX;
+    }
+    sc_unlock();
+    return result;
+}
+
+WCHAR *shortcut_text_dup(const WCHAR *abbr, int len)
+{
+    WCHAR *text = NULL;
+    int i;
+
+    if (len <= 0)
+        return NULL;
+    sc_lock();
+    for (i = 0; i < g_sc_count; i++) {
+        if (_wcsnicmp(g_sc[i].abbr, abbr, (size_t)len) == 0 &&
+            g_sc[i].abbr[len] == 0) {
+            text = _wcsdup(g_sc[i].text);
+            break;
+        }
+    }
+    sc_unlock();
+    return text;
+}
+
+int shortcut_count(void)
+{
+    int n;
+
+    sc_lock();
+    n = g_sc_count;
+    sc_unlock();
+    return n;
+}
+
+BOOL shortcut_get(int i, WCHAR *abbr, int abbr_cch, WCHAR **text)
+{
+    BOOL ok = FALSE;
+
+    if (text != NULL)
+        *text = NULL;
+    sc_lock();
+    if (i >= 0 && i < g_sc_count) {
+        if (abbr != NULL && abbr_cch > 0)
+            lstrcpynW(abbr, g_sc[i].abbr, abbr_cch);
+        if (text != NULL)
+            *text = _wcsdup(g_sc[i].text);
+        ok = text == NULL || *text != NULL;
+    }
+    sc_unlock();
+    return ok;
+}
+
 static void process_line(Config *c, int line, WCHAR *text, int *section)
 {
     WCHAR *s = text;
@@ -875,6 +1085,8 @@ static void process_line(Config *c, int line, WCHAR *text, int *section)
             *section = SEC_MOUSE;
         else if (_wcsicmp(name, L"hints") == 0)
             *section = SEC_HINTS;
+        else if (_wcsicmp(name, L"shortcuts") == 0)
+            *section = SEC_SHORTCUTS;
         else {
             warn_add(line, L"unknown section \"[%ls]\"", name);
             *section = SEC_UNKNOWN;
@@ -910,6 +1122,7 @@ static void process_line(Config *c, int line, WCHAR *text, int *section)
     case SEC_GENERAL: process_general(c, line, key, val); break;
     case SEC_MOUSE:   process_mouse(c, line, key, val);   break;
     case SEC_HINTS:   process_hints(c, line, key, val);   break;
+    case SEC_SHORTCUTS: process_shortcut(line, key, val);  break;
     default: break;
     }
 }
@@ -952,6 +1165,14 @@ const WCHAR *config_warnings(void)
 
 // ---------------------------------------------------------------------------
 // Default file (the documentation)
+
+// Written at the top of [shortcuts], by the default file and by shortcuts_save.
+static const WCHAR SHORTCUTS_COMMENT[] =
+    L"; Text shortcuts: hold Alt, type the abbreviation, release Alt to\r\n"
+    L"; type the text. abbreviation = text; abbreviations are 1-31 letters\r\n"
+    L"; or digits. In the text \\n is Enter, \\t is Tab, \\s is a space (for\r\n"
+    L"; leading/trailing spaces) and \\\\ is a backslash. The tray menu's\r\n"
+    L"; \"Text shortcuts...\" rewrites this section.\r\n";
 
 static void appendf(WCHAR *buf, size_t cch, const WCHAR *fmt, ...)
 {
@@ -1069,6 +1290,15 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"scroll_speed = %ls\r\n", num);
     fmt_double(d.scroll_max_speed, num, sizeof(num) / sizeof(num[0]));
     appendf(buf, cch, L"scroll_max_speed = %ls\r\n", num);
+    appendf(buf, cch, L"; 1 = Alt + the move keys (h j k l) scroll anywhere, also outside mouse\r\n");
+    appendf(buf, cch, L"; mode, and Alt + the scroll up/down keys (u d) scroll fast.\r\n");
+    appendf(buf, cch, L"alt_scroll = %d\r\n", d.alt_scroll ? 1 : 0);
+    appendf(buf, cch, L"; Notches per Alt + u / Alt + d tap (1-50), and the speeds while held.\r\n");
+    appendf(buf, cch, L"fast_scroll_lines = %d\r\n", d.fast_scroll_lines);
+    fmt_double(d.fast_scroll_speed, num, sizeof(num) / sizeof(num[0]));
+    appendf(buf, cch, L"fast_scroll_speed = %ls\r\n", num);
+    fmt_double(d.fast_scroll_max_speed, num, sizeof(num) / sizeof(num[0]));
+    appendf(buf, cch, L"fast_scroll_max_speed = %ls\r\n", num);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
     add_key_line(buf, cch, L"Move the mouse down.", L"key_down", d.key_down);
@@ -1136,98 +1366,51 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; them (100-5000, default 400). If none arrive the scan keeps running\r\n");
     appendf(buf, cch, L"; until the first results or 3 seconds, then falls back to the grid.\r\n");
     appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
+
+    appendf(buf, cch, L"\r\n[shortcuts]\r\n%ls", SHORTCUTS_COMMENT);
+    appendf(buf, cch, L"; Example:\r\n");
+    appendf(buf, cch, L"; reor = \uB2E4\uC2DC \uC8FC\uBB38\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?\r\n");
 }
 
-static void write_default_file(const WCHAR *path)
+// Reads a UTF-8 file (BOM optional) into a malloc'd, NUL-terminated string
+// without a leading BOM.
+enum { READ_OK = 0, READ_NOT_FOUND, READ_OPEN_FAILED, READ_FAILED,
+       READ_BAD_UTF8 };
+
+static int read_text_file(const WCHAR *path, WCHAR **out)
 {
-    static WCHAR text[16384];
-    char *utf8;
-    int bytes;
-    DWORD written = 0;
-    HANDLE h;
-
-    build_default_ini(text, sizeof(text) / sizeof(text[0]));
-    bytes = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
-    if (bytes <= 0) {
-        warn_add(0, L"could not create the settings file");
-        return;
-    }
-    utf8 = (char *)malloc((size_t)bytes);
-    if (utf8 == NULL) {
-        warn_add(0, L"could not create the settings file");
-        return;
-    }
-    WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, bytes, NULL, NULL);
-
-    h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        free(utf8);
-        warn_add(0, L"could not create the settings file");
-        return;
-    }
-    if (!WriteFile(h, utf8, (DWORD)(bytes - 1), &written, NULL) ||
-        written != (DWORD)(bytes - 1))
-        warn_add(0, L"could not write the settings file");
-    CloseHandle(h);
-    free(utf8);
-}
-
-// ---------------------------------------------------------------------------
-// Load
-
-BOOL config_load(Config *c, BOOL *created)
-{
-    const WCHAR *path;
     HANDLE h;
     DWORD size, total = 0, got = 0;
-    char *raw = NULL;
-    WCHAR *text = NULL;
-    WCHAR *p;
+    char *raw;
+    WCHAR *text;
     int len_bytes, widelen, skip = 0;
-    int line_no = 0, section = SEC_NONE;
 
-    if (c == NULL)
-        return FALSE;
-    if (created != NULL)
-        *created = FALSE;
-    g_warnings[0] = 0;
-    config_set_defaults(c);
-    path = config_path();
-
+    *out = NULL;
     h = CreateFileW(path, GENERIC_READ,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD err = GetLastError();
-
-        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
-            if (created != NULL)
-                *created = TRUE;
-            write_default_file(path);
-            return TRUE;
-        }
-        warn_add(0, L"could not open the settings file");
-        return FALSE;
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)
+            return READ_NOT_FOUND;
+        return READ_OPEN_FAILED;
     }
 
     size = GetFileSize(h, NULL);
     if (size == INVALID_FILE_SIZE || size > 4 * 1024 * 1024) {
         CloseHandle(h);
-        warn_add(0, L"could not read the settings file");
-        return FALSE;
+        return READ_FAILED;
     }
     raw = (char *)malloc(size > 0 ? size : 1);
     if (raw == NULL) {
         CloseHandle(h);
-        return FALSE;
+        return READ_FAILED;
     }
     while (total < size) {
         if (!ReadFile(h, raw + total, size - total, &got, NULL) || got == 0) {
             free(raw);
             CloseHandle(h);
-            warn_add(0, L"could not read the settings file");
-            return FALSE;
+            return READ_FAILED;
         }
         total += got;
     }
@@ -1242,23 +1425,305 @@ BOOL config_load(Config *c, BOOL *created)
                                   NULL, 0);
     if (widelen == 0 && len_bytes > skip) {
         free(raw);
-        warn_add(0, L"could not decode the settings file as UTF-8");
-        return FALSE;
+        return READ_BAD_UTF8;
     }
     text = (WCHAR *)malloc(((size_t)widelen + 1) * sizeof(WCHAR));
     if (text == NULL) {
         free(raw);
-        return FALSE;
+        return READ_FAILED;
     }
     if (widelen > 0)
         MultiByteToWideChar(CP_UTF8, 0, raw + skip, len_bytes - skip,
                             text, widelen);
     text[widelen] = 0;
     free(raw);
+    if (text[0] == 0xFEFF)
+        memmove(text, text + 1, (size_t)widelen * sizeof(WCHAR));
+    *out = text;
+    return READ_OK;
+}
+
+static BOOL write_text_file(const WCHAR *path, const WCHAR *text)
+{
+    char *utf8;
+    int bytes;
+    DWORD written = 0;
+    BOOL ok;
+    HANDLE h;
+
+    bytes = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
+    if (bytes <= 0)
+        return FALSE;
+    utf8 = (char *)malloc((size_t)bytes);
+    if (utf8 == NULL)
+        return FALSE;
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, bytes, NULL, NULL);
+
+    h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        free(utf8);
+        return FALSE;
+    }
+    ok = WriteFile(h, utf8, (DWORD)(bytes - 1), &written, NULL) &&
+         written == (DWORD)(bytes - 1);
+    CloseHandle(h);
+    free(utf8);
+    return ok;
+}
+
+static void write_default_file(const WCHAR *path)
+{
+    static WCHAR text[16384];
+
+    build_default_ini(text, sizeof(text) / sizeof(text[0]));
+    if (!write_text_file(path, text))
+        warn_add(0, L"could not create the settings file");
+}
+
+// ---------------------------------------------------------------------------
+// Saving the [shortcuts] section
+
+typedef struct {
+    WCHAR *s;
+    size_t len, cap;
+    BOOL   failed;
+} WBuf;
+
+static void wbuf_add(WBuf *b, const WCHAR *s, size_t n)
+{
+    if (b->failed)
+        return;
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap : 4096;
+        WCHAR *grown;
+        while (b->len + n + 1 > cap)
+            cap *= 2;
+        grown = (WCHAR *)realloc(b->s, cap * sizeof(WCHAR));
+        if (grown == NULL) {
+            b->failed = TRUE;
+            return;
+        }
+        b->s = grown;
+        b->cap = cap;
+    }
+    memcpy(b->s + b->len, s, n * sizeof(WCHAR));
+    b->len += n;
+    b->s[b->len] = 0;
+}
+
+static void wbuf_str(WBuf *b, const WCHAR *s)
+{
+    wbuf_add(b, s, wcslen(s));
+}
+
+// Inverse of sc_unescape. \r is dropped (edit controls give \r\n), and
+// leading/trailing spaces become \s so the parser's trim keeps them.
+static void wbuf_escaped(WBuf *b, const WCHAR *text)
+{
+    size_t n = wcslen(text);
+    size_t i;
+
+    for (i = 0; i < n; i++) {
+        WCHAR ch = text[i];
+        if (ch == L'\r')
+            continue;
+        if (ch == L'\\')
+            wbuf_str(b, L"\\\\");
+        else if (ch == L'\n')
+            wbuf_str(b, L"\\n");
+        else if (ch == L'\t')
+            wbuf_str(b, L"\\t");
+        else if (ch == L' ' && (i == 0 || i == n - 1))
+            wbuf_str(b, L"\\s");
+        else
+            wbuf_add(b, &ch, 1);
+    }
+}
+
+static BOOL is_shortcuts_header(const WCHAR *line, size_t n)
+{
+    WCHAR name[32];
+    size_t i = 0, k = 0;
+
+    while (i < n && is_space(line[i]))
+        i++;
+    if (i >= n || line[i] != L'[')
+        return FALSE;
+    for (i++; i < n && line[i] != L']'; i++) {
+        if (is_space(line[i]))
+            continue;
+        if (k + 1 >= sizeof(name) / sizeof(name[0]))
+            return FALSE;
+        name[k++] = line[i];
+    }
+    name[k] = 0;
+    return _wcsicmp(name, L"shortcuts") == 0;
+}
+
+static BOOL is_blank(const WCHAR *line, size_t n)
+{
+    size_t i = 0;
+
+    while (i < n && is_space(line[i]))
+        i++;
+    return i >= n;
+}
+
+static BOOL is_comment_or_blank(const WCHAR *line, size_t n)
+{
+    size_t i = 0;
+
+    while (i < n && is_space(line[i]))
+        i++;
+    return i >= n || line[i] == L';' || line[i] == L'#';
+}
+
+static BOOL is_section_header(const WCHAR *line, size_t n)
+{
+    size_t i = 0;
+
+    while (i < n && is_space(line[i]))
+        i++;
+    return i < n && line[i] == L'[';
+}
+
+BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
+                    int count)
+{
+    static WCHAR defaults[16384];
+    const WCHAR *path = config_path();
+    WCHAR tmp_path[32768];
+    WCHAR *text = NULL;
+    const WCHAR *p;
+    const WCHAR *trailer = NULL;
+    WBuf out;
+    BOOL skipping = FALSE;
+    BOOL ok;
+    int i;
+
+    ZeroMemory(&out, sizeof(out));
+    switch (read_text_file(path, &text)) {
+    case READ_OK:
+        break;
+    case READ_NOT_FOUND:
+        build_default_ini(defaults, sizeof(defaults) / sizeof(defaults[0]));
+        text = _wcsdup(defaults);
+        if (text == NULL)
+            return FALSE;
+        break;
+    default:
+        return FALSE;
+    }
+
+    // Keep every line except the old [shortcuts] section, byte for byte.
+    // A blank line and the comments after it at the end of that section
+    // belong to the next section header, so they stay too.
+    p = text;
+    while (*p) {
+        const WCHAR *e = p;
+        size_t n;
+
+        while (*e && *e != L'\r' && *e != L'\n')
+            e++;
+        n = (size_t)(e - p);
+        if (*e == L'\r')
+            e++;
+        if (*e == L'\n')
+            e++;
+        if (is_section_header(p, n)) {
+            if (skipping && trailer)
+                wbuf_add(&out, trailer, (size_t)(p - trailer));
+            trailer = NULL;
+            skipping = is_shortcuts_header(p, n);
+            if (skipping) {
+                p = e;
+                continue;
+            }
+        }
+        if (!skipping)
+            wbuf_add(&out, p, (size_t)(e - p));
+        else if (!is_comment_or_blank(p, n))
+            trailer = NULL;
+        else if (trailer == NULL && is_blank(p, n))
+            trailer = p;
+        p = e;
+    }
+    free(text);
+    while (out.len > 0 && is_space(out.s[out.len - 1]))
+        out.s[--out.len] = 0;
+    if (out.len > 0)
+        wbuf_str(&out, L"\r\n\r\n");
+
+    wbuf_str(&out, L"[shortcuts]\r\n");
+    wbuf_str(&out, SHORTCUTS_COMMENT);
+    for (i = 0; i < count; i++) {
+        if (!shortcut_abbr_valid(abbrs[i]))
+            continue;
+        wbuf_str(&out, abbrs[i]);
+        wbuf_str(&out, L" = ");
+        wbuf_escaped(&out, texts[i] ? texts[i] : L"");
+        wbuf_str(&out, L"\r\n");
+    }
+    if (out.failed) {
+        free(out.s);
+        return FALSE;
+    }
+
+    // Write a temporary file and move it over, so a failed write never
+    // leaves a half-written vim.ini.
+    _snwprintf(tmp_path, sizeof(tmp_path) / sizeof(tmp_path[0]), L"%ls.tmp",
+               path);
+    tmp_path[sizeof(tmp_path) / sizeof(tmp_path[0]) - 1] = 0;
+    ok = write_text_file(tmp_path, out.s);
+    free(out.s);
+    if (ok)
+        ok = MoveFileExW(tmp_path, path, MOVEFILE_REPLACE_EXISTING);
+    if (!ok)
+        DeleteFileW(tmp_path);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Load
+
+BOOL config_load(Config *c, BOOL *created)
+{
+    const WCHAR *path;
+    WCHAR *text = NULL;
+    WCHAR *p;
+    int line_no = 0, section = SEC_NONE;
+
+    if (c == NULL)
+        return FALSE;
+    if (created != NULL)
+        *created = FALSE;
+    g_warnings[0] = 0;
+    config_set_defaults(c);
+    sc_free(g_sc_new, &g_sc_new_count);
+    path = config_path();
+
+    switch (read_text_file(path, &text)) {
+    case READ_OK:
+        break;
+    case READ_NOT_FOUND:
+        if (created != NULL)
+            *created = TRUE;
+        write_default_file(path);
+        sc_commit();
+        return TRUE;
+    case READ_OPEN_FAILED:
+        warn_add(0, L"could not open the settings file");
+        return FALSE;
+    case READ_BAD_UTF8:
+        warn_add(0, L"could not decode the settings file as UTF-8");
+        return FALSE;
+    default:
+        warn_add(0, L"could not read the settings file");
+        return FALSE;
+    }
 
     p = text;
-    if (p[0] == 0xFEFF)
-        p++;
     while (*p) {
         WCHAR *line = p;
         WCHAR *e = p;
@@ -1279,5 +1744,6 @@ BOOL config_load(Config *c, BOOL *created)
         p = e;
     }
     free(text);
+    sc_commit();
     return TRUE;
 }

@@ -2,6 +2,7 @@
 #include "common.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 #ifndef WM_WTSSESSION_CHANGE
 #define WM_WTSSESSION_CHANGE 0x02B1
@@ -74,6 +75,7 @@ enum {
     ACT_NONE = 0,
     ACT_MOVE_LEFT, ACT_MOVE_DOWN, ACT_MOVE_UP, ACT_MOVE_RIGHT,
     ACT_SCROLL_UP, ACT_SCROLL_DOWN, ACT_SCROLL_LEFT, ACT_SCROLL_RIGHT,
+    ACT_FAST_UP, ACT_FAST_DOWN,
     ACT_LEFT, ACT_CLICK_RIGHT, ACT_CLICK_MIDDLE, ACT_TOGGLE,
     ACT_HINTS, ACT_EXIT, ACT_HELP
 };
@@ -107,7 +109,13 @@ static BOOL s_alt_consumed = FALSE;
 static UINT s_alt_scan = 0;
 static BOOL s_alt_extended = FALSE;
 
-static DWORD s_scroll_start[4];
+static DWORD s_scroll_start[6];
+
+// Text shortcut being typed while Alt is held (see shortcut_begin).
+static BOOL  s_sc_active = FALSE;
+static BOOL  s_sc_cancelled = FALSE;
+static WCHAR s_sc_buf[SHORTCUT_ABBR_MAX + 1];
+static int   s_sc_len = 0;
 
 static HANDLE s_move_event = NULL;
 static HANDLE s_move_thread = NULL;
@@ -573,8 +581,10 @@ static void scroll_press(int act)
         send_wheel(TRUE, -120);
     else if (idx == 2)
         send_wheel(FALSE, -120);
-    else
+    else if (idx == 3)
         send_wheel(FALSE, 120);
+    else
+        send_wheel(TRUE, (idx == 4 ? 120 : -120) * g_cfg.fast_scroll_lines);
 }
 
 static void scroll_release(int act)
@@ -689,6 +699,93 @@ static void apply_action_down(int act)
     }
 }
 
+// Alt + a move key scrolls that way, anywhere; Alt + the scroll up/down
+// keys scroll fast.
+static int alt_scroll_action(UINT vk)
+{
+    if (!g_cfg.alt_scroll)
+        return ACT_NONE;
+    if (g_cfg.key_left && vk == g_cfg.key_left)
+        return ACT_SCROLL_LEFT;
+    if (g_cfg.key_down && vk == g_cfg.key_down)
+        return ACT_SCROLL_DOWN;
+    if (g_cfg.key_up && vk == g_cfg.key_up)
+        return ACT_SCROLL_UP;
+    if (g_cfg.key_right && vk == g_cfg.key_right)
+        return ACT_SCROLL_RIGHT;
+    if (g_cfg.key_scroll_up && vk == g_cfg.key_scroll_up)
+        return ACT_FAST_UP;
+    if (g_cfg.key_scroll_down && vk == g_cfg.key_scroll_down)
+        return ACT_FAST_DOWN;
+    return ACT_NONE;
+}
+
+static WCHAR shortcut_char(UINT vk)
+{
+    if (vk >= 'A' && vk <= 'Z')
+        return (WCHAR)(vk - 'A' + L'a');
+    if (vk >= '0' && vk <= '9')
+        return (WCHAR)vk;
+    return 0;
+}
+
+static void shortcut_reset(void)
+{
+    s_sc_active = FALSE;
+    s_sc_cancelled = FALSE;
+    s_sc_len = 0;
+    s_sc_buf[0] = 0;
+}
+
+// Alt + the first letter of an abbreviation starts a shortcut: every key
+// until Alt is released goes into it.
+static BOOL shortcut_begin(UINT vk)
+{
+    WCHAR ch = shortcut_char(vk);
+
+    if (ch == 0 || shortcut_lookup(&ch, 1) == 0)
+        return FALSE;
+    shortcut_reset();
+    s_sc_active = TRUE;
+    s_sc_buf[0] = ch;
+    s_sc_buf[1] = 0;
+    s_sc_len = 1;
+    return TRUE;
+}
+
+static void shortcut_key(UINT vk)
+{
+    WCHAR ch;
+
+    if (vk == VK_BACK) {
+        if (s_sc_len > 0)
+            s_sc_buf[--s_sc_len] = 0;
+        return;
+    }
+    ch = shortcut_char(vk);
+    // Esc or any other key cancels; Alt is still swallowed until released.
+    if (ch == 0 || s_sc_len >= SHORTCUT_ABBR_MAX) {
+        s_sc_cancelled = TRUE;
+        return;
+    }
+    s_sc_buf[s_sc_len++] = ch;
+    s_sc_buf[s_sc_len] = 0;
+}
+
+// Alt released. The main thread types the text after this Alt-up has gone
+// through, so the app does not see it as Alt + characters.
+static void shortcut_end(void)
+{
+    WCHAR *text = NULL;
+    HWND wnd = g_main_wnd;
+
+    if (!s_sc_cancelled)
+        text = shortcut_text_dup(s_sc_buf, s_sc_len);
+    shortcut_reset();
+    if (text && (!wnd || !PostMessageW(wnd, WM_APP_TYPE_TEXT, 0, (LPARAM)text)))
+        free(text);
+}
+
 static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
 {
     if (hotkey_match(&g_cfg.quit_hotkey, vk, mods)) {
@@ -785,6 +882,25 @@ static BOOL handle_down(UINT vk)
         post_main(WM_APP_HINT_KEY, vk, mods);
         return TRUE;
     }
+    // Alt + letter reaches the app with Alt already down; the mask key keeps
+    // the Alt release from opening its menu bar.
+    if (mods == KMOD_ALT) {
+        act = alt_scroll_action(vk);
+        if (act != ACT_NONE) {
+            send_mask_key();
+            mark_caps_used();
+            s_action[vk] = (unsigned char)act;
+            s_owner[vk] = OWN_MOVE;
+            scroll_press(act);
+            return TRUE;
+        }
+        if (shortcut_begin(vk)) {
+            send_mask_key();
+            mark_caps_used();
+            s_owner[vk] = OWN_SWALLOW;
+            return TRUE;
+        }
+    }
     if (g_cfg.mouse_mode_key != 0 && vk == g_cfg.mouse_mode_key &&
         !(mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN | KMOD_SHIFT))) {
         s_owner[vk] = OWN_CAPS;
@@ -848,7 +964,7 @@ static BOOL handle_up(UINT vk)
     case OWN_MOVE:
         if (act >= ACT_MOVE_LEFT && act <= ACT_MOVE_RIGHT)
             move_release(act);
-        else if (act >= ACT_SCROLL_UP && act <= ACT_SCROLL_RIGHT)
+        else if (act >= ACT_SCROLL_UP && act <= ACT_FAST_DOWN)
             scroll_release(act);
         return TRUE;
     case OWN_SWALLOW:
@@ -900,6 +1016,16 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
             s_owner[vk] = OWN_PASS;
             return FALSE;
         }
+        if (s_sc_active && !repeat) {
+            // Ctrl/Win combinations (Ctrl+Alt+Q) drop the shortcut and act.
+            if (current_mods() & (KMOD_CTRL | KMOD_WIN)) {
+                shortcut_reset();
+            } else {
+                shortcut_key(vk);
+                s_owner[vk] = OWN_SWALLOW;
+                return TRUE;
+            }
+        }
         if (repeat) {
             owner = s_owner[vk];
             return owner != OWN_PASS && owner != OWN_NONE;
@@ -909,6 +1035,8 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
     if (!s_down[vk])
         return FALSE;
     s_down[vk] = 0;
+    if (s_sc_active && (vk == VK_LMENU || vk == VK_RMENU))
+        shortcut_end();
     return handle_up(vk);
 }
 
@@ -940,6 +1068,7 @@ static void reset_key_state(void)
     s_alt_consumed = FALSE;
     s_alt_scan = 0;
     s_alt_extended = FALSE;
+    shortcut_reset();
 }
 
 static BOOL install_hook(void)
@@ -1034,7 +1163,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
             LONG sf = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
             double dt, remaining, accumDX = 0.0, accumDY = 0.0;
             double speed, max_speed, accel_time, curve, slow_speed;
-            double scroll_base, scroll_max;
+            double scroll_base, scroll_max, fast_base, fast_max;
             int signX, signY;
             BOOL slow;
 
@@ -1073,6 +1202,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
             slow_speed = g_cfg.slow_speed;
             scroll_base = g_cfg.scroll_speed;
             scroll_max = g_cfg.scroll_max_speed;
+            fast_base = g_cfg.fast_scroll_speed;
+            fast_max = g_cfg.fast_scroll_max_speed;
             if (accel_time <= 0.001)
                 accel_time = 0.001;
             if (curve <= 0.0)
@@ -1081,6 +1212,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 max_speed = speed;
             if (scroll_max < scroll_base)
                 scroll_max = scroll_base;
+            if (fast_max < fast_base)
+                fast_max = fast_base;
             slow = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
             remaining = dt;
@@ -1142,6 +1275,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 sy -= scroll_speed_for(sf, 1, scroll_base, scroll_max, accel_time, curve);
                 sx -= scroll_speed_for(sf, 2, scroll_base, scroll_max, accel_time, curve);
                 sx += scroll_speed_for(sf, 3, scroll_base, scroll_max, accel_time, curve);
+                sy += scroll_speed_for(sf, 4, fast_base, fast_max, accel_time, curve);
+                sy -= scroll_speed_for(sf, 5, fast_base, fast_max, accel_time, curve);
                 scrAccY += sy * dt;
                 scrAccX += sx * dt;
                 while (scrAccY >= 40.0 || scrAccY <= -40.0) {
@@ -1625,6 +1760,45 @@ BOOL input_left_button_held(void)
 void input_set_key_capture(BOOL on)
 {
     flag_set(&s_capture, on);
+}
+
+void input_type_text(const WCHAR *text)
+{
+    INPUT *in;
+    size_t len, i;
+    UINT n = 0;
+
+    if (text == NULL || text[0] == 0)
+        return;
+    len = wcslen(text);
+    in = (INPUT *)calloc(len * 2, sizeof(INPUT));
+    if (in == NULL)
+        return;
+    for (i = 0; i < len; i++) {
+        WCHAR ch = text[i];
+        INPUT *down = &in[n];
+        INPUT *up = &in[n + 1];
+
+        if (ch == L'\r')
+            continue;
+        down->type = INPUT_KEYBOARD;
+        up->type = INPUT_KEYBOARD;
+        if (ch == L'\n' || ch == L'\t') {
+            down->ki.wVk = ch == L'\n' ? VK_RETURN : VK_TAB;
+            up->ki.wVk = down->ki.wVk;
+            up->ki.dwFlags = KEYEVENTF_KEYUP;
+        } else {
+            down->ki.wScan = ch;
+            down->ki.dwFlags = KEYEVENTF_UNICODE;
+            up->ki.wScan = ch;
+            up->ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        }
+        n += 2;
+    }
+    // One call, so the user's own keys cannot land in the middle.
+    if (n > 0 && SendInput(n, in, sizeof(INPUT)) != n)
+        app_log(L"input: typing a text shortcut failed (%lu)", GetLastError());
+    free(in);
 }
 
 void input_config_changed(void)
