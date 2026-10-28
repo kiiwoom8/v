@@ -19,7 +19,7 @@ if not errorlevel 1 (
 
 where gcc >nul 2>nul
 if not errorlevel 1 (
-    gcc -Wall -Wextra -O2 -std=gnu11 -o vim.exe main.c config.c input.c hint.c tray.c uia.c snippet.c -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid
+    gcc -Wall -Wextra -O2 -std=gnu11 -o vim.exe main.c config.c input.c hint.c tray.c uia.c snippet.c -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid -lcomdlg32
     goto done
 )
 

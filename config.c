@@ -1774,3 +1774,145 @@ BOOL config_load(Config *c, BOOL *created)
     sc_commit();
     return TRUE;
 }
+
+// ---------------------------------------------------------------------------
+// Import / export
+
+BOOL shortcuts_export(const WCHAR *path)
+{
+    WBuf out;
+    WCHAR abbr[SHORTCUT_ABBR_MAX + 1];
+    BOOL ok;
+    int i, n = shortcut_count();
+
+    ZeroMemory(&out, sizeof(out));
+    wbuf_str(&out, L"; vim mouse text shortcuts. Import them from the tray menu's\r\n");
+    wbuf_str(&out, L"; \"Text shortcuts...\" window.\r\n");
+    wbuf_str(&out, L"[shortcuts]\r\n");
+    wbuf_str(&out, SHORTCUTS_COMMENT);
+    for (i = 0; i < n; i++) {
+        WCHAR *text = NULL;
+        if (!shortcut_get(i, abbr, SHORTCUT_ABBR_MAX + 1, &text))
+            continue;
+        wbuf_str(&out, abbr);
+        wbuf_str(&out, L" = ");
+        wbuf_escaped(&out, text);
+        wbuf_str(&out, L"\r\n");
+        free(text);
+    }
+    if (out.failed) {
+        free(out.s);
+        return FALSE;
+    }
+    ok = write_text_file(path, out.s);
+    free(out.s);
+    return ok;
+}
+
+void shortcut_entries_free(ShortcutEntry *entries, int count)
+{
+    int i;
+
+    if (entries == NULL)
+        return;
+    for (i = 0; i < count; i++)
+        free(entries[i].text);
+    free(entries);
+}
+
+ShortcutEntry *shortcuts_read_file(const WCHAR *path, int *count,
+                                   int *skipped)
+{
+    static WCHAR value[SHORTCUT_TEXT_MAX + 1];
+    ShortcutEntry *entries;
+    WCHAR *text = NULL;
+    WCHAR *p;
+    int n = 0, bad = 0;
+    // Lines before any [section] count (a plain list); in a full vim.ini
+    // only the [shortcuts] section does.
+    BOOL accept = TRUE;
+
+    *count = 0;
+    *skipped = 0;
+    if (read_text_file(path, &text) != READ_OK)
+        return NULL;
+    entries = (ShortcutEntry *)calloc(SHORTCUT_MAX, sizeof(ShortcutEntry));
+    if (entries == NULL) {
+        free(text);
+        return NULL;
+    }
+
+    p = text;
+    while (*p) {
+        WCHAR *line = p;
+        WCHAR *e = p;
+        WCHAR *eq, *key, *val;
+        int i, j;
+
+        while (*e && *e != L'\r' && *e != L'\n')
+            e++;
+        if (*e == L'\r') {
+            *e++ = 0;
+            if (*e == L'\n')
+                e++;
+        } else if (*e == L'\n') {
+            *e++ = 0;
+        }
+        p = e;
+        trim(&line);
+        if (*line == 0 || *line == L';' || *line == L'#')
+            continue;
+        if (*line == L'[') {
+            WCHAR *close = wcschr(line, L']');
+            if (close) {
+                *close = 0;
+                key = line + 1;
+                trim(&key);
+                accept = _wcsicmp(key, L"shortcuts") == 0;
+            }
+            continue;
+        }
+        if (!accept)
+            continue;
+        eq = wcschr(line, L'=');
+        if (eq == NULL) {
+            bad++;
+            continue;
+        }
+        *eq = 0;
+        key = line;
+        val = eq + 1;
+        trim(&key);
+        trim(&val);
+        if (!shortcut_abbr_valid(key) || *val == 0) {
+            bad++;
+            continue;
+        }
+        sc_unescape(val, value, sizeof(value) / sizeof(value[0]));
+        for (j = 0; j < n; j++) {
+            if (_wcsicmp(entries[j].abbr, key) == 0)
+                break;
+        }
+        if (j == n) {
+            if (n >= SHORTCUT_MAX) {
+                bad++;
+                continue;
+            }
+            n++;
+        }
+        // A later line for the same abbreviation wins.
+        free(entries[j].text);
+        entries[j].text = _wcsdup(value);
+        for (i = 0; key[i]; i++)
+            entries[j].abbr[i] = lower_ascii(key[i]);
+        entries[j].abbr[i] = 0;
+        if (entries[j].text == NULL) {
+            n--;
+            bad++;
+        }
+    }
+    free(text);
+    *count = n;
+    *skipped = bad;
+    return entries;
+}

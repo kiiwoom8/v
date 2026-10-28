@@ -6,6 +6,7 @@
 
 #include "common.h"
 
+#include <commdlg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,10 @@
 #define ID_CLOSE   2007
 #define ID_ABBR_LABEL 2008
 #define ID_TEXT_LABEL 2009
+#define ID_IMPORT  2010
+#define ID_EXPORT  2011
+
+#define FILE_FILTER L"Text shortcuts (*.txt, *.ini)\0*.txt;*.ini\0All files (*.*)\0*.*\0"
 
 #define LIST_PREVIEW 160
 
@@ -318,6 +323,166 @@ static void on_delete(void)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Import / export
+
+static BOOL ask_file(BOOL save, WCHAR *path, DWORD cch)
+{
+    OPENFILENAMEW ofn;
+
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_ed_wnd;
+    ofn.lpstrFilter = FILE_FILTER;
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = cch;
+    ofn.lpstrDefExt = L"txt";
+    if (save) {
+        ofn.lpstrTitle = L"Export text shortcuts";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        return GetSaveFileNameW(&ofn);
+    }
+    ofn.lpstrTitle = L"Import text shortcuts";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    return GetOpenFileNameW(&ofn);
+}
+
+static void on_export(void)
+{
+    WCHAR path[MAX_PATH] = L"vim-mouse-shortcuts.txt";
+    WCHAR msg[MAX_PATH + 64];
+
+    if (shortcut_count() == 0) {
+        MessageBoxW(g_ed_wnd, L"There are no text shortcuts to export.",
+                    ED_TITLE, MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!ask_file(TRUE, path, MAX_PATH))
+        return;
+    if (!shortcuts_export(path)) {
+        MessageBoxW(g_ed_wnd, L"The file could not be written.", ED_TITLE,
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    _snwprintf(msg, sizeof(msg) / sizeof(msg[0]),
+               L"Exported %d text shortcuts to\n%ls", shortcut_count(), path);
+    msg[sizeof(msg) / sizeof(msg[0]) - 1] = 0;
+    MessageBoxW(g_ed_wnd, msg, ED_TITLE, MB_OK | MB_ICONINFORMATION);
+}
+
+// Adds the file's shortcuts to the current ones. When some abbreviations
+// exist already, the user picks: replace them, or keep the current ones.
+static void on_import(void)
+{
+    WCHAR path[MAX_PATH] = L"";
+    WCHAR msg[512];
+    ShortcutEntry *in;
+    WCHAR (*abbrs)[SHORTCUT_ABBR_MAX + 1] = NULL;
+    WCHAR **texts = NULL;
+    const WCHAR **abbr_ptrs = NULL;
+    int count = 0, skipped = 0, clashes = 0, added = 0, replaced = 0;
+    int dropped = 0, i, j, n, k = 0, answer = IDYES;
+    BOOL ok = FALSE;
+
+    if (!ask_file(FALSE, path, MAX_PATH))
+        return;
+    in = shortcuts_read_file(path, &count, &skipped);
+    if (in == NULL) {
+        MessageBoxW(g_ed_wnd, L"The file could not be read.", ED_TITLE,
+                    MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (count == 0) {
+        shortcut_entries_free(in, count);
+        MessageBoxW(g_ed_wnd,
+                    L"The file has no text shortcuts (lines like "
+                    L"\"reor = text\").", ED_TITLE, MB_OK | MB_ICONWARNING);
+        return;
+    }
+    n = shortcut_count();
+    for (i = 0; i < count; i++) {
+        if (find_abbr(in[i].abbr) >= 0)
+            clashes++;
+    }
+    if (clashes > 0) {
+        _snwprintf(msg, 512,
+                   L"%d of the %d shortcuts in the file already exist.\n\n"
+                   L"Yes: replace them with the imported ones\n"
+                   L"No: keep the current ones and add only the new shortcuts",
+                   clashes, count);
+        msg[511] = 0;
+        answer = MessageBoxW(g_ed_wnd, msg, ED_TITLE,
+                             MB_YESNOCANCEL | MB_ICONQUESTION);
+        if (answer == IDCANCEL) {
+            shortcut_entries_free(in, count);
+            return;
+        }
+    }
+
+    abbrs = malloc(sizeof(*abbrs) * (size_t)(n + count));
+    texts = (WCHAR **)calloc((size_t)(n + count), sizeof(WCHAR *));
+    abbr_ptrs = (const WCHAR **)calloc((size_t)(n + count), sizeof(WCHAR *));
+    if (abbrs && texts && abbr_ptrs) {
+        for (i = 0; i < n; i++) {
+            if (shortcut_get(i, abbrs[k], SHORTCUT_ABBR_MAX + 1, &texts[k])) {
+                abbr_ptrs[k] = abbrs[k];
+                k++;
+            }
+        }
+        for (i = 0; i < count; i++) {
+            for (j = 0; j < k; j++) {
+                if (wcscmp(abbrs[j], in[i].abbr) == 0)
+                    break;
+            }
+            if (j < k) {
+                if (answer == IDYES) {
+                    free(texts[j]);
+                    texts[j] = _wcsdup(in[i].text);
+                    replaced++;
+                }
+                continue;
+            }
+            if (k >= SHORTCUT_MAX) {
+                dropped++;
+                continue;
+            }
+            lstrcpynW(abbrs[k], in[i].abbr, SHORTCUT_ABBR_MAX + 1);
+            texts[k] = _wcsdup(in[i].text);
+            abbr_ptrs[k] = abbrs[k];
+            k++;
+            added++;
+        }
+        ok = shortcuts_save(abbr_ptrs, (const WCHAR *const *)texts, k);
+    }
+    if (texts) {
+        for (i = 0; i < k; i++)
+            free(texts[i]);
+    }
+    free(texts);
+    free(abbr_ptrs);
+    free(abbrs);
+    shortcut_entries_free(in, count);
+
+    if (!ok) {
+        MessageBoxW(g_ed_wnd, L"The settings file could not be written.",
+                    ED_TITLE, MB_OK | MB_ICONERROR);
+        return;
+    }
+    app_config_written();
+    refresh_list(NULL);
+    _snwprintf(msg, 512, L"Imported: %d added, %d replaced.", added, replaced);
+    if (skipped > 0)
+        _snwprintf(msg + wcslen(msg), 512 - wcslen(msg),
+                   L"\n%d lines were not valid shortcuts and were skipped.",
+                   skipped);
+    if (dropped > 0)
+        _snwprintf(msg + wcslen(msg), 512 - wcslen(msg),
+                   L"\n%d were not added: the limit is %d shortcuts.",
+                   dropped, SHORTCUT_MAX);
+    msg[511] = 0;
+    MessageBoxW(g_ed_wnd, msg, ED_TITLE, MB_OK | MB_ICONINFORMATION);
+}
+
 static void on_new(void)
 {
     SendMessageW(g_ed_list, LB_SETCURSEL, (WPARAM)-1, 0);
@@ -347,7 +512,7 @@ static void layout(int width, int height, UINT dpi)
     int label_h = MulDiv(18, (int)dpi, 96);
     int edit_h = MulDiv(24, (int)dpi, 96);
     int text_h = MulDiv(72, (int)dpi, 96);
-    int btn_w = MulDiv(96, (int)dpi, 96);
+    int btn_w = MulDiv(84, (int)dpi, 96);
     int btn_h = MulDiv(28, (int)dpi, 96);
     int inner = width - pad * 2;
     int list_h, y;
@@ -373,6 +538,10 @@ static void layout(int width, int height, UINT dpi)
                btn_h, TRUE);
     MoveWindow(GetDlgItem(g_ed_wnd, ID_NEW), pad + (btn_w + gap) * 2, y, btn_w,
                btn_h, TRUE);
+    MoveWindow(GetDlgItem(g_ed_wnd, ID_IMPORT), pad + (btn_w + gap) * 3, y,
+               btn_w, btn_h, TRUE);
+    MoveWindow(GetDlgItem(g_ed_wnd, ID_EXPORT), pad + (btn_w + gap) * 4, y,
+               btn_w, btn_h, TRUE);
     MoveWindow(GetDlgItem(g_ed_wnd, ID_CLOSE), width - pad - btn_w, y, btn_w,
                btn_h, TRUE);
 }
@@ -403,6 +572,10 @@ static void create_controls(void)
     add_control(L"BUTTON", L"&Delete", WS_TABSTOP | BS_PUSHBUTTON, 0,
                 ID_DELETE);
     add_control(L"BUTTON", L"&New", WS_TABSTOP | BS_PUSHBUTTON, 0, ID_NEW);
+    add_control(L"BUTTON", L"&Import...", WS_TABSTOP | BS_PUSHBUTTON, 0,
+                ID_IMPORT);
+    add_control(L"BUTTON", L"E&xport...", WS_TABSTOP | BS_PUSHBUTTON, 0,
+                ID_EXPORT);
     add_control(L"BUTTON", L"Close", WS_TABSTOP | BS_PUSHBUTTON, 0, ID_CLOSE);
 }
 
@@ -425,6 +598,12 @@ static LRESULT CALLBACK ed_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_NEW:
             on_new();
             return 0;
+        case ID_IMPORT:
+            on_import();
+            return 0;
+        case ID_EXPORT:
+            on_export();
+            return 0;
         case ID_CLOSE:
         case IDCANCEL:
             DestroyWindow(hwnd);
@@ -444,7 +623,7 @@ static LRESULT CALLBACK ed_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         MINMAXINFO *mm = (MINMAXINFO *)lp;
         UINT dpi = dpi_for_monitor(MonitorFromWindow(hwnd,
                                                      MONITOR_DEFAULTTONEAREST));
-        mm->ptMinTrackSize.x = MulDiv(460, (int)dpi, 96);
+        mm->ptMinTrackSize.x = MulDiv(580, (int)dpi, 96);
         mm->ptMinTrackSize.y = MulDiv(340, (int)dpi, 96);
         return 0;
     }
@@ -520,7 +699,7 @@ void snippet_editor_open(void)
                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
                             L"Segoe UI");
 
-    SetRect(&rc, 0, 0, MulDiv(560, (int)dpi, 96), MulDiv(440, (int)dpi, 96));
+    SetRect(&rc, 0, 0, MulDiv(640, (int)dpi, 96), MulDiv(440, (int)dpi, 96));
     AdjustWindowRectEx(&rc, style, FALSE, WS_EX_CONTROLPARENT);
     width = rc.right - rc.left;
     height = rc.bottom - rc.top;

@@ -163,6 +163,18 @@ BOOL         shortcut_abbr_valid(const WCHAR *s);
 // with real newlines/tabs; it is escaped on write). FALSE if writing failed.
 BOOL         shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
                             int count);
+// Export writes the current shortcuts to a file in the [shortcuts] format.
+// Import reads "abbreviation = text" lines (a plain list, or the [shortcuts]
+// section of a vim.ini). It returns a malloc'd array (free it with
+// shortcut_entries_free) or NULL if the file could not be read; *skipped
+// counts lines that are not valid shortcuts.
+typedef struct {
+    WCHAR  abbr[SHORTCUT_ABBR_MAX + 1];
+    WCHAR *text;
+} ShortcutEntry;
+BOOL           shortcuts_export(const WCHAR *path);
+ShortcutEntry *shortcuts_read_file(const WCHAR *path, int *count, int *skipped);
+void           shortcut_entries_free(ShortcutEntry *entries, int count);
 
 // ---------------------------------------------------------------------------
 // Input (input.c). Runs its own thread (hook + message loop) and a movement

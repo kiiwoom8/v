@@ -159,6 +159,13 @@ them. Select one to edit it, fill in the abbreviation and the text, then press
 **Add / Update** (Enter) to save it, **Delete** to remove the selected one, or
 **New** to clear the fields. Changes apply at once.
 
+**Export...** saves all shortcuts to a text file, and **Import...** adds the
+shortcuts from such a file, e.g. to move them to another PC or share them with
+a team. The file uses the same `abbreviation = text` lines as `vim.ini` and can
+be edited in any text editor; a whole `vim.ini` can be imported too (only its
+`[shortcuts]` section is read). When imported abbreviations already exist,
+you choose whether the imported ones replace them.
+
 They are stored in the `[shortcuts]` section of `vim.ini`, one per line, so
 they can also be edited by hand:
 
@@ -216,7 +223,8 @@ Left- or right-click the tray icon:
 - Pause (checked when paused)
 - Lock keyboard (checked while locked; click to unlock)
 - Keyboard shortcuts...
-- Text shortcuts... (add, change or delete [text shortcuts](#text-shortcuts))
+- Text shortcuts... (add, change, delete, import or export
+  [text shortcuts](#text-shortcuts))
 - Edit settings... (opens `vim.ini`, falling back to Notepad)
 - Reload settings
 - Start with Windows (checked when enabled)
