@@ -457,8 +457,8 @@ static BOOL quoted_exe(WCHAR *buf, int cch)
 }
 
 // Extracts the program path from a Run value: "C:\path\vim.exe" [args], or an
-// unquoted path. An unquoted value cannot contain spaces unambiguously, so it
-// ends at the first one.
+// unquoted path. An unquoted value is taken whole when that file exists (a
+// hand-written C:\Program Files\...), otherwise up to the first space.
 static BOOL run_value_path(const WCHAR *value, WCHAR *path, int cch)
 {
     const WCHAR *p = value;
@@ -470,6 +470,8 @@ static BOOL run_value_path(const WCHAR *value, WCHAR *path, int cch)
         p++;
         while (p[n] && p[n] != L'"')
             n++;
+    } else if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES) {
+        n = (int)wcslen(p);
     } else {
         while (p[n] && p[n] != L' ' && p[n] != L'\t')
             n++;
