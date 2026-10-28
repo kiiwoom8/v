@@ -20,7 +20,7 @@ Config    g_cfg;
 
 static CRITICAL_SECTION g_log_cs;
 static volatile LONG    g_log_state;
-static WCHAR            g_log_path[MAX_PATH];
+static WCHAR            g_log_path[APP_PATH_MAX];
 static BOOL             g_log_path_ready;
 
 static void ensure_log_cs(void)
@@ -42,26 +42,25 @@ static void ensure_log_cs(void)
 
 static void append_log_line(const WCHAR *line)
 {
-    WCHAR  text[1200];
-    WCHAR  exe[MAX_PATH];
-    char   utf8[4096];
-    DWORD  n;
-    int    len;
-    HANDLE f;
+    WCHAR        text[1200];
+    char         utf8[4096];
+    const WCHAR *ini;
+    const WCHAR *slash;
+    DWORD        n;
+    int          len;
+    HANDLE       f;
 
+    // The log lives next to the settings file actually in use.
     if (!g_log_path_ready) {
-        n = GetModuleFileNameW(NULL, exe, MAX_PATH);
-        if (n == 0 || n >= MAX_PATH)
+        ini = config_path();
+        slash = wcsrchr(ini, L'\\');
+        if (slash == NULL)
             return;
-        {
-            int i = (int)n - 1;
-            while (i > 0 && exe[i] != L'\\')
-                i--;
-            if (exe[i] != L'\\')
-                return;
-            lstrcpynW(exe + i + 1, L"vim.log", MAX_PATH - i - 1);
-        }
-        lstrcpynW(g_log_path, exe, MAX_PATH);
+        n = (DWORD)(slash - ini) + 1;
+        if (n + 7 > APP_PATH_MAX)
+            return;
+        lstrcpynW(g_log_path, ini, (int)n + 1);
+        lstrcpynW(g_log_path + n, L"vim.log", (int)(APP_PATH_MAX - n));
         g_log_path_ready = TRUE;
     }
 
@@ -197,8 +196,8 @@ UINT dpi_for_monitor(HMONITOR mon)
 static HANDLE g_watch_thread;
 static HANDLE g_watch_stop;
 static HANDLE g_watch_find;
-static WCHAR  g_watch_dir[MAX_PATH];
-static WCHAR  g_watch_file[MAX_PATH];
+static WCHAR  g_watch_dir[APP_PATH_MAX];
+static WCHAR  g_watch_file[APP_PATH_MAX];
 
 static BOOL read_write_time(FILETIME *ft)
 {
@@ -274,8 +273,8 @@ static void start_watch_thread(void)
 {
     WCHAR *slash;
 
-    lstrcpynW(g_watch_file, config_path(), MAX_PATH);
-    lstrcpynW(g_watch_dir, g_watch_file, MAX_PATH);
+    lstrcpynW(g_watch_file, config_path(), APP_PATH_MAX);
+    lstrcpynW(g_watch_dir, g_watch_file, APP_PATH_MAX);
     slash = wcsrchr(g_watch_dir, L'\\');
     if (slash)
         *slash = L'\0';
@@ -458,8 +457,12 @@ int main(void)
 
     set_dpi_awareness();
 
+    // Pick the settings folder once, before any worker thread can ask for it.
+    config_path();
+
     if (!config_load(&g_cfg, &created))
         app_log(L"config: initial load failed");
+    app_log(L"config: settings file %s", config_path());
 
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize        = sizeof(wc);

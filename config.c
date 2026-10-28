@@ -1,7 +1,12 @@
-// config.c - settings file (vim.ini next to the exe) and key name handling.
+// config.c - settings file (vim.ini next to the exe, or in %APPDATA% when that
+// folder is read-only) and key name handling.
 
+#ifndef _WIN32_IE
+#define _WIN32_IE 0x0601
+#endif
 #include "common.h"
 
+#include <shlobj.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +23,8 @@
 #define VK_F24 0x87
 #endif
 
-static WCHAR g_exe_ini[32768];
+static WCHAR g_exe_ini[APP_PATH_MAX];
+static WCHAR g_appdata_ini[APP_PATH_MAX];
 static BOOL  g_exe_ini_ready = FALSE;
 static WCHAR g_warnings[4096];
 
@@ -1155,10 +1161,73 @@ static void process_line(Config *c, int line, WCHAR *text, int *section)
 // ---------------------------------------------------------------------------
 // Path
 
+static BOOL path_exists(const WCHAR *path)
+{
+    HANDLE h;
+
+    h = CreateFileW(path, FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return FALSE;
+    CloseHandle(h);
+    return TRUE;
+}
+
+// Probes the folder by creating the file, then removes the empty test file.
+// TRUE if it exists already or the folder accepts a new file.
+static BOOL file_can_be_created(const WCHAR *path)
+{
+    HANDLE h;
+    DWORD  err;
+
+    h = CreateFileW(path, GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        err = GetLastError();
+        return err == ERROR_FILE_EXISTS || err == ERROR_ALREADY_EXISTS;
+    }
+    CloseHandle(h);
+    DeleteFileW(path);
+    return TRUE;
+}
+
+// %APPDATA%\vim mouse\<exe stem>.ini; FALSE if %APPDATA% is unknown.
+static BOOL appdata_ini_path(WCHAR *out, DWORD cch, const WCHAR *exe_stem)
+{
+    WCHAR        appdata[MAX_PATH];
+    const WCHAR *base;
+    int          n;
+
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL,
+                                SHGFP_TYPE_CURRENT, appdata)))
+        return FALSE;
+    base = wcsrchr(exe_stem, L'\\');
+    base = base ? base + 1 : exe_stem;
+    n = _snwprintf(out, cch, L"%s\\" APP_NAME L"\\%s.ini", appdata, base);
+    out[cch - 1] = 0;
+    return n >= 0 && (DWORD)n < cch;
+}
+
+static void create_parent_dir(const WCHAR *path)
+{
+    static WCHAR dir[APP_PATH_MAX];
+    WCHAR       *slash;
+
+    lstrcpynW(dir, path, APP_PATH_MAX);
+    slash = wcsrchr(dir, L'\\');
+    if (slash) {
+        *slash = 0;
+        CreateDirectoryW(dir, NULL);
+    }
+}
+
 const WCHAR *config_path(void)
 {
     DWORD n, cap;
     WCHAR *dot, *slash;
+    BOOL  have_appdata;
 
     if (g_exe_ini_ready)
         return g_exe_ini;
@@ -1175,9 +1244,31 @@ const WCHAR *config_path(void)
     if (dot != NULL && (slash == NULL || dot > slash))
         *dot = 0;
 
+    have_appdata = appdata_ini_path(g_appdata_ini,
+                                    sizeof(g_appdata_ini) /
+                                        sizeof(g_appdata_ini[0]),
+                                    g_exe_ini);
+
     n = (DWORD)wcslen(g_exe_ini);
     if (n + 5 < cap)
         wcscpy(g_exe_ini + n, L".ini");
+    else
+        lstrcpynW(g_exe_ini, L"vim.ini", (int)cap);
+
+    // An existing file next to the exe wins. Otherwise keep using %APPDATA%
+    // if settings were already saved there (the install used to be read-only).
+    // Only when neither exists probe whether the exe folder accepts a file; the
+    // real file is written later, by config_load.
+    if (path_exists(g_exe_ini)) {
+        // use it
+    } else if (have_appdata && path_exists(g_appdata_ini)) {
+        lstrcpynW(g_exe_ini, g_appdata_ini, (int)cap);
+    } else if (file_can_be_created(g_exe_ini)) {
+        // use it
+    } else if (have_appdata) {
+        create_parent_dir(g_appdata_ini);
+        lstrcpynW(g_exe_ini, g_appdata_ini, (int)cap);
+    }
     g_exe_ini[cap - 1] = 0;
     g_exe_ini_ready = TRUE;
     return g_exe_ini;
@@ -1297,7 +1388,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
         appendf(buf, cch, L"indicator = cursor\r\n");
         break;
     }
-    appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to the exe.\r\n");
+    appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to this file.\r\n");
     appendf(buf, cch, L"log = %d\r\n", d.log ? 1 : 0);
     appendf(buf, cch, L"; How text shortcuts insert their text: paste (through the clipboard,\r\n");
     appendf(buf, cch, L"; which is restored afterwards; works best in browsers and with an IME)\r\n");
@@ -1640,7 +1731,7 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
 {
     static WCHAR defaults[16384];
     const WCHAR *path = config_path();
-    WCHAR tmp_path[32768];
+    WCHAR tmp_path[APP_PATH_MAX];
     WCHAR *text = NULL;
     const WCHAR *p;
     const WCHAR *trailer = NULL;

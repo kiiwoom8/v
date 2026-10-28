@@ -494,9 +494,9 @@ static void edit_settings(void)
                                    SW_SHOWNORMAL);
 
     if ((INT_PTR)r <= 32) {
-        WCHAR args[MAX_PATH + 4];
-        _snwprintf(args, MAX_PATH + 3, L"\"%s\"", path);
-        args[MAX_PATH + 3] = L'\0';
+        static WCHAR args[APP_PATH_MAX + 4];
+        _snwprintf(args, APP_PATH_MAX + 3, L"\"%s\"", path);
+        args[APP_PATH_MAX + 3] = L'\0';
         r = ShellExecuteW(NULL, L"open", L"notepad.exe", args, NULL,
                           SW_SHOWNORMAL);
         if ((INT_PTR)r <= 32)

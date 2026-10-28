@@ -2,8 +2,9 @@
 //
 //   main.c   entry point, single instance, DPI, main window, message routing,
 //            config file watching, logging/error helpers
-//   config.c settings file (vim.ini next to the exe): defaults, parsing, key
-//            names, text shortcut table
+//   config.c settings file (vim.ini next to the exe, or in %APPDATA% when that
+//            folder is read-only): defaults, parsing, key names, text shortcut
+//            table
 //   input.c  low-level keyboard hook (the single keyboard dispatcher), mouse
 //            mode, movement/scroll thread, mouse actions, Alt scrolling, text
 //            shortcut capture and typing, mode indicator, sleep/lock handling
@@ -35,6 +36,9 @@
 #define APP_NAME        L"vim mouse"
 #define MAIN_WND_CLASS  L"VimMouseMainWindow"
 #define INSTANCE_MUTEX  L"Local\\vim_mouse_single_instance"
+
+// Settings paths can be longer than MAX_PATH (config.c keeps a 32768 buffer).
+#define APP_PATH_MAX    32768
 
 // ---------------------------------------------------------------------------
 // Messages posted to the main window (g_main_wnd). All are handled on the
@@ -146,7 +150,7 @@ void         config_set_defaults(Config *c);
 // config_warnings(); bad values keep their defaults. A successful load also
 // replaces the text shortcut table below.
 BOOL         config_load(Config *c, BOOL *created);
-const WCHAR *config_path(void);       // full path of vim.ini (exe dir + exe basename + ".ini")
+const WCHAR *config_path(void);       // full path of the settings file in use (see config.c)
 const WCHAR *config_warnings(void);   // L"" if none; one problem per line, from last load
 BOOL         parse_key(const WCHAR *s, UINT *vk);        // "h", ",", "CapsLock", "F13", "Comma"...
 BOOL         parse_hotkey(const WCHAR *s, Hotkey *out);  // "Alt+F", "Ctrl+Alt+Q", "none"

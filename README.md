@@ -7,7 +7,8 @@ the screen and one or two keypresses move the pointer and click one. When an
 app does not expose its elements, a labelled grid that can click anywhere
 opens instead. It runs
 in the background with no console window, is configured by a plain-text
-`vim.ini` next to the executable, and reloads that file as soon as you save it.
+`vim.ini` next to the executable (or in `%APPDATA%\vim mouse` when that folder
+is read-only), and reloads that file as soon as you save it.
 
 ## Quick start
 
@@ -18,8 +19,9 @@ in the background with no console window, is configured by a plain-text
    MinGW (32-bit) and double-click `build.bat` (or run `mingw32-make`).
 2. Run `vim.exe`. Look for the mouse icon in the notification area (it may be
    hidden under the "^" arrow).
-3. The first run creates `vim.ini` next to `vim.exe`. Edit it, save, and the
-   changes apply immediately.
+3. The first run creates `vim.ini` next to `vim.exe`, or in
+   `%APPDATA%\vim mouse` when that folder is read-only (for example under
+   `C:\Program Files`). Edit it, save, and the changes apply immediately.
 
 ## Keys
 
@@ -187,8 +189,9 @@ history. For an app that blocks pasting, set `shortcut_method = type` in
 
 ## Settings
 
-`vim.ini` lives next to `vim.exe` and is watched: saving it reloads the
-settings automatically (a balloon confirms, or shows any problems). The file
+`vim.ini` lives next to `vim.exe`, or in `%APPDATA%\vim mouse` when the
+executable's folder is read-only. It is watched either way: saving it reloads
+the settings automatically (a balloon confirms, or shows any problems). The file
 created on first run documents every option with a comment. The most useful
 ones:
 
@@ -232,7 +235,7 @@ Left- or right-click the tray icon:
 - Keyboard shortcuts...
 - Text shortcuts... (add, change, delete, import or export
   [text shortcuts](#text-shortcuts))
-- Edit settings... (opens `vim.ini`, falling back to Notepad)
+- Edit settings... (opens the settings file in use, falling back to Notepad)
 - Reload settings
 - Start with Windows (checked when enabled)
 - Quit
@@ -269,8 +272,8 @@ Left- or right-click the tray icon:
   `Shift+CapsLock` when you really want the CapsLock state.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
   (it writes a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
-- **Something is wrong.** Set `log = 1` in `vim.ini` and read `vim.log` next to
-  `vim.exe`.
+- **Something is wrong.** Set `log = 1` in `vim.ini` and read `vim.log` in the
+  same folder as the settings file.
 
 ## Building
 
