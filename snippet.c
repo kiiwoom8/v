@@ -185,6 +185,28 @@ static void refresh_list(const WCHAR *select)
     InvalidateRect(g_ed_list, NULL, TRUE);
 }
 
+// Rows can change when vim.ini is reloaded (or the editor saves), so rebuild
+// the list from the new table without touching the edit fields.
+void snippet_editor_refresh(void)
+{
+    WCHAR row[SHORTCUT_ABBR_MAX + LIST_PREVIEW + 16];
+    WCHAR abbr[SHORTCUT_ABBR_MAX + 1];
+    int sel, i;
+
+    if (!g_ed_wnd || !g_ed_list)
+        return;
+    sel = (int)SendMessageW(g_ed_list, LB_GETCURSEL, 0, 0);
+    abbr[0] = 0;
+    if (sel >= 0 &&
+        SendMessageW(g_ed_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)row) !=
+            LB_ERR) {
+        for (i = 0; row[i] && row[i] != L'\t' && i < SHORTCUT_ABBR_MAX; i++)
+            abbr[i] = row[i];
+        abbr[i] = 0;
+    }
+    refresh_list(abbr[0] ? abbr : NULL);
+}
+
 // The list rows are added in table order, so row i is shortcut i.
 static void show_selected(void)
 {
@@ -803,8 +825,9 @@ static BOOL format_is_memory(UINT f)
     return !(f >= CF_GDIOBJFIRST && f <= CF_GDIOBJLAST);
 }
 
-// Call with the clipboard open.
-static void save_clipboard(void)
+// Call with the clipboard open. FALSE if the clipboard is too large or memory
+// ran out, so restoring it later would lose the user's data.
+static BOOL save_clipboard(void)
 {
     UINT f = 0;
     SIZE_T total = 0;
@@ -827,13 +850,17 @@ static void save_clipboard(void)
             continue;
         total += size;
         if (total > SAVE_LIMIT) {
-            app_log(L"shortcuts: clipboard too large to save, not restored");
+            app_log(L"shortcuts: clipboard too large to save, typing the text");
             saved_free();
-            return;
+            return FALSE;
         }
         copy = GlobalAlloc(GMEM_MOVEABLE, size);
-        if (!copy)
-            continue;
+        if (!copy) {
+            app_log(L"shortcuts: out of memory saving the clipboard, typing "
+                    L"the text");
+            saved_free();
+            return FALSE;
+        }
         src = GlobalLock(h);
         dst = GlobalLock(copy);
         if (src && dst)
@@ -842,6 +869,8 @@ static void save_clipboard(void)
             GlobalUnlock(h);
         if (dst)
             GlobalUnlock(copy);
+        // A private format that cannot be locked is skipped, as before: the
+        // rest still comes back, and pasting beats typing for the text.
         if (!src || !dst) {
             GlobalFree(copy);
             continue;
@@ -851,8 +880,11 @@ static void save_clipboard(void)
             SavedFormat *grown = (SavedFormat *)realloc(
                 g_saved, (size_t)ncap * sizeof(SavedFormat));
             if (!grown) {
+                app_log(L"shortcuts: out of memory saving the clipboard, "
+                        L"typing the text");
                 GlobalFree(copy);
-                continue;
+                saved_free();
+                return FALSE;
             }
             g_saved = grown;
             cap = ncap;
@@ -862,6 +894,7 @@ static void save_clipboard(void)
         g_saved_count++;
     }
     g_saved_valid = TRUE;
+    return TRUE;
 }
 
 static void set_global(UINT format, const void *data, SIZE_T size)
@@ -965,9 +998,13 @@ static BOOL paste_text(const WCHAR *text)
         return FALSE;
     }
     // A paste still waiting to restore: the clipboard holds our last text,
-    // and the user's clipboard is already saved.
-    if (!g_saved_valid)
-        save_clipboard();
+    // and the user's clipboard is already saved. Otherwise the user's
+    // clipboard must be saved first, or leave it alone and type instead.
+    if (!g_saved_valid && !save_clipboard()) {
+        CloseClipboard();
+        free(crlf);
+        return FALSE;
+    }
     EmptyClipboard();
     set_global(CF_UNICODETEXT, crlf, (wcslen(crlf) + 1) * sizeof(WCHAR));
     exclude_from_history();

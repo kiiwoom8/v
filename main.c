@@ -344,6 +344,7 @@ void app_reload_config(BOOL notify)
     }
 
     g_cfg = tmp;
+    snippet_editor_refresh();
     input_config_changed();
     tray_update();
     app_log(L"config: reloaded");
