@@ -126,7 +126,10 @@ typedef struct {
     int   hint_mode;           // HINT_MODE_*: what the hotkey opens first, default elements
     int   scan_scope;          // SCAN_MONITOR: every visible window on the monitor (default)
                                // SCAN_WINDOW: only the foreground window and the taskbar
-    int   scan_timeout;        // ms before showing partial scan results, default 400 (100-5000)
+    int   scan_timeout;        // how long to wait for every window's elements before
+                               // showing the ones found so far (100-5000 ms, default 400).
+                               // If none have arrived by then, the scan keeps running
+                               // until the first results or 3 s, then falls back to the grid.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
 } Config;
 

@@ -1392,9 +1392,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; (only the active window and the taskbar).\r\n");
     appendf(buf, cch, L"scan_scope = %ls\r\n",
             d.scan_scope == SCAN_WINDOW ? L"window" : L"monitor");
-    appendf(buf, cch, L"; Milliseconds to wait for the first element results before showing\r\n");
-    appendf(buf, cch, L"; them (100-5000, default 400). If none arrive the scan keeps running\r\n");
-    appendf(buf, cch, L"; until the first results or 3 seconds, then falls back to the grid.\r\n");
+    appendf(buf, cch, L"; Milliseconds to wait for every window's elements before showing\r\n");
+    appendf(buf, cch, L"; the ones found so far (100-5000, default 400). If none have arrived by\r\n");
+    appendf(buf, cch, L"; then, the scan keeps running until the first results or 3 seconds, then\r\n");
+    appendf(buf, cch, L"; falls back to the grid.\r\n");
     appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
     appendf(buf, cch, L"; 1 = start finding clickable elements (and, for Alt scrolling, the\r\n");
     appendf(buf, cch, L"; scrollable areas) as soon as Alt goes down, so the labels and the\r\n");

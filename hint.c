@@ -37,7 +37,6 @@
 #define DOT             L"\x00B7"
 #define SCAN_DEFAULT_MS 400
 #define SCAN_HARD_LIMIT_MS 3000
-#define SCAN_GRACE_MS      100
 #define FONT_REF_PX     64
 
 typedef struct {
@@ -137,8 +136,7 @@ static int       g_grid_w, g_grid_h;
 static BOOL      g_grid_valid;
 
 static BOOL      g_scan_wait_first;  // first timeout passed, waiting for results
-static BOOL      g_scan_grace;       // first results in; finalize shortly
-static DWORD     g_scan_t0;          // scan start tick (hard limit reference)
+static DWORD     g_scan_t0;          // scan start tick (timeout / hard limit reference)
 
 // Early scan started when the hint hotkey's modifier goes down. g_pre_id 0 =
 // none; the newest result for it is owned in g_pre_list.
@@ -1558,7 +1556,6 @@ static BOOL adopt_prescan(void)
     }
     g_scanning = TRUE;
     g_scan_wait_first = FALSE;
-    g_scan_grace = FALSE;
     g_scan_t0 = g_pre_t0;
     g_scan_list = g_pre_list;   // ownership moves
     g_pre_list = NULL;
@@ -1570,16 +1567,8 @@ static BOOL adopt_prescan(void)
         finalize_scan();
         return TRUE;
     }
-    if (!g_hint_wnd)
-        return TRUE;
-    if (g_scan_list && g_scan_list->count > 0) {
-        UINT ms = scan_rest_ms(g_scan_t0);
-        if (ms > SCAN_GRACE_MS) ms = SCAN_GRACE_MS;
-        g_scan_grace = TRUE;
-        SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
-    } else {
+    if (g_hint_wnd)
         SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_rest_ms(g_scan_t0), NULL);
-    }
     return TRUE;
 }
 
@@ -1594,7 +1583,6 @@ static void start_scan(BOOL repaint)
     }
     g_scanning = TRUE;
     g_scan_wait_first = FALSE;
-    g_scan_grace = FALSE;
     g_scan_t0 = GetTickCount();
     ++g_scan_id;
     uia_scan(g_mon, g_scan_id);
@@ -2209,17 +2197,6 @@ void hint_on_elements(ClickList *list)
     } else if (g_scan_wait_first && list->count > 0) {
         // The first results arrived after the initial timeout: use them now.
         finalize_scan();
-    } else if (list->count > 0 && !g_scan_grace && g_hint_wnd) {
-        // The foreground window is merged first. Give the other windows a
-        // short grace period instead of the full scan_timeout, so one slow
-        // background app cannot hold the labels back.
-        DWORD elapsed = GetTickCount() - g_scan_t0;
-        UINT limit = g_cfg.scan_timeout > 0 ? (UINT)g_cfg.scan_timeout
-                                            : SCAN_DEFAULT_MS;
-        UINT ms = elapsed < limit ? limit - elapsed : 1;
-        if (ms > SCAN_GRACE_MS) ms = SCAN_GRACE_MS;
-        g_scan_grace = TRUE;
-        SetTimer(g_hint_wnd, TIMER_SCAN_ID, ms, NULL);
     }
 }
 

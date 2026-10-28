@@ -203,11 +203,11 @@ ones:
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
-  400: how long to wait for the first element results before showing them. If
-  none arrive the scan keeps running until the first results or 3 s, then falls
-  back to the grid), `prescan` (1 = start finding elements and scrollable areas as soon
-  as Alt goes down, so labels and Alt scrolling respond sooner; 0 = wait for
-  the whole key combination)
+  400: how long to wait for every window's elements before showing the ones
+  found so far. If none have arrived by then, the scan keeps running until the
+  first results or 3 s, then falls back to the grid), `prescan` (1 = start
+  finding elements and scrollable areas as soon as Alt goes down, so labels
+  and Alt scrolling respond sooner; 0 = wait for the whole key combination)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
