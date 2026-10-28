@@ -72,3 +72,6 @@ npm-debug.log
 # Generated next to the exe on first run
 vim.ini
 vim.log
+
+# Agent worktrees
+.claude/worktrees/
