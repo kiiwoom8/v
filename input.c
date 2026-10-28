@@ -13,6 +13,18 @@
 #ifndef WTS_SESSION_UNLOCK
 #define WTS_SESSION_UNLOCK 0x8
 #endif
+#ifndef WTS_REMOTE_DISCONNECT
+#define WTS_REMOTE_DISCONNECT 0x4
+#endif
+#ifndef WTS_CONSOLE_DISCONNECT
+#define WTS_CONSOLE_DISCONNECT 0x2
+#endif
+#ifndef WTS_REMOTE_CONNECT
+#define WTS_REMOTE_CONNECT 0x3
+#endif
+#ifndef WTS_CONSOLE_CONNECT
+#define WTS_CONSOLE_CONNECT 0x1
+#endif
 #ifndef NOTIFY_FOR_THIS_SESSION
 #define NOTIFY_FOR_THIS_SESSION 0
 #endif
@@ -192,6 +204,13 @@ static HWND  s_ind_wnd = NULL;
 static HFONT s_ind_font = NULL;
 static int   s_ind_font_h = 0;
 static BOOL  s_ind_timer_on = FALSE;
+// Windows silently removes a low-level hook whose callback is too slow. Raw
+// keyboard input still arrives, so compare its count with the hook's to notice.
+static volatile LONG s_kb_calls = 0;
+static LONG  s_kb_calls_seen = 0;
+static int   s_hook_misses = 0;
+static DWORD s_hook_replace_tick = 0;
+static BOOL  s_raw_kb_on = FALSE;
 
 #ifdef INPUT_TEST
 static BOOL s_test_mods_on = FALSE;
@@ -1094,9 +1113,13 @@ static BOOL alt_hotkey_configured(void)
 
 static BOOL alt_should_withhold(void)
 {
-    if (flag_get(&s_paused) || !alt_hotkey_configured())
+    if (!alt_hotkey_configured())
         return FALSE;
-    return flag_get(&s_capture) || popup_open();
+    // Capture can be on while input is paused (the tray opened the hints),
+    // and the overlay still needs Alt hidden so its keys arrive intact.
+    if (flag_get(&s_capture))
+        return TRUE;
+    return !flag_get(&s_paused) && popup_open();
 }
 
 // The app never saw Alt, so hotkeys act without the 0xE8 menu mask.
@@ -1145,10 +1168,8 @@ static BOOL handle_down(UINT vk)
         s_owner[vk] = OWN_SWALLOW;
         return TRUE;
     }
-    if (flag_get(&s_paused)) {
-        s_owner[vk] = OWN_PASS;
-        return FALSE;
-    }
+    // The hint overlay can be open while input is paused (from the tray); its
+    // keys must still reach it, including Esc to close it.
     if (flag_get(&s_capture)) {
         s_owner[vk] = OWN_SWALLOW;
         // Esc drops capture right here too, so typing comes back even if
@@ -1157,6 +1178,10 @@ static BOOL handle_down(UINT vk)
             flag_set(&s_capture, FALSE);
         post_main(WM_APP_HINT_KEY, vk, mods);
         return TRUE;
+    }
+    if (flag_get(&s_paused)) {
+        s_owner[vk] = OWN_PASS;
+        return FALSE;
     }
     // Alt + letter reaches the app with Alt already down; the mask key keeps
     // the Alt release from opening its menu bar.
@@ -1348,6 +1373,8 @@ static LRESULT CALLBACK kb_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
+
+        InterlockedIncrement(&s_kb_calls);
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
             if (handle_key(k->vkCode, TRUE, k->flags, k->scanCode))
                 return 1;
@@ -1390,6 +1417,26 @@ static void uninstall_hook(void)
         UnhookWindowsHookEx(s_hook);
         s_hook = NULL;
     }
+}
+
+// Install the replacement before removing the old handle, with no message
+// pumping in between, so there is no gap without a hook and no double delivery.
+static void replace_hook(void)
+{
+    DWORD now = GetTickCount();
+    HHOOK hook;
+
+    if (s_hook_replace_tick != 0 &&
+        (DWORD)(now - s_hook_replace_tick) < 5000)
+        return;
+    hook = SetWindowsHookExW(WH_KEYBOARD_LL, kb_proc, GetModuleHandleW(NULL), 0);
+    if (!hook)
+        return;
+    UnhookWindowsHookEx(s_hook);
+    s_hook = hook;
+    s_hook_replace_tick = now;
+    s_hook_misses = 0;
+    app_log(L"input: keyboard hook was removed by Windows; reinstalled");
 }
 
 static void suspend_input(void)
@@ -1657,12 +1704,9 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
     // A high-resolution waitable timer ticks at ~1.7 ms on Windows 11, where
     // Sleep(1) takes ~6 ms even with timeBeginPeriod(1). Keep the old timer
-    // resolution trick only as a fallback.
+    // resolution trick only as a fallback, and only while the movement loop
+    // is actually running so the system-wide 1 ms tick is not held while idle.
     timer = create_move_timer();
-    if (!timer) {
-        timeBeginPeriod(1);
-        timing = TRUE;
-    }
 
     for (;;) {
         if (flag_get(&s_move_exit))
@@ -1692,6 +1736,10 @@ static DWORD WINAPI movement_thread(LPVOID param)
         have_ref = FALSE;
         QueryPerformanceCounter(&prev);
 
+        if (!timer && !timing) {
+            timeBeginPeriod(1);
+            timing = TRUE;
+        }
         while (!flag_get(&s_move_exit)) {
             LONG mf = InterlockedCompareExchange(&s_move_flags, 0, 0);
             LONG sf = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
@@ -2121,6 +2169,10 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
             wait_tick(timer);
         }
+        if (timing) {
+            timeEndPeriod(1);
+            timing = FALSE;
+        }
     }
 
     if (timing)
@@ -2344,6 +2396,50 @@ static BOOL create_indicator_window(void)
     return TRUE;
 }
 
+static BOOL register_raw_keyboard(HWND target, BOOL on)
+{
+    RAWINPUTDEVICE device;
+
+    ZeroMemory(&device, sizeof(device));
+    device.usUsagePage = 0x01;
+    device.usUsage = 0x06;
+    device.dwFlags = on ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+    device.hwndTarget = on ? target : NULL;
+    return RegisterRawInputDevices(&device, 1, sizeof(device));
+}
+
+// A live hook is always called before the raw input for the same key event is
+// produced, so a raw message with an unchanged callback count means the hook
+// is gone. Keys the hook swallows produce no raw input, which keeps this
+// one-sided.
+static void raw_input_check(HRAWINPUT raw)
+{
+    RAWINPUT input;
+    UINT size = sizeof(input);
+    LONG calls;
+
+    if (GetRawInputData(raw, RID_INPUT, &input, &size,
+                        sizeof(RAWINPUTHEADER)) == (UINT)-1)
+        return;
+    if (input.header.dwType != RIM_TYPEKEYBOARD)
+        return;
+    calls = InterlockedCompareExchange(&s_kb_calls, 0, 0);
+    if (calls != s_kb_calls_seen) {
+        s_kb_calls_seen = calls;
+        s_hook_misses = 0;
+        return;
+    }
+    s_kb_calls_seen = calls;
+    if (!s_hook) {
+        // Suspended on purpose: nothing to replace.
+        s_hook_misses = 0;
+        return;
+    }
+    if (++s_hook_misses < 3)
+        return;
+    replace_hook();
+}
+
 static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     (void)lp;
@@ -2358,11 +2454,18 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             resume_input();
         return TRUE;
     case WM_WTSSESSION_CHANGE:
-        if (wp == (WPARAM)WTS_SESSION_LOCK)
+        if (wp == (WPARAM)WTS_SESSION_LOCK ||
+            wp == (WPARAM)WTS_CONSOLE_DISCONNECT ||
+            wp == (WPARAM)WTS_REMOTE_DISCONNECT)
             suspend_input();
-        else if (wp == (WPARAM)WTS_SESSION_UNLOCK)
+        else if (wp == (WPARAM)WTS_SESSION_UNLOCK ||
+                 wp == (WPARAM)WTS_CONSOLE_CONNECT ||
+                 wp == (WPARAM)WTS_REMOTE_CONNECT)
             resume_input();
         return 0;
+    case WM_INPUT:
+        raw_input_check((HRAWINPUT)lp);
+        break;
     case WM_DESTROY:
         WTSUnRegisterSessionNotification(hwnd);
         return 0;
@@ -2420,6 +2523,10 @@ static void cleanup_input(void)
         DestroyWindow(s_ind_wnd);
         s_ind_wnd = NULL;
     }
+    if (s_raw_kb_on) {
+        register_raw_keyboard(NULL, FALSE);
+        s_raw_kb_on = FALSE;
+    }
     if (s_power_wnd) {
         DestroyWindow(s_power_wnd);
         s_power_wnd = NULL;
@@ -2463,6 +2570,11 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
     start_movement_thread();
 
     s_started_ok = install_hook();
+    if (s_started_ok && s_power_wnd) {
+        s_raw_kb_on = register_raw_keyboard(s_power_wnd, TRUE);
+        if (!s_raw_kb_on)
+            app_log(L"input: raw input registration failed");
+    }
     if (s_ready_event)
         SetEvent(s_ready_event);
     if (!s_started_ok) {
