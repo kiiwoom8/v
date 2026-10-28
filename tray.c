@@ -31,6 +31,7 @@ static const WCHAR HELP_TITLE[] =
 #define IDM_LOCK       1010
 
 #define HELP_MAX_ROWS  64
+#define HELP_INF       0x3fffffff
 
 #ifndef NIN_SELECT
 #define NIN_SELECT     (WM_USER + 0)
@@ -50,6 +51,7 @@ typedef struct {
     const WCHAR *section;
     WCHAR        key[96];
     WCHAR        desc[192];
+    int          x;
     int          y;
 } HelpRow;
 
@@ -77,6 +79,7 @@ static int     g_help_footer_h;
 static int     g_help_hint_y;
 
 static void help_close(void);
+static void startup_repair(void);
 
 // ---------------------------------------------------------------------------
 // Small string helpers
@@ -336,6 +339,7 @@ void tray_init(HWND main_wnd)
     g_icons[0] = create_icon(58, 58, 60, 255);     // normal, dark grey
     g_icons[1] = create_icon(45, 127, 249, 255);   // mouse mode, blue
     g_icons[2] = create_icon(138, 138, 138, 255);  // paused, faded grey
+    startup_repair();
     tray_add();
 }
 
@@ -432,27 +436,63 @@ void tray_balloon(const WCHAR *title, const WCHAR *text)
 // ---------------------------------------------------------------------------
 // Start with Windows
 
+#define RUN_VALUE_MAX 2048
+
+static BOOL current_exe(WCHAR *buf, int cch)
+{
+    DWORD n = GetModuleFileNameW(NULL, buf, (DWORD)cch);
+
+    return n != 0 && n < (DWORD)cch;
+}
+
 static BOOL quoted_exe(WCHAR *buf, int cch)
 {
     WCHAR path[MAX_PATH];
-    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
 
-    if (n == 0 || n >= MAX_PATH)
+    if (cch <= 0 || !current_exe(path, MAX_PATH))
         return FALSE;
     _snwprintf(buf, cch - 1, L"\"%s\"", path);
     buf[cch - 1] = L'\0';
     return TRUE;
 }
 
+// Extracts the program path from a Run value: "C:\path\vim.exe" [args], or an
+// unquoted path. An unquoted value cannot contain spaces unambiguously, so it
+// ends at the first one.
+static BOOL run_value_path(const WCHAR *value, WCHAR *path, int cch)
+{
+    const WCHAR *p = value;
+    int n = 0;
+
+    while (*p == L' ' || *p == L'\t')
+        p++;
+    if (*p == L'"') {
+        p++;
+        while (p[n] && p[n] != L'"')
+            n++;
+    } else {
+        while (p[n] && p[n] != L' ' && p[n] != L'\t')
+            n++;
+    }
+    if (n == 0 || cch <= 0)
+        return FALSE;
+    if (n >= cch)
+        n = cch - 1;
+    memcpy(path, p, (size_t)n * sizeof(WCHAR));
+    path[n] = L'\0';
+    return TRUE;
+}
+
 static BOOL startup_enabled(void)
 {
     HKEY    key;
-    WCHAR   want[MAX_PATH + 4];
-    WCHAR   got[MAX_PATH + 8];
+    WCHAR   exe[MAX_PATH];
+    WCHAR   got[RUN_VALUE_MAX];
+    WCHAR   path[RUN_VALUE_MAX];
     DWORD   type = 0, size = (DWORD)sizeof(got);
     LONG    rc;
 
-    if (!quoted_exe(want, MAX_PATH + 4))
+    if (!current_exe(exe, MAX_PATH))
         return FALSE;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &key) !=
         ERROR_SUCCESS)
@@ -462,7 +502,46 @@ static BOOL startup_enabled(void)
     if (rc != ERROR_SUCCESS || type != REG_SZ)
         return FALSE;
     got[(sizeof(got) / sizeof(WCHAR)) - 1] = L'\0';
-    return wcscmp(got, want) == 0;
+    if (!run_value_path(got, path, RUN_VALUE_MAX))
+        return FALSE;
+    return lstrcmpiW(path, exe) == 0;
+}
+
+// A moved vim.exe leaves the Run value pointing at a file that no longer
+// exists, so Windows tries to start it at every login. Repair only that case:
+// another existing exe may be a second copy that owns the value.
+static void startup_repair(void)
+{
+    HKEY  key;
+    WCHAR value[RUN_VALUE_MAX];
+    WCHAR path[RUN_VALUE_MAX];
+    WCHAR want[MAX_PATH + 4];
+    DWORD type = 0, size = (DWORD)sizeof(value);
+    LONG  rc;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0,
+                      KEY_QUERY_VALUE | KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+        return;
+    rc = RegQueryValueExW(key, APP_NAME, NULL, &type, (BYTE *)value, &size);
+    if (rc != ERROR_SUCCESS || type != REG_SZ) {
+        RegCloseKey(key);
+        return;
+    }
+    value[(sizeof(value) / sizeof(WCHAR)) - 1] = L'\0';
+    if (!run_value_path(value, path, RUN_VALUE_MAX) ||
+        GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) {
+        RegCloseKey(key);
+        return;
+    }
+    if (!quoted_exe(want, MAX_PATH + 4)) {
+        RegCloseKey(key);
+        return;
+    }
+    rc = RegSetValueExW(key, APP_NAME, 0, REG_SZ, (const BYTE *)want,
+                        (DWORD)((wcslen(want) + 1) * sizeof(WCHAR)));
+    RegCloseKey(key);
+    app_log(L"startup: repaired stale Run value pointing at %s (%ld)", path,
+            rc);
 }
 
 static void toggle_startup(void)
@@ -805,6 +884,240 @@ static void help_delete_fonts(void)
     }
 }
 
+static int scaled_px(int px, int dpi, int scale)
+{
+    return MulDiv(MulDiv(px, dpi, 96), scale, 100);
+}
+
+static BOOL help_make_fonts(int dpi, int scale)
+{
+    int title   = scaled_px(20, dpi, scale);
+    int section = scaled_px(15, dpi, scale);
+    int body    = scaled_px(13, dpi, scale);
+
+    if (title < 1)
+        title = 1;
+    if (section < 1)
+        section = 1;
+    if (body < 1)
+        body = 1;
+    g_help_title_font = make_font(title, FW_BOLD);
+    g_help_section_font = make_font(section, FW_BOLD);
+    g_help_body_font = make_font(body, FW_NORMAL);
+    if (!g_help_title_font || !g_help_section_font || !g_help_body_font) {
+        help_delete_fonts();
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// Splits the contiguous sections into k columns, minimising the tallest column.
+static int help_partition(const int *prefix, int count, int k,
+                          int split[][HELP_MAX_ROWS + 1])
+{
+    int best[HELP_MAX_ROWS + 1][HELP_MAX_ROWS + 1];
+    int i, j, p, sum, cand;
+
+    for (j = 0; j <= k; j++) {
+        for (i = 0; i <= count; i++) {
+            best[j][i] = HELP_INF;
+            split[j][i] = -1;
+        }
+    }
+    best[0][0] = 0;
+    for (j = 1; j <= k; j++) {
+        for (i = 1; i <= count; i++) {
+            for (p = j - 1; p < i; p++) {
+                if (best[j - 1][p] >= HELP_INF)
+                    continue;
+                sum = prefix[i] - prefix[p];
+                cand = best[j - 1][p] > sum ? best[j - 1][p] : sum;
+                if (cand < best[j][i]) {
+                    best[j][i] = cand;
+                    split[j][i] = p;
+                }
+            }
+        }
+    }
+    return best[k][count];
+}
+
+// Measures the rows and stores where each one goes, in one or more balanced
+// columns. Returns FALSE only when strict and no layout fits the work area.
+static BOOL help_layout(HDC dc, const RECT *work, int dpi, int scale,
+                        BOOL strict, int *out_w, int *out_h)
+{
+    int      i, j, k, p;
+    int      maxkey = 0, maxdesc = 0, titlew;
+    int      pad, gap, line, title_line, section_line, sec_gap, footer_gap;
+    int      colw, colgap, width, footer_h, avail, maxcol;
+    int      workw, workh, w_limit, h_limit, y0, tail, bottom;
+    int      sec_start[HELP_MAX_ROWS], sec_rows[HELP_MAX_ROWS];
+    int      sec_h[HELP_MAX_ROWS], prefix[HELP_MAX_ROWS + 1];
+    int      starts[HELP_MAX_ROWS], ends[HELP_MAX_ROWS];
+    int      split[HELP_MAX_ROWS + 1][HELP_MAX_ROWS + 1];
+    int      sec_count = 0, chosen_k = 0;
+    BOOL     found = FALSE;
+    WCHAR    footer[512];
+    RECT     fr;
+    HelpRow *r;
+
+    pad          = scaled_px(20, dpi, scale);
+    gap          = scaled_px(20, dpi, scale);
+    line         = scaled_px(22, dpi, scale);
+    title_line   = scaled_px(30, dpi, scale);
+    section_line = scaled_px(26, dpi, scale);
+    sec_gap      = scaled_px(10, dpi, scale);
+    footer_gap   = scaled_px(12, dpi, scale);
+    tail         = scaled_px(10, dpi, scale);
+    if (line < 1)
+        line = 1;
+    if (title_line < 1)
+        title_line = 1;
+    if (section_line < 1)
+        section_line = 1;
+
+    titlew = text_width(dc, g_help_title_font, HELP_TITLE);
+    for (i = 0; i < g_help_row_count; i++) {
+        int w;
+        r = &g_help_rows[i];
+        if (r->section)
+            continue;
+        w = text_width(dc, g_help_body_font, r->key);
+        if (w > maxkey)
+            maxkey = w;
+        w = text_width(dc, g_help_body_font, r->desc);
+        if (w > maxdesc)
+            maxdesc = w;
+    }
+
+    g_help_pad  = pad;
+    g_help_gap  = gap;
+    g_help_keyw = maxkey + scaled_px(28, dpi, scale);
+
+    workw = (int)(work->right - work->left);
+    workh = (int)(work->bottom - work->top);
+    w_limit = workw - scaled_px(40, dpi, scale);
+    h_limit = workh - scaled_px(40, dpi, scale);
+    if (w_limit < 1)
+        w_limit = workw;
+    if (h_limit < 1)
+        h_limit = workh;
+
+    y0 = pad + title_line + scaled_px(4, dpi, scale);
+
+    for (i = 0; i < g_help_row_count; i++) {
+        if (g_help_rows[i].section) {
+            if (sec_count >= HELP_MAX_ROWS)
+                break;
+            sec_start[sec_count] = i;
+            sec_rows[sec_count] = 0;
+            sec_count++;
+        } else if (sec_count > 0) {
+            sec_rows[sec_count - 1]++;
+        }
+    }
+    prefix[0] = 0;
+    for (i = 0; i < sec_count; i++) {
+        sec_h[i] = (i ? sec_gap : 0) + section_line + sec_rows[i] * line;
+        prefix[i + 1] = prefix[i] + sec_h[i];
+    }
+
+    _snwprintf(footer, 511, L"Settings: %s (saved changes apply immediately)",
+               config_path());
+    footer[511] = L'\0';
+
+    colgap = pad;
+    colw = g_help_keyw + gap + maxdesc;
+
+    for (k = 1; k <= sec_count; k++) {
+        width = pad * 2 + k * colw + (k - 1) * colgap;
+        if (width < titlew + pad * 2)
+            width = titlew + pad * 2;
+        fr.left   = 0;
+        fr.top    = 0;
+        fr.right  = width - pad * 2;
+        if (fr.right < 1)
+            fr.right = 1;
+        fr.bottom = 0;
+        DrawTextW(dc, footer, -1, &fr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+        footer_h = fr.bottom;
+        avail = h_limit - y0 - footer_gap - footer_h - tail - line - pad;
+        maxcol = help_partition(prefix, sec_count, k, split);
+        if (maxcol < HELP_INF && maxcol <= avail &&
+            (!strict || width <= w_limit)) {
+            found = TRUE;
+            chosen_k = k;
+            break;
+        }
+    }
+
+    if (!found) {
+        if (strict)
+            return FALSE;
+        // Last resort: as many columns as sections, then clip to the work area.
+        chosen_k = sec_count > 0 ? sec_count : 1;
+        width = pad * 2 + chosen_k * colw + (chosen_k - 1) * colgap;
+        if (width < titlew + pad * 2)
+            width = titlew + pad * 2;
+        fr.left   = 0;
+        fr.top    = 0;
+        fr.right  = width - pad * 2;
+        if (fr.right < 1)
+            fr.right = 1;
+        fr.bottom = 0;
+        DrawTextW(dc, footer, -1, &fr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+        footer_h = fr.bottom;
+        maxcol = help_partition(prefix, sec_count, chosen_k, split);
+        if (maxcol >= HELP_INF)
+            maxcol = 0;
+    }
+
+    p = sec_count;
+    for (k = chosen_k; k >= 1; k--) {
+        int start = split[k][p];
+        if (start < 0)
+            start = 0;
+        starts[k - 1] = start;
+        ends[k - 1] = p;
+        p = start;
+    }
+    for (k = 0; k < chosen_k; k++) {
+        int col_left = pad + k * (colw + colgap);
+        int y = y0;
+        for (j = starts[k]; j < ends[k]; j++) {
+            int row;
+            if (j != starts[k])
+                y += sec_gap;
+            r = &g_help_rows[sec_start[j]];
+            r->x = col_left;
+            r->y = y;
+            y += section_line;
+            for (row = sec_start[j] + 1;
+                 row <= sec_start[j] + sec_rows[j]; row++) {
+                g_help_rows[row].x = col_left;
+                g_help_rows[row].y = y;
+                y += line;
+            }
+        }
+    }
+
+    bottom = y0 + maxcol;
+    g_help_footer_y = bottom + footer_gap;
+    g_help_footer_h = footer_h;
+    g_help_hint_y   = g_help_footer_y + footer_h + tail;
+    *out_h = g_help_hint_y + line + pad;
+    *out_w = width;
+
+    if (!strict) {
+        if (*out_w > w_limit)
+            *out_w = w_limit;
+        if (*out_h > h_limit)
+            *out_h = h_limit;
+    }
+    return TRUE;
+}
+
 static void help_paint(HWND hwnd)
 {
     PAINTSTRUCT ps;
@@ -838,14 +1151,14 @@ static void help_paint(HWND hwnd)
         if (r->section) {
             SelectObject(mem, g_help_section_font);
             SetTextColor(mem, RGB(154, 160, 166));
-            TextOutW(mem, g_help_pad, r->y, r->section,
+            TextOutW(mem, r->x, r->y, r->section,
                      (int)wcslen(r->section));
         } else {
             SelectObject(mem, g_help_body_font);
             SetTextColor(mem, RGB(77, 163, 255));
-            TextOutW(mem, g_help_pad, r->y, r->key, (int)wcslen(r->key));
+            TextOutW(mem, r->x, r->y, r->key, (int)wcslen(r->key));
             SetTextColor(mem, RGB(221, 221, 221));
-            TextOutW(mem, g_help_pad + g_help_keyw + g_help_gap, r->y,
+            TextOutW(mem, r->x + g_help_keyw + g_help_gap, r->y,
                      r->desc, (int)wcslen(r->desc));
         }
     }
@@ -930,14 +1243,10 @@ static void help_open(void)
     HMONITOR    mon;
     UINT        dpi;
     HDC         dc;
-    int         i, width, height, y;
-    int         title_line, section_line, line, maxkey = 0, maxdesc = 0;
-    int         titlew = 0;
-    int         workw, x, yy;
-    WCHAR       footer[512];
-    RECT        fr;
     HFONT       old;
     RECT        work;
+    int         scale, width = 0, height = 0, x, yy;
+    BOOL        fit = FALSE;
 
     if (g_help_wnd)
         return;
@@ -952,103 +1261,51 @@ static void help_open(void)
     mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     dpi = dpi_for_monitor(mon);
 
-    g_help_pad = MulDiv(20, (int)dpi, 96);
-    g_help_gap = MulDiv(20, (int)dpi, 96);
-    line       = MulDiv(22, (int)dpi, 96);
-    title_line = MulDiv(30, (int)dpi, 96);
-    section_line = MulDiv(26, (int)dpi, 96);
-
-    g_help_title_font = make_font(MulDiv(20, (int)dpi, 96), FW_BOLD);
-    g_help_section_font = make_font(MulDiv(15, (int)dpi, 96), FW_BOLD);
-    g_help_body_font = make_font(MulDiv(13, (int)dpi, 96), FW_NORMAL);
-    if (!g_help_title_font || !g_help_section_font || !g_help_body_font) {
-        help_delete_fonts();
-        return;
-    }
-
     ZeroMemory(&mi, sizeof(mi));
     mi.cbSize = sizeof(mi);
     if (mon && GetMonitorInfoW(mon, &mi))
-        work = mi.rcMonitor;
+        work = mi.rcWork;
     else
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
 
-    dc = GetDC(NULL);
-    old = (HFONT)SelectObject(dc, g_help_body_font);
-    titlew = text_width(dc, g_help_title_font, HELP_TITLE);
-    for (i = 0; i < g_help_row_count; i++) {
-        HelpRow *r = &g_help_rows[i];
-        int w;
-        if (r->section)
-            continue;
-        w = text_width(dc, g_help_body_font, r->key);
-        if (w > maxkey)
-            maxkey = w;
-        w = text_width(dc, g_help_body_font, r->desc);
-        if (w > maxdesc)
-            maxdesc = w;
+    for (scale = 100; scale >= 50; scale -= 5) {
+        if (!help_make_fonts((int)dpi, scale))
+            return;
+        dc = GetDC(NULL);
+        old = (HFONT)SelectObject(dc, g_help_body_font);
+        fit = help_layout(dc, &work, (int)dpi, scale, TRUE, &width, &height);
+        SelectObject(dc, old);
+        ReleaseDC(NULL, dc);
+        if (fit)
+            break;
+        help_delete_fonts();
+    }
+    if (!fit) {
+        scale = 50;
+        if (!help_make_fonts((int)dpi, scale))
+            return;
+        dc = GetDC(NULL);
+        old = (HFONT)SelectObject(dc, g_help_body_font);
+        help_layout(dc, &work, (int)dpi, scale, FALSE, &width, &height);
+        SelectObject(dc, old);
+        ReleaseDC(NULL, dc);
     }
 
-    _snwprintf(footer, 511, L"Settings: %s (saved changes apply immediately)",
-               config_path());
-    footer[511] = L'\0';
-
-    g_help_keyw = maxkey + MulDiv(28, (int)dpi, 96);
-    width = g_help_pad * 2 + g_help_keyw + g_help_gap + maxdesc;
-    if (width < titlew + g_help_pad * 2)
-        width = titlew + g_help_pad * 2;
-    workw = (int)(work.right - work.left) - MulDiv(40, (int)dpi, 96);
-    if (workw < MulDiv(200, (int)dpi, 96))
-        workw = MulDiv(200, (int)dpi, 96);
-    if (width > workw)
-        width = workw;
-
-    // Height: title, sections/rows, footer (wrapped), close hint.
-    y = g_help_pad + title_line + MulDiv(4, (int)dpi, 96);
-    {
-        int prev_section = 0;
-        for (i = 0; i < g_help_row_count; i++) {
-            HelpRow *r = &g_help_rows[i];
-            if (r->section) {
-                if (prev_section)
-                    y += MulDiv(10, (int)dpi, 96);
-                prev_section = 1;
-                r->y = y;
-                y += section_line;
-            } else {
-                r->y = y;
-                y += line;
-            }
-        }
-    }
-    y += MulDiv(12, (int)dpi, 96);
-    g_help_footer_y = y;
-
-    fr.left   = 0;
-    fr.top    = 0;
-    fr.right  = width - g_help_pad * 2;
-    fr.bottom = 0;
-    DrawTextW(dc, footer, -1, &fr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-    g_help_footer_h = fr.bottom;
-    y += g_help_footer_h + MulDiv(10, (int)dpi, 96);
-    g_help_hint_y = y;
-    y += line + g_help_pad;
-    height = y;
-
-    SelectObject(dc, old);
-    ReleaseDC(NULL, dc);
-
-    if (work.right > work.left) {
-        x = work.left + ((int)(work.right - work.left) - width) / 2;
-        yy = work.top + ((int)(work.bottom - work.top) - height) / 2;
+    if (work.right > work.left && work.bottom > work.top) {
+        x = (int)work.left + ((int)(work.right - work.left) - width) / 2;
+        yy = (int)work.top + ((int)(work.bottom - work.top) - height) / 2;
     } else {
-        x = 0;
-        yy = 0;
+        x = (int)work.left;
+        yy = (int)work.top;
     }
+    if (x + width > work.right)
+        x = (int)work.right - width;
+    if (yy + height > work.bottom)
+        yy = (int)work.bottom - height;
     if (x < work.left)
-        x = work.left;
+        x = (int)work.left;
     if (yy < work.top)
-        yy = work.top;
+        yy = (int)work.top;
 
     g_help_wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                                  HELP_CLASS, HELP_TITLE,
