@@ -19,6 +19,9 @@
 #ifndef MOUSEEVENTF_HWHEEL
 #define MOUSEEVENTF_HWHEEL 0x01000
 #endif
+#ifndef WM_MOUSEHWHEEL
+#define WM_MOUSEHWHEEL 0x020E
+#endif
 #ifndef LLKHF_INJECTED
 #define LLKHF_INJECTED 0x10
 #endif
