@@ -35,6 +35,7 @@
 #define APP_NAME        L"vim mouse"
 #define MAIN_WND_CLASS  L"VimMouseMainWindow"
 #define INSTANCE_MUTEX  L"Local\\vim_mouse_single_instance"
+#define APP_ICON_ID     1   // vim.rc: the LoadImageW resource, not the tray icon
 
 // ---------------------------------------------------------------------------
 // Messages posted to the main window (g_main_wnd). All are handled on the
@@ -291,6 +292,7 @@ void snippet_insert(const WCHAR *text);
 extern HWND      g_main_wnd;
 extern HINSTANCE g_hinst;
 
+HICON app_load_icon(int cx, int cy);          // embedded icon at the given size
 UINT dpi_for_monitor(HMONITOR mon);           // effective DPI (96 = 100%), works on Win7+
 void app_log(const WCHAR *fmt, ...);          // OutputDebugString, plus vim.log if g_cfg.log
 void app_reload_config(BOOL notify);          // reload g_cfg, notify modules, balloon on warnings

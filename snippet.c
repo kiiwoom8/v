@@ -655,7 +655,10 @@ static BOOL ed_register_class(void)
     wc.lpfnWndProc   = ed_wnd_proc;
     wc.hInstance     = g_hinst;
     wc.hCursor       = LoadCursorW(NULL, IDC_ARROW);
-    wc.hIcon         = LoadIconW(NULL, IDI_APPLICATION);
+    wc.hIcon         = app_load_icon(GetSystemMetrics(SM_CXICON),
+                                     GetSystemMetrics(SM_CYICON));
+    wc.hIconSm       = app_load_icon(GetSystemMetrics(SM_CXSMICON),
+                                     GetSystemMetrics(SM_CYSMICON));
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = ED_CLASS;
     if (!RegisterClassExW(&wc))

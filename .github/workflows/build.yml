@@ -1,0 +1,40 @@
+name: Build check
+
+# Compiles the app and the console tools on every branch except master and on
+# pull requests. Nothing is published here; release.yml does that.
+on:
+  push:
+    branches-ignore: [master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 32-bit
+            package: gcc-mingw-w64-i686
+            cc: i686-w64-mingw32-gcc
+            windres: i686-w64-mingw32-windres
+          - name: 64-bit
+            package: gcc-mingw-w64-x86-64
+            cc: x86_64-w64-mingw32-gcc
+            windres: x86_64-w64-mingw32-windres
+
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.package }}
+
+      - name: Build
+        run: |
+          make CC=${{ matrix.cc }} WINDRES=${{ matrix.windres }} \
+               CFLAGS="-Wall -Wextra -O2 -std=gnu11 -Werror"
+          make CC=${{ matrix.cc }} WINDRES=${{ matrix.windres }} \
+               CFLAGS="-Wall -Wextra -O2 -std=gnu11 -Werror" probe check
