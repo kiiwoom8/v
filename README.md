@@ -51,6 +51,13 @@ Alt scrolling uses the mouse-mode keys (`key_left`, `key_down`, `key_up`,
 too. It works with or without mouse mode; `alt_scroll = 0` turns it off and
 lets those Alt combinations reach the app again.
 
+Alt scrolling finds what to scroll by itself: when the pointer is not over
+something that scrolls that way, it scrolls the scrollable area nearest to the
+pointer in that window (a web page's side panel, a list, a document), found
+through UI Automation, without moving the pointer. Over the desktop or the
+taskbar it uses the active window. `alt_scroll_auto = 0` always scrolls what
+is under the pointer, like a mouse wheel.
+
 ### Mouse mode
 
 While mouse mode is on, a small `MOUSE` pill follows the cursor (`DRAG` while
@@ -132,7 +139,7 @@ step.
 ## Text shortcuts
 
 Text shortcuts type a saved text from a short abbreviation. Hold `Alt`, type
-the abbreviation, and release `Alt`: the text is typed into the focused
+the abbreviation, and release `Alt`: the text is pasted into the focused
 window. For example, with `reor` set to `다시 주문하시겠습니까?`, holding Alt
 and typing `reor` types `다시 주문하시겠습니까?` when Alt is released. Any
 text works, including Korean and other non-Latin scripts, and several lines.
@@ -161,9 +168,15 @@ reor = 다시 주문하시겠습니까?
 addr = 123 Main Street\nSpringfield
 ```
 
-In the text, `\n` is Enter, `\t` is Tab, `\s` is a space (needed only for a
-leading or trailing space) and `\\` is a backslash. The editor window rewrites
-only the `[shortcuts]` section and keeps the rest of the file as it is.
+In the text, `\n` is a new line, `\t` is a tab, `\s` is a space (needed only
+for a leading or trailing space) and `\\` is a backslash. The editor window
+rewrites only the `[shortcuts]` section and keeps the rest of the file as it is.
+
+The text goes in through the clipboard (`Ctrl+V`), which works in browser
+address bars, web editors and with the Korean IME. What was on the clipboard
+is put back right after, and the shortcut's text is kept out of the clipboard
+history. For an app that blocks pasting, set `shortcut_method = type` in
+`[general]` to type the text key by key instead.
 
 ## Settings
 
@@ -176,7 +189,8 @@ ones:
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement)
 - `scroll_speed`, `scroll_max_speed`
 - `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
-  anywhere), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
+  anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area when
+  the pointer is not over one), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
@@ -190,6 +204,7 @@ ones:
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_hints`,
   `key_exit`, `key_help` remaps
 - `indicator`, `log`
+- `shortcut_method` (`paste` or `type`: how text shortcuts insert their text)
 - `[shortcuts]`: text shortcuts, see [Text shortcuts](#text-shortcuts)
 
 ## Tray menu

@@ -1967,6 +1967,7 @@ void uia_stop(void)
 {
     HANDLE thread;
 
+    uia_scroll_stop();
     if (!g_uia_thread)
         return;
 
@@ -2021,4 +2022,368 @@ void uia_cancel(void)
     g_uia_request.scan_id = 0;
     g_uia_request.mon = NULL;
     LeaveCriticalSection(&g_uia_cs);
+}
+
+// ---------------------------------------------------------------------------
+// Scroll target (Alt scrolling). Its own MTA thread and engine, so a running
+// hint scan never delays a scroll.
+
+#ifndef UIA_IsScrollPatternAvailablePropertyId
+#define UIA_IsScrollPatternAvailablePropertyId 30034
+#endif
+#ifndef UIA_ScrollHorizontallyScrollablePropertyId
+#define UIA_ScrollHorizontallyScrollablePropertyId 30057
+#endif
+#ifndef UIA_ScrollVerticallyScrollablePropertyId
+#define UIA_ScrollVerticallyScrollablePropertyId 30058
+#endif
+#define UIA_TREESCOPE_SUBTREE 7
+#define SCROLL_CACHE_MS 2000
+#define SCROLL_MIN_SIZE 16
+
+typedef struct {
+    UINT  id;          // 0 = none
+    POINT pt;
+    BOOL  vertical;
+    HWND  root;
+} ScrollRequest;
+
+typedef struct {
+    UINT  id;
+    BOOL  redirect;
+    POINT target;
+} ScrollResult;
+
+static HANDLE g_sc_thread;
+static HANDLE g_sc_wake;
+static HANDLE g_sc_done;
+static CRITICAL_SECTION g_sc_cs;
+static volatile LONG g_sc_state;      // 0 = off, 1 = starting, 2 = running
+static volatile LONG g_sc_quit;
+static ScrollRequest g_sc_request;
+static ScrollResult  g_sc_result;
+static UINT g_sc_next_id;
+
+// The last answer, reused while the pointer stays put (repeated taps).
+static ScrollRequest g_sc_cached;
+static ScrollResult  g_sc_cached_result;
+static DWORD g_sc_cached_tick;
+
+static LONG64 point_rect_distance2(POINT pt, const RECT *rc)
+{
+    LONG64 dx = 0, dy = 0;
+
+    if (pt.x < rc->left)
+        dx = rc->left - pt.x;
+    else if (pt.x >= rc->right)
+        dx = pt.x - (rc->right - 1);
+    if (pt.y < rc->top)
+        dy = rc->top - pt.y;
+    else if (pt.y >= rc->bottom)
+        dy = pt.y - (rc->bottom - 1);
+    return dx * dx + dy * dy;
+}
+
+// The point in rc nearest to pt, kept a little inside the edge so it lands on
+// the scrolling area itself and not on its border or scroll bar.
+static POINT point_into_rect(POINT pt, const RECT *rc)
+{
+    int inset_x = (rc->right - rc->left) / 4;
+    int inset_y = (rc->bottom - rc->top) / 4;
+    POINT out = pt;
+
+    if (inset_x > 24)
+        inset_x = 24;
+    if (inset_y > 24)
+        inset_y = 24;
+    if (out.x < rc->left + inset_x)
+        out.x = rc->left + inset_x;
+    if (out.x > rc->right - 1 - inset_x)
+        out.x = rc->right - 1 - inset_x;
+    if (out.y < rc->top + inset_y)
+        out.y = rc->top + inset_y;
+    if (out.y > rc->bottom - 1 - inset_y)
+        out.y = rc->bottom - 1 - inset_y;
+    return out;
+}
+
+static void scroll_find(IUIAutomation *automation,
+                        IUIAutomationCondition *condition,
+                        IUIAutomationCacheRequest *cache,
+                        const ScrollRequest *req, ScrollResult *res)
+{
+    IUIAutomationElement *root = NULL;
+    IUIAutomationElementArray *array = NULL;
+    RECT win;
+    LONG64 best_dist = -1, inside_area = -1;
+    RECT best;
+    int i, n = 0;
+    int prop = req->vertical ? UIA_ScrollVerticallyScrollablePropertyId
+                             : UIA_ScrollHorizontallyScrollablePropertyId;
+
+    res->redirect = FALSE;
+    SetRectEmpty(&best);
+    if (!GetWindowRect(req->root, &win))
+        return;
+    if (FAILED(automation->lpVtbl->ElementFromHandle(
+            automation, (UIA_HWND)req->root, &root)) || !root)
+        return;
+    if (FAILED(root->lpVtbl->FindAllBuildCache(
+            root, UIA_TREESCOPE_SUBTREE, condition, cache, &array)) || !array) {
+        root->lpVtbl->Release(root);
+        return;
+    }
+    array->lpVtbl->get_Length(array, &n);
+    for (i = 0; i < n; ++i) {
+        IUIAutomationElement *el = NULL;
+        RECT rc;
+
+        if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
+            continue;
+        if (cached_bool_property(el, prop) &&
+            SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc)) &&
+            IntersectRect(&rc, &rc, &win) &&
+            rc.right - rc.left >= SCROLL_MIN_SIZE &&
+            rc.bottom - rc.top >= SCROLL_MIN_SIZE) {
+            if (PtInRect(&rc, req->pt)) {
+                LONG64 area = rect_area(&rc);
+                if (inside_area < 0 || area < inside_area)
+                    inside_area = area;
+            } else {
+                LONG64 d = point_rect_distance2(req->pt, &rc);
+                if (best_dist < 0 || d < best_dist) {
+                    best_dist = d;
+                    best = rc;
+                }
+            }
+        }
+        el->lpVtbl->Release(el);
+    }
+    array->lpVtbl->Release(array);
+    root->lpVtbl->Release(root);
+
+    // Already over something that scrolls this way: the wheel gets there.
+    if (inside_area >= 0 || best_dist < 0)
+        return;
+    res->redirect = TRUE;
+    res->target = point_into_rect(req->pt, &best);
+}
+
+static BOOL scroll_engine_init(IUIAutomation **automation,
+                               IUIAutomationCondition **condition,
+                               IUIAutomationCacheRequest **cache)
+{
+    IUIAutomationCondition *conds[2];
+    IUIAutomation2 *automation2 = NULL;
+    HRESULT hr;
+
+    *automation = NULL;
+    *condition = NULL;
+    *cache = NULL;
+    hr = CoCreateInstance(&g_clsid_uia8, NULL, CLSCTX_INPROC_SERVER,
+                          &g_iid_uia, (void **)automation);
+    if (FAILED(hr) || !*automation) {
+        *automation = NULL;
+        hr = CoCreateInstance(&g_clsid_uia, NULL, CLSCTX_INPROC_SERVER,
+                              &g_iid_uia, (void **)automation);
+    }
+    if (FAILED(hr) || !*automation)
+        return FALSE;
+    if (SUCCEEDED((*automation)->lpVtbl->QueryInterface(
+            *automation, &g_iid_uia2, (void **)&automation2)) && automation2) {
+        automation2->lpVtbl->put_TransactionTimeout(automation2, 1000);
+        automation2->lpVtbl->put_ConnectionTimeout(automation2, 1000);
+        automation2->lpVtbl->base.Release((IUIAutomation *)automation2);
+    }
+
+    conds[0] = property_condition(*automation,
+                                  UIA_IsScrollPatternAvailablePropertyId,
+                                  VT_BOOL, 1);
+    conds[1] = property_condition(*automation, UIA_IsOffscreenPropertyId,
+                                  VT_BOOL, 0);
+    if (conds[0] && conds[1])
+        (*automation)->lpVtbl->CreateAndConditionFromNativeArray(
+            *automation, conds, 2, condition);
+    if (conds[0])
+        conds[0]->lpVtbl->Release(conds[0]);
+    if (conds[1])
+        conds[1]->lpVtbl->Release(conds[1]);
+    if (*condition &&
+        SUCCEEDED((*automation)->lpVtbl->CreateCacheRequest(*automation,
+                                                            cache)) &&
+        *cache &&
+        SUCCEEDED((*cache)->lpVtbl->AddProperty(
+            *cache, UIA_BoundingRectanglePropertyId)) &&
+        SUCCEEDED((*cache)->lpVtbl->AddProperty(
+            *cache, UIA_ScrollVerticallyScrollablePropertyId)) &&
+        SUCCEEDED((*cache)->lpVtbl->AddProperty(
+            *cache, UIA_ScrollHorizontallyScrollablePropertyId)) &&
+        SUCCEEDED((*cache)->lpVtbl->put_AutomationElementMode(
+            *cache, UIA_MODE_NONE)))
+        return TRUE;
+
+    if (*cache)
+        (*cache)->lpVtbl->Release(*cache);
+    if (*condition)
+        (*condition)->lpVtbl->Release(*condition);
+    (*automation)->lpVtbl->Release(*automation);
+    *automation = NULL;
+    *condition = NULL;
+    *cache = NULL;
+    return FALSE;
+}
+
+static DWORD WINAPI scroll_worker(void *arg)
+{
+    IUIAutomation *automation = NULL;
+    IUIAutomationCondition *condition = NULL;
+    IUIAutomationCacheRequest *cache = NULL;
+    HRESULT hr;
+    BOOL ready;
+    (void)arg;
+
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    ready = (hr == S_OK || hr == S_FALSE) &&
+            scroll_engine_init(&automation, &condition, &cache);
+
+    while (WaitForSingleObject(g_sc_wake, INFINITE) == WAIT_OBJECT_0 &&
+           !InterlockedCompareExchange(&g_sc_quit, 0, 0)) {
+        ScrollRequest req;
+        ScrollResult res;
+
+        EnterCriticalSection(&g_sc_cs);
+        req = g_sc_request;
+        LeaveCriticalSection(&g_sc_cs);
+        if (!req.id)
+            continue;
+        memset(&res, 0, sizeof(res));
+        res.id = req.id;
+        if (ready)
+            scroll_find(automation, condition, cache, &req, &res);
+        EnterCriticalSection(&g_sc_cs);
+        g_sc_result = res;
+        LeaveCriticalSection(&g_sc_cs);
+        SetEvent(g_sc_done);
+    }
+
+    if (cache)
+        cache->lpVtbl->Release(cache);
+    if (condition)
+        condition->lpVtbl->Release(condition);
+    if (automation)
+        automation->lpVtbl->Release(automation);
+    if (hr == S_OK || hr == S_FALSE)
+        CoUninitialize();
+    return 0;
+}
+
+static BOOL scroll_worker_start(void)
+{
+    if (InterlockedCompareExchange(&g_sc_state, 1, 0) == 0) {
+        InitializeCriticalSection(&g_sc_cs);
+        g_sc_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+        g_sc_done = CreateEventW(NULL, FALSE, FALSE, NULL);
+        g_sc_quit = 0;
+        g_sc_thread = (g_sc_wake && g_sc_done)
+            ? CreateThread(NULL, 0, scroll_worker, NULL, 0, NULL) : NULL;
+        InterlockedExchange(&g_sc_state, g_sc_thread ? 2 : 3);
+    }
+    while (InterlockedCompareExchange(&g_sc_state, 1, 1) == 1)
+        Sleep(0);
+    return InterlockedCompareExchange(&g_sc_state, 2, 2) == 2;
+}
+
+// The window to search: the one under the pointer, or the foreground window
+// when the pointer is over the desktop, the taskbar or one of ours.
+static HWND scroll_root_for(POINT pt)
+{
+    HWND hwnd = WindowFromPoint(pt);
+    HWND root = hwnd ? GetAncestor(hwnd, GA_ROOT) : NULL;
+    WCHAR cls[64];
+    DWORD pid = 0;
+
+    if (root) {
+        GetWindowThreadProcessId(root, &pid);
+        cls[0] = 0;
+        GetClassNameW(root, cls, 64);
+        if (pid == GetCurrentProcessId() || root == GetShellWindow() ||
+            lstrcmpW(cls, L"Progman") == 0 || lstrcmpW(cls, L"WorkerW") == 0 ||
+            lstrcmpW(cls, L"Shell_TrayWnd") == 0 ||
+            lstrcmpW(cls, L"Shell_SecondaryTrayWnd") == 0)
+            root = NULL;
+    }
+    if (!root) {
+        root = GetForegroundWindow();
+        root = root ? GetAncestor(root, GA_ROOT) : NULL;
+    }
+    return root;
+}
+
+BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
+                       POINT *target)
+{
+    ScrollRequest req;
+    ScrollResult res;
+    DWORD now = GetTickCount();
+    UINT id;
+
+    req.root = scroll_root_for(pt);
+    if (!req.root)
+        return FALSE;
+    req.pt = pt;
+    req.vertical = vertical;
+    if (g_sc_cached.id && g_sc_cached.root == req.root &&
+        g_sc_cached.vertical == vertical &&
+        abs(g_sc_cached.pt.x - pt.x) <= 2 && abs(g_sc_cached.pt.y - pt.y) <= 2 &&
+        now - g_sc_cached_tick < SCROLL_CACHE_MS) {
+        *target = g_sc_cached_result.target;
+        return g_sc_cached_result.redirect;
+    }
+    if (!scroll_worker_start())
+        return FALSE;
+
+    id = ++g_sc_next_id;
+    if (id == 0)
+        id = ++g_sc_next_id;
+    req.id = id;
+    EnterCriticalSection(&g_sc_cs);
+    g_sc_request = req;
+    LeaveCriticalSection(&g_sc_cs);
+    ResetEvent(g_sc_done);
+    SetEvent(g_sc_wake);
+
+    for (;;) {
+        DWORD waited = GetTickCount() - now;
+        if (waited >= timeout_ms ||
+            WaitForSingleObject(g_sc_done, timeout_ms - waited) != WAIT_OBJECT_0)
+            return FALSE;
+        EnterCriticalSection(&g_sc_cs);
+        res = g_sc_result;
+        LeaveCriticalSection(&g_sc_cs);
+        if (res.id == id)
+            break;
+    }
+    g_sc_cached = req;
+    g_sc_cached_result = res;
+    g_sc_cached_tick = GetTickCount();
+    *target = res.target;
+    return res.redirect;
+}
+
+void uia_scroll_stop(void)
+{
+    if (InterlockedCompareExchange(&g_sc_state, 0, 0) != 2)
+        return;
+    InterlockedExchange(&g_sc_quit, 1);
+    SetEvent(g_sc_wake);
+    if (WaitForSingleObject(g_sc_thread, 3000) != WAIT_OBJECT_0)
+        return;
+    CloseHandle(g_sc_thread);
+    CloseHandle(g_sc_wake);
+    CloseHandle(g_sc_done);
+    g_sc_thread = NULL;
+    g_sc_wake = NULL;
+    g_sc_done = NULL;
+    DeleteCriticalSection(&g_sc_cs);
+    InterlockedExchange(&g_sc_state, 0);
 }

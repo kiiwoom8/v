@@ -413,7 +413,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
                             GetTickCount() - g_self_write_tick < 3000));
         return 0;
     case WM_APP_TYPE_TEXT:
-        input_type_text((const WCHAR *)lp);
+        snippet_insert((const WCHAR *)lp);
         free((void *)lp);
         return 0;
     case WM_CLOSE:

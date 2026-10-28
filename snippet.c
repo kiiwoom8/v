@@ -562,3 +562,249 @@ void snippet_editor_close(void)
     if (g_ed_wnd)
         DestroyWindow(g_ed_wnd);
 }
+
+// ---------------------------------------------------------------------------
+// Inserting a shortcut's text
+
+// Pasting is the reliable way into browsers (address bar, web editors) and
+// past an IME, where injected characters can get lost. The clipboard is
+// saved first and put back once the app has had time to paste.
+#define RESTORE_DELAY_MS 600
+#define SAVE_LIMIT       (64 * 1024 * 1024)
+
+typedef struct {
+    UINT    format;
+    HGLOBAL data;
+} SavedFormat;
+
+static SavedFormat *g_saved;
+static int   g_saved_count;
+static BOOL  g_saved_valid;     // g_saved holds the user's clipboard
+static DWORD g_paste_seq;       // clipboard sequence number after our text
+static UINT_PTR g_restore_timer;
+
+static BOOL open_clipboard(void)
+{
+    int i;
+
+    // Another program may hold it for a moment.
+    for (i = 0; i < 20; i++) {
+        if (OpenClipboard(g_main_wnd))
+            return TRUE;
+        Sleep(10);
+    }
+    return FALSE;
+}
+
+static void saved_free(void)
+{
+    int i;
+
+    for (i = 0; i < g_saved_count; i++)
+        GlobalFree(g_saved[i].data);
+    free(g_saved);
+    g_saved = NULL;
+    g_saved_count = 0;
+    g_saved_valid = FALSE;
+}
+
+// Formats whose handle is not memory (bitmaps, metafiles, palettes) are
+// skipped; Windows synthesizes most of them from the ones that are.
+static BOOL format_is_memory(UINT f)
+{
+    switch (f) {
+    case CF_BITMAP: case CF_METAFILEPICT: case CF_PALETTE:
+    case CF_ENHMETAFILE: case CF_OWNERDISPLAY: case CF_DSPBITMAP:
+    case CF_DSPMETAFILEPICT: case CF_DSPENHMETAFILE:
+        return FALSE;
+    }
+    return !(f >= CF_GDIOBJFIRST && f <= CF_GDIOBJLAST);
+}
+
+// Call with the clipboard open.
+static void save_clipboard(void)
+{
+    UINT f = 0;
+    SIZE_T total = 0;
+    int cap = 0;
+
+    saved_free();
+    while ((f = EnumClipboardFormats(f)) != 0) {
+        HANDLE h;
+        SIZE_T size;
+        void *src, *dst;
+        HGLOBAL copy;
+
+        if (!format_is_memory(f))
+            continue;
+        h = GetClipboardData(f);
+        if (!h)
+            continue;
+        size = GlobalSize(h);
+        if (size == 0)
+            continue;
+        total += size;
+        if (total > SAVE_LIMIT) {
+            app_log(L"shortcuts: clipboard too large to save, not restored");
+            saved_free();
+            return;
+        }
+        copy = GlobalAlloc(GMEM_MOVEABLE, size);
+        if (!copy)
+            continue;
+        src = GlobalLock(h);
+        dst = GlobalLock(copy);
+        if (src && dst)
+            memcpy(dst, src, size);
+        if (src)
+            GlobalUnlock(h);
+        if (dst)
+            GlobalUnlock(copy);
+        if (!src || !dst) {
+            GlobalFree(copy);
+            continue;
+        }
+        if (g_saved_count == cap) {
+            int ncap = cap ? cap * 2 : 8;
+            SavedFormat *grown = (SavedFormat *)realloc(
+                g_saved, (size_t)ncap * sizeof(SavedFormat));
+            if (!grown) {
+                GlobalFree(copy);
+                continue;
+            }
+            g_saved = grown;
+            cap = ncap;
+        }
+        g_saved[g_saved_count].format = f;
+        g_saved[g_saved_count].data = copy;
+        g_saved_count++;
+    }
+    g_saved_valid = TRUE;
+}
+
+static void set_global(UINT format, const void *data, SIZE_T size)
+{
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, size);
+    void *p;
+
+    if (!h)
+        return;
+    p = GlobalLock(h);
+    if (!p) {
+        GlobalFree(h);
+        return;
+    }
+    memcpy(p, data, size);
+    GlobalUnlock(h);
+    if (!SetClipboardData(format, h))
+        GlobalFree(h);
+}
+
+// Keeps what we put on the clipboard out of Win+V history and cloud sync.
+static void exclude_from_history(void)
+{
+    static UINT history, cloud, monitor;
+    DWORD zero = 0;
+
+    if (!history) {
+        history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+        cloud = RegisterClipboardFormatW(L"CanUploadToCloudClipboard");
+        monitor = RegisterClipboardFormatW(
+            L"ExcludeClipboardContentFromMonitorProcessing");
+    }
+    if (history)
+        set_global(history, &zero, sizeof(zero));
+    if (cloud)
+        set_global(cloud, &zero, sizeof(zero));
+    if (monitor)
+        set_global(monitor, &zero, sizeof(zero));
+}
+
+static void CALLBACK restore_clipboard(HWND hwnd, UINT msg, UINT_PTR id,
+                                       DWORD tick)
+{
+    int i;
+
+    (void)hwnd; (void)msg; (void)tick;
+    KillTimer(NULL, id);
+    g_restore_timer = 0;
+    // Something new was copied meanwhile: keep it.
+    if (!g_saved_valid || GetClipboardSequenceNumber() != g_paste_seq) {
+        saved_free();
+        return;
+    }
+    if (!open_clipboard()) {
+        saved_free();
+        return;
+    }
+    EmptyClipboard();
+    for (i = 0; i < g_saved_count; i++) {
+        // On success the clipboard owns the memory.
+        if (SetClipboardData(g_saved[i].format, g_saved[i].data))
+            g_saved[i].data = NULL;
+    }
+    exclude_from_history();
+    CloseClipboard();
+    for (i = 0; i < g_saved_count; i++) {
+        if (g_saved[i].data)
+            GlobalFree(g_saved[i].data);
+    }
+    free(g_saved);
+    g_saved = NULL;
+    g_saved_count = 0;
+    g_saved_valid = FALSE;
+}
+
+static void send_ctrl_v(void)
+{
+    INPUT in[4];
+    int i;
+
+    ZeroMemory(in, sizeof(in));
+    for (i = 0; i < 4; i++)
+        in[i].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = VK_CONTROL;
+    in[1].ki.wVk = 'V';
+    in[2].ki.wVk = 'V';
+    in[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    in[3].ki.wVk = VK_CONTROL;
+    in[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    for (i = 0; i < 4; i++)
+        in[i].ki.wScan = (WORD)MapVirtualKeyW(in[i].ki.wVk, 0);
+    SendInput(4, in, sizeof(INPUT));
+}
+
+static BOOL paste_text(const WCHAR *text)
+{
+    WCHAR *crlf = to_crlf(text);
+
+    if (!crlf || !open_clipboard()) {
+        free(crlf);
+        return FALSE;
+    }
+    // A paste still waiting to restore: the clipboard holds our last text,
+    // and the user's clipboard is already saved.
+    if (!g_saved_valid)
+        save_clipboard();
+    EmptyClipboard();
+    set_global(CF_UNICODETEXT, crlf, (wcslen(crlf) + 1) * sizeof(WCHAR));
+    exclude_from_history();
+    CloseClipboard();
+    free(crlf);
+    g_paste_seq = GetClipboardSequenceNumber();
+
+    send_ctrl_v();
+    if (g_restore_timer)
+        KillTimer(NULL, g_restore_timer);
+    g_restore_timer = SetTimer(NULL, 0, RESTORE_DELAY_MS, restore_clipboard);
+    return TRUE;
+}
+
+void snippet_insert(const WCHAR *text)
+{
+    if (text == NULL || text[0] == 0)
+        return;
+    if (g_cfg.shortcut_paste && paste_text(text))
+        return;
+    input_type_text(text);
+}

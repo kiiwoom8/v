@@ -534,6 +534,8 @@ void config_set_defaults(Config *c)
     c->scroll_speed = 1200.0;
     c->scroll_max_speed = 4800.0;
     c->alt_scroll = 1;
+    c->alt_scroll_auto = 1;
+    c->shortcut_paste = 1;
     c->fast_scroll_lines = 5;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
@@ -763,6 +765,15 @@ static void process_general(Config *c, int line, const WCHAR *key,
                      L"(use cursor, corner or off)", val);
     } else if (_wcsicmp(key, L"log") == 0)
         apply_bool(&c->log, line, key, val);
+    else if (_wcsicmp(key, L"shortcut_method") == 0) {
+        if (_wcsicmp(val, L"paste") == 0)
+            c->shortcut_paste = 1;
+        else if (_wcsicmp(val, L"type") == 0)
+            c->shortcut_paste = 0;
+        else
+            warn_add(line, L"bad value \"%ls\" for \"shortcut_method\" "
+                     L"(use paste or type)", val);
+    }
     else
         warn_add(line, L"unknown key \"%ls\" in [general]", key);
 }
@@ -786,6 +797,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_double_positive(&c->scroll_max_speed, line, key, val);
     else if (_wcsicmp(key, L"alt_scroll") == 0)
         apply_bool(&c->alt_scroll, line, key, val);
+    else if (_wcsicmp(key, L"alt_scroll_auto") == 0)
+        apply_bool(&c->alt_scroll_auto, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_lines") == 0)
         apply_int_range(&c->fast_scroll_lines, line, key, val, 1, 50);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
@@ -1173,7 +1186,7 @@ const WCHAR *config_warnings(void)
 static const WCHAR SHORTCUTS_COMMENT[] =
     L"; Text shortcuts: hold Alt, type the abbreviation, release Alt to\r\n"
     L"; type the text. abbreviation = text; abbreviations are 1-31 letters\r\n"
-    L"; or digits. In the text \\n is Enter, \\t is Tab, \\s is a space (for\r\n"
+    L"; or digits. In the text \\n is a new line, \\t a tab, \\s a space (for\r\n"
     L"; leading/trailing spaces) and \\\\ is a backslash. The tray menu's\r\n"
     L"; \"Text shortcuts...\" rewrites this section.\r\n";
 
@@ -1277,6 +1290,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     }
     appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to the exe.\r\n");
     appendf(buf, cch, L"log = %d\r\n", d.log ? 1 : 0);
+    appendf(buf, cch, L"; How text shortcuts insert their text: paste (through the clipboard,\r\n");
+    appendf(buf, cch, L"; which is restored afterwards; works best in browsers and with an IME)\r\n");
+    appendf(buf, cch, L"; or type (key by key, for apps that block pasting).\r\n");
+    appendf(buf, cch, L"shortcut_method = %ls\r\n", d.shortcut_paste ? L"paste" : L"type");
 
     appendf(buf, cch, L"\r\n[mouse]\r\n");
     appendf(buf, cch, L"; Movement speeds in pixels per second. speed is where movement starts\r\n");
@@ -1300,6 +1317,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; 1 = Alt + the move keys (h j k l) scroll anywhere, also outside mouse\r\n");
     appendf(buf, cch, L"; mode, and Alt + the scroll up/down keys (u d) scroll fast.\r\n");
     appendf(buf, cch, L"alt_scroll = %d\r\n", d.alt_scroll ? 1 : 0);
+    appendf(buf, cch, L"; 1 = Alt scrolling finds the scrollable area nearest to the pointer\r\n");
+    appendf(buf, cch, L"; (when the pointer is not over one) and scrolls that.\r\n");
+    appendf(buf, cch, L"alt_scroll_auto = %d\r\n", d.alt_scroll_auto ? 1 : 0);
     appendf(buf, cch, L"; Notches per Alt + u / Alt + d tap (1-50), and the speeds while held.\r\n");
     appendf(buf, cch, L"fast_scroll_lines = %d\r\n", d.fast_scroll_lines);
     fmt_double(d.fast_scroll_speed, num, sizeof(num) / sizeof(num[0]));

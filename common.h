@@ -50,7 +50,7 @@
 #define WM_APP_RELOAD_CONFIG    (WM_APP + 9)  // settings file changed on disk / reload requested
 #define WM_APP_HINT_AGAIN       (WM_APP + 10) // hint hotkey pressed while hints are open; -> hint_hotkey_again
 #define WM_APP_ELEMENTS         (WM_APP + 11) // lParam = ClickList* from uia.c; -> hint_on_elements (takes ownership)
-#define WM_APP_TYPE_TEXT        (WM_APP + 12) // lParam = malloc'd WCHAR* from input.c; -> input_type_text, then free
+#define WM_APP_TYPE_TEXT        (WM_APP + 12) // lParam = malloc'd WCHAR* from input.c; -> snippet_insert, then free
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -82,6 +82,7 @@ typedef struct {
     UINT   mouse_mode_key;     // default VK_CAPITAL; tap toggles, hold = momentary
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    log;                // 1 = also write log lines to vim.log; default 0
+    int    shortcut_paste;     // text shortcuts: 1 = paste via the clipboard (default), 0 = type keys
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
     double speed;              // default 600
@@ -92,6 +93,7 @@ typedef struct {
     double scroll_speed;       // default 1200  (10 notches/s)
     double scroll_max_speed;   // default 4800  (40 notches/s)
     int    alt_scroll;         // 1 = Alt + move keys scroll anywhere, Alt + u/d fast; default 1
+    int    alt_scroll_auto;    // 1 = Alt scrolling goes to the nearest scrollable area; default 1
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
     double fast_scroll_speed;  // Alt + u/d held, default 3600
     double fast_scroll_max_speed; // default 14400
@@ -184,6 +186,7 @@ BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or 
 void input_set_key_capture(BOOL on);
 void input_config_changed(void);        // g_cfg was reloaded
 // Types text into the focused window (KEYEVENTF_UNICODE; \n = Enter, \t = Tab).
+// Text shortcuts use it only with shortcut_method = type (see snippet_insert).
 void input_type_text(const WCHAR *text);
 
 enum { BTN_LEFT = 0, BTN_RIGHT = 1, BTN_MIDDLE = 2 };
@@ -229,6 +232,13 @@ BOOL uia_available(void);
 // A newer uia_scan or uia_cancel makes the old scan stop posting.
 void uia_scan(HMONITOR mon, UINT scan_id);
 void uia_cancel(void);
+// Alt scrolling: finds the element nearest to pt that scrolls that way in the
+// window under pt (UI Automation, on its own thread; waits up to timeout_ms).
+// TRUE with *target set when pt is not over such an element and the wheel
+// should go to *target instead. One caller thread at a time (the movement
+// thread). uia_stop stops it too.
+BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms, POINT *target);
+void uia_scroll_stop(void);
 
 // ---------------------------------------------------------------------------
 // Tray + help (tray.c). Main/UI thread.
@@ -248,6 +258,9 @@ void help_toggle(void);
 void snippet_editor_open(void);         // opens or brings the editor to front
 BOOL snippet_editor_dialog_message(MSG *msg);  // IsDialogMessage for its window
 void snippet_editor_close(void);
+// Inserts a text shortcut's text into the focused window: pastes it through
+// the clipboard (restored afterwards), or types it (shortcut_method = type).
+void snippet_insert(const WCHAR *text);
 
 // ---------------------------------------------------------------------------
 // App helpers (main.c)

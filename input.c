@@ -65,12 +65,17 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define SCR_DOWN  0x02
 #define SCR_LEFT  0x04
 #define SCR_RIGHT 0x08
+#define SCR_FAST_UP   0x10
+#define SCR_FAST_DOWN 0x20
 
 #define VELOCITY_SMOOTHING 0.12
 #define MAX_SIM_STEP_SEC   0.05
 #define SUSPEND_RESET_SEC  2.0
 // Holding a scroll key repeats after this delay (a tap scrolls one notch).
 #define SCROLL_HOLD_DELAY_MS 150.0
+// How long Alt scrolling waits for the nearest scrollable area before it
+// scrolls under the cursor instead.
+#define AUTO_TARGET_TIMEOUT_MS 500
 
 enum {
     ACT_NONE = 0,
@@ -94,6 +99,11 @@ static volatile LONG s_capture = 0;
 static volatile LONG s_left_held = 0;
 static volatile LONG s_move_flags = 0;
 static volatile LONG s_scroll_flags = 0;
+// Alt scrolling aims at the nearest scrollable area: the movement thread
+// finds it (s_target_gen changed) before sending the tap notch (pending).
+static volatile LONG s_scroll_auto = 0;
+static volatile LONG s_scroll_pending = 0;
+static volatile LONG s_target_gen = 0;
 static volatile LONG s_move_exit = 0;
 
 static unsigned char s_down[256];
@@ -569,25 +579,69 @@ static void move_release(int act)
     atomic_and(&s_move_flags, ~bit);
 }
 
-static void scroll_press(int act)
+// Scroll indexes 0-5: up, down, left, right, fast up, fast down.
+static BOOL scroll_vertical(int idx)
+{
+    return idx != 2 && idx != 3;
+}
+
+static int scroll_notch(int idx)
+{
+    switch (idx) {
+    case 0:  return 120;
+    case 1:  return -120;
+    case 2:  return -120;
+    case 3:  return 120;
+    case 4:  return 120 * g_cfg.fast_scroll_lines;
+    default: return -120 * g_cfg.fast_scroll_lines;
+    }
+}
+
+// The wheel normally goes to the window under the cursor. Aimed at another
+// point, it is posted there instead, so the cursor does not move.
+static void post_wheel(POINT pt, BOOL vertical, int delta)
+{
+    typedef BOOL (WINAPI *ToLogicalFn)(HWND, LPPOINT);
+    static BOOL tried = FALSE;
+    static ToLogicalFn to_logical = NULL;
+    HWND hwnd = WindowFromPoint(pt);
+
+    if (!hwnd) {
+        send_wheel(vertical, delta);
+        return;
+    }
+    if (!tried) {
+        tried = TRUE;
+        to_logical = (ToLogicalFn)(void *)GetProcAddress(
+            GetModuleHandleW(L"user32.dll"),
+            "PhysicalToLogicalPointForPerMonitorDPI");
+    }
+    // A DPI-unaware window expects its own (scaled) coordinates.
+    if (to_logical)
+        to_logical(hwnd, &pt);
+    PostMessageW(hwnd, vertical ? WM_MOUSEWHEEL : WM_MOUSEHWHEEL,
+                 MAKEWPARAM(0, (WORD)(SHORT)delta),
+                 MAKELPARAM((WORD)(SHORT)pt.x, (WORD)(SHORT)pt.y));
+}
+
+// auto_target: Alt scrolling, which finds the nearest scrollable area first.
+static void scroll_press(int act, BOOL auto_target)
 {
     int idx = act - ACT_SCROLL_UP;
     LONG bit = (LONG)(1 << idx);
     DWORD now = GetTickCount();
     s_scroll_start[idx] = now;
+    if (auto_target) {
+        atomic_or(&s_scroll_auto, bit);
+        atomic_or(&s_scroll_pending, bit);
+        InterlockedIncrement(&s_target_gen);
+    } else {
+        atomic_and(&s_scroll_auto, ~bit);
+        send_wheel(scroll_vertical(idx), scroll_notch(idx));
+    }
     atomic_or(&s_scroll_flags, bit);
     if (s_move_event)
         SetEvent(s_move_event);
-    if (idx == 0)
-        send_wheel(TRUE, 120);
-    else if (idx == 1)
-        send_wheel(TRUE, -120);
-    else if (idx == 2)
-        send_wheel(FALSE, -120);
-    else if (idx == 3)
-        send_wheel(FALSE, 120);
-    else
-        send_wheel(TRUE, (idx == 4 ? 120 : -120) * g_cfg.fast_scroll_lines);
 }
 
 static void scroll_release(int act)
@@ -673,7 +727,7 @@ static void apply_action_down(int act)
         move_press(act);
         break;
     case ACT_SCROLL_UP: case ACT_SCROLL_DOWN: case ACT_SCROLL_LEFT: case ACT_SCROLL_RIGHT:
-        scroll_press(act);
+        scroll_press(act, FALSE);
         break;
     case ACT_LEFT:
         left_press_key();
@@ -955,7 +1009,7 @@ static BOOL handle_down(UINT vk)
             mark_caps_used();
             s_action[vk] = (unsigned char)act;
             s_owner[vk] = OWN_MOVE;
-            scroll_press(act);
+            scroll_press(act, g_cfg.alt_scroll_auto);
             return TRUE;
         }
         if (shortcut_begin(vk)) {
@@ -1205,6 +1259,9 @@ static DWORD WINAPI movement_thread(LPVOID param)
     double scrAccX = 0.0, scrAccY = 0.0;
     int prevSignX = 0, prevSignY = 0;
     BOOL timing = FALSE;
+    LONG seen_gen = 0;
+    POINT target = { 0, 0 };
+    BOOL target_ok = FALSE;
 
     (void)param;
     QueryPerformanceFrequency(&freq);
@@ -1213,11 +1270,13 @@ static DWORD WINAPI movement_thread(LPVOID param)
     for (;;) {
         if (flag_get(&s_move_exit))
             break;
-        if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags)) {
+        if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags) &&
+            !flag_get(&s_scroll_pending)) {
             WaitForSingleObject(s_move_event, INFINITE);
             if (flag_get(&s_move_exit))
                 break;
-            if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags))
+            if (!flag_get(&s_move_flags) && !flag_get(&s_scroll_flags) &&
+                !flag_get(&s_scroll_pending))
                 continue;
         }
 
@@ -1232,11 +1291,36 @@ static DWORD WINAPI movement_thread(LPVOID param)
         while (!flag_get(&s_move_exit)) {
             LONG mf = InterlockedCompareExchange(&s_move_flags, 0, 0);
             LONG sf = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
+            LONG gen = InterlockedCompareExchange(&s_target_gen, 0, 0);
+            LONG pending, aimed;
             double dt, remaining, accumDX = 0.0, accumDY = 0.0;
             double speed, max_speed, accel_time, curve, slow_speed;
             double scroll_base, scroll_max, fast_base, fast_max;
-            int signX, signY;
+            int signX, signY, idx;
             BOOL slow;
+
+            // A new Alt scroll press: find where it should go. The search
+            // time does not count as scrolling time.
+            if (gen != seen_gen) {
+                POINT cur;
+                LONG bits = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
+                seen_gen = gen;
+                target_ok = GetCursorPos(&cur) &&
+                    uia_scroll_target(cur, !(bits & (SCR_LEFT | SCR_RIGHT)),
+                                      AUTO_TARGET_TIMEOUT_MS, &target);
+                QueryPerformanceCounter(&prev);
+            }
+            pending = InterlockedExchange(&s_scroll_pending, 0);
+            aimed = target_ok ? InterlockedCompareExchange(&s_scroll_auto, 0, 0)
+                              : 0;
+            for (idx = 0; idx < 6; idx++) {
+                if (!(pending & (1 << idx)))
+                    continue;
+                if (aimed & (1 << idx))
+                    post_wheel(target, scroll_vertical(idx), scroll_notch(idx));
+                else
+                    send_wheel(scroll_vertical(idx), scroll_notch(idx));
+            }
 
             if (!mf && !sf)
                 break;
@@ -1352,12 +1436,18 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 scrAccX += sx * dt;
                 while (scrAccY >= 40.0 || scrAccY <= -40.0) {
                     int chunk = (int)scrAccY;
-                    send_wheel(TRUE, chunk);
+                    if (sf & aimed & (SCR_UP | SCR_DOWN | SCR_FAST_UP | SCR_FAST_DOWN))
+                        post_wheel(target, TRUE, chunk);
+                    else
+                        send_wheel(TRUE, chunk);
                     scrAccY -= chunk;
                 }
                 while (scrAccX >= 40.0 || scrAccX <= -40.0) {
                     int chunk = (int)scrAccX;
-                    send_wheel(FALSE, chunk);
+                    if (sf & aimed & (SCR_LEFT | SCR_RIGHT))
+                        post_wheel(target, FALSE, chunk);
+                    else
+                        send_wheel(FALSE, chunk);
                     scrAccX -= chunk;
                 }
             } else {
