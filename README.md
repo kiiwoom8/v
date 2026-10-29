@@ -92,7 +92,12 @@ A transparent, click-through overlay opens on the monitor under the cursor.
 By default it finds the clickable elements of the visible windows through UI
 Automation and labels each one. Type the label shown on the element to click
 it; labels are short (usually one letter) and never a prefix of another. The
-status bar says "Finding clickable elements" while the scan runs. Hints work
+status bar says "Finding clickable elements" while the scan runs. While the
+hints stay open the monitor is scanned again every `scan_refresh` ms (default
+500), so elements that appear or move get labels by themselves; a label you
+have already read never changes meaning (a label whose element went away is
+retired, never reused). The hotkey again still forces a full rescan, and a scan
+that finds nothing keeps trying for up to 3 s before the grid. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -104,7 +109,7 @@ hotkey's Alt, so the menu stays open.
 | `Enter` / `Space` | Act on / move to the only matching element |
 | `Backspace` | Undo one typed character |
 | `Tab` / `Shift+Tab` | Move to the next / previous monitor and rescan |
-| hotkey again | Rescan the monitor (for elements that appeared since) |
+| hotkey again | Rescan the monitor now (labels also update by themselves) |
 | `Esc` | Cancel |
 
 If an app does not expose UI Automation (some games, remote desktops,
@@ -215,6 +220,9 @@ ones:
   400: how long to wait for every window's elements before showing the ones
   found so far. The active window's elements are always waited for, up to
   3 s; with nothing found by then, the hints fall back to the grid),
+  `scan_refresh` (0-5000 ms, default 500: while the hints are open, rescan
+  this often so elements that appear or move get labels by themselves;
+  existing labels never change meaning. 0 = off),
   `prescan` (1 = start finding elements and scrollable areas as soon as Alt
   goes down, so labels and Alt scrolling respond sooner; 0 = wait for the
   whole key combination)

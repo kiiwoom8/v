@@ -139,6 +139,9 @@ typedef struct {
                                // showing the ones found so far (100-5000 ms, default 400).
                                // The active window's are always waited for, up to 3 s;
                                // with nothing found by then, the hints fall back to the grid.
+    int   scan_refresh;        // while the hints are open, rescan this often so new or moved
+                               // elements get labels (0-5000 ms, default 500; 0 = off).
+                               // Existing labels never change meaning.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
 } Config;
 
