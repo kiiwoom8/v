@@ -95,9 +95,10 @@ it; labels are short (usually one letter) and never a prefix of another. The
 status bar says "Finding clickable elements" while the scan runs. While the
 hints stay open the monitor is scanned again every `scan_refresh` ms (default
 500), so elements that appear or move get labels by themselves; a label you
-have already read never changes meaning (a label whose element went away is
-retired, never reused). The hotkey again still forces a full rescan, and a scan
-that finds nothing keeps trying for up to 3 s before the grid. Hints work
+have already read never clicks something else (when labels run out one may
+grow a letter, and a label whose element went away is never reused). The
+hotkey again still forces a full rescan, and a scan that finds nothing keeps
+trying for up to 3 s before the grid. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 

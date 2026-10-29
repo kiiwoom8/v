@@ -2058,26 +2058,30 @@ static void finalize_scan(void)
     n = list ? list->count : 0;
     if (n > MAX_TARGETS) n = MAX_TARGETS;
 
-    // A page or app still starting may expose nothing yet: keep scanning for
-    // a little while instead of dropping straight to the grid. The scan timer
-    // stays armed, so the 3 s hard limit still ends this with the grid.
+    // A page or app still starting may expose nothing yet: retry on the
+    // refresh timer instead of dropping straight to the grid. g_scanning,
+    // g_scan_t0 and the queued keys stay as they are, so keys keep being
+    // queued and the 3 s hard limit still ends this with the grid.
     if (n <= 0 && g_cfg.scan_refresh > 0 && g_scanning &&
         GetTickCount() - g_scan_t0 < SCAN_HARD_LIMIT_MS) {
-        // An empty scan is not the end while the app may still be starting:
-        // retry on the refresh timer, keeping g_scanning, g_scan_t0 and the
-        // queued keys as they are. g_scanning stays TRUE so keys keep being
-        // queued and the status still says "Finding clickable elements". The
-        // hard limit still falls back to the grid at 3 s.
         DWORD elapsed = GetTickCount() - g_scan_t0;
+
         free(list);
         g_scan_retry = TRUE;
-        g_scan_wait_first = FALSE;
         if (g_hint_wnd) {
-            // Re-arm the scan timer for what is left of the hard limit (its
-            // handler killed it before calling here).
-            if (elapsed < SCAN_HARD_LIMIT_MS)
+            // The scan timer carries on as for the first scan (its handler
+            // may have killed it before calling here): the initial timeout,
+            // then the wait for the active window, so a retry that finds it
+            // shows at once instead of waiting for every other window.
+            if (elapsed < scan_limit_ms()) {
+                g_scan_wait_first = FALSE;
+                SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_rest_ms(g_scan_t0),
+                         NULL);
+            } else {
+                g_scan_wait_first = TRUE;
                 SetTimer(g_hint_wnd, TIMER_SCAN_ID,
                          SCAN_HARD_LIMIT_MS - elapsed, NULL);
+            }
             SetTimer(g_hint_wnd, TIMER_REFRESH_ID, REFRESH_RETRY_MS, NULL);
         }
         return;
