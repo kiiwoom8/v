@@ -375,6 +375,7 @@ typedef struct {
     ScanTarget *items;
     int count;
     int cap;
+    BOOL fg_done;               // uia_scan_monitor: foreground window merged
 } ScanResult;
 
 typedef struct {
@@ -386,6 +387,7 @@ typedef struct {
     int changed;
     int total;
     DWORD elapsed_ms;
+    BOOL foreground;
     const ScanTarget *targets;
 } WindowEvent;
 
@@ -850,40 +852,44 @@ static void filter_containers(const ScanTarget *cands, int count,
     free(grid.start);
 }
 
-// Apps that answer UI Automation very slowly with next to nothing (games,
+// Windows that answer UI Automation very slowly with next to nothing (games,
 // custom-drawn UIs) are skipped for a while, so the hints fall back to the
-// grid at once instead of stalling for seconds on every open.
+// grid at once instead of stalling for seconds on every open. They are
+// remembered per window: explorer.exe runs every folder window, the taskbar
+// and the desktop, and one slow window must not turn off the others.
 #define SLOW_SCAN_MS       600
 #define SLOW_SCAN_TARGETS  4
 #define SLOW_SKIP_MS       (10 * 60 * 1000)
 #define SLOW_MAX           16
 
-static struct { DWORD pid; DWORD since; } g_slow[SLOW_MAX];
+static struct { HWND hwnd; DWORD pid; DWORD since; } g_slow[SLOW_MAX];
 static volatile LONG g_slow_lock;
 static BOOL g_slow_memory = TRUE;   // the probe turns it off to report truthfully
 
-static BOOL slow_check(DWORD pid, BOOL remember)
+// The pid guards against a reused window handle.
+static BOOL slow_check(HWND hwnd, DWORD pid, BOOL remember)
 {
     DWORD now = GetTickCount();
     BOOL hit = FALSE;
     int i, free_slot = -1, oldest = 0;
 
-    if (!g_slow_memory || !pid)
+    if (!g_slow_memory || !hwnd || !pid)
         return FALSE;
     while (InterlockedExchange(&g_slow_lock, 1))
         Sleep(0);
     for (i = 0; i < SLOW_MAX; ++i) {
-        if (g_slow[i].pid && now - g_slow[i].since > SLOW_SKIP_MS)
-            g_slow[i].pid = 0;
-        if (g_slow[i].pid == pid)
+        if (g_slow[i].hwnd && now - g_slow[i].since > SLOW_SKIP_MS)
+            g_slow[i].hwnd = NULL;
+        if (g_slow[i].hwnd == hwnd && g_slow[i].pid == pid)
             hit = TRUE;
-        else if (!g_slow[i].pid && free_slot < 0)
+        else if (!g_slow[i].hwnd && free_slot < 0)
             free_slot = i;
         if (now - g_slow[i].since > now - g_slow[oldest].since)
             oldest = i;
     }
     if (remember && !hit) {
         i = free_slot >= 0 ? free_slot : oldest;
+        g_slow[i].hwnd = hwnd;
         g_slow[i].pid = pid;
         g_slow[i].since = now;
     }
@@ -892,13 +898,16 @@ static BOOL slow_check(DWORD pid, BOOL remember)
 }
 
 // Browsers and Electron apps build their tree lazily: a slow, nearly empty
-// first scan there is normal and must not get them skipped.
+// first scan there is normal and must not get them skipped. So does Explorer
+// while a folder window it has just opened fills in.
 static BOOL lazy_tree_window(HWND hwnd)
 {
     WCHAR cls[64];
     GetClassNameW(hwnd, cls, 64);
     return wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0 ||
-           wcscmp(cls, L"MozillaWindowClass") == 0;
+           wcscmp(cls, L"MozillaWindowClass") == 0 ||
+           wcscmp(cls, L"CabinetWClass") == 0 ||
+           wcscmp(cls, L"ExploreWClass") == 0;
 }
 
 // Optional observer for candidates scan_window_uia rejects (hint_check.c).
@@ -908,30 +917,33 @@ static void (*g_scan_debug)(const RECT *rc, int control_type,
 
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
-                            ScanResult *out);
+                            ScanResult *out, int *answered);
 
+// "Next to nothing" counts every element the window answered with, not the
+// targets kept: a window mostly covered by another keeps only a few.
 static void scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
                         int z, const RECT *monitor, ScanResult *out)
 {
     DWORD pid = 0, started;
+    int answered = 0;
 
     GetWindowThreadProcessId(hwnd, &pid);
-    if (slow_check(pid, FALSE)) {
+    if (slow_check(hwnd, pid, FALSE)) {
         out->items = NULL;
         out->count = 0;
         out->cap = 0;
         return;
     }
     started = GetTickCount();
-    scan_window_uia(engine, hwnd, zrects, z, monitor, out);
+    scan_window_uia(engine, hwnd, zrects, z, monitor, out, &answered);
     if (GetTickCount() - started > SLOW_SCAN_MS &&
-        out->count <= SLOW_SCAN_TARGETS && !lazy_tree_window(hwnd))
-        slow_check(pid, TRUE);
+        answered <= SLOW_SCAN_TARGETS && !lazy_tree_window(hwnd))
+        slow_check(hwnd, pid, TRUE);
 }
 
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
-                            ScanResult *out)
+                            ScanResult *out, int *answered)
 {
     // Scroll bars and their arrow/page buttons are not worth a label.
     RECT scrollbars[64];
@@ -951,6 +963,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     out->items = NULL;
     out->count = 0;
     out->cap = 0;
+    *answered = 0;
 
     if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
             engine->automation, (UIA_HWND)hwnd, &root)) || !root)
@@ -966,6 +979,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 
     if (FAILED(array->lpVtbl->get_Length(array, &length)) || length < 0)
         length = 0;
+    *answered = length;
 
     for (i = 0; i < length; ++i) {
         IUIAutomationElement *el = NULL;
@@ -1515,6 +1529,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     int zcount = 0;
     int zcap = 0;
     int fg_index = -1;
+    int fg_task = -1;
     int *order = NULL;
     int *task_of_win = NULL;
     int order_count = 0;
@@ -1608,6 +1623,9 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
         if (ctx.items[order[k]].do_scan)
             task_of_win[order[k]] = task_count++;
     }
+    if (fg_index >= 0)
+        fg_task = task_of_win[fg_index];
+    result->fg_done = (fg_task < 0);
 
     job = (ScanJob *)calloc(1, sizeof(*job));
     if (!job)
@@ -1699,6 +1717,8 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
             if (task->merged)
                 continue;
             task->merged = 1;
+            if (ti == fg_task)
+                result->fg_done = TRUE;
 
             win = &ctx.items[task->win_index];
             before = result->count;
@@ -1718,6 +1738,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                 event.changed = changes;
                 event.total = result->count;
                 event.elapsed_ms = task->elapsed_ms;
+                event.foreground = (ti == fg_task);
                 event.targets = result->items;
                 cb(cb_user, &event);
             }
@@ -1990,6 +2011,7 @@ static ClickList *make_click_list(UINT scan_id, BOOL done,
         return NULL;
     list->scan_id = scan_id;
     list->done = done;
+    list->fg_done = done || result->fg_done;
     list->count = result->count;
     for (i = 0; i < result->count; ++i)
         list->items[i] = result->items[i].target;
@@ -2014,11 +2036,13 @@ typedef struct {
     const ScanResult *result;
 } WorkerScan;
 
+// The overlay waits for the foreground window, so its turn is posted even
+// when it added nothing.
 static void worker_on_window(void *user, const WindowEvent *event)
 {
     WorkerScan *scan = (WorkerScan *)user;
 
-    if (!event->skip && event->changed > 0)
+    if (!event->skip && (event->changed > 0 || event->foreground))
         post_list(scan->scan_id, FALSE, scan->result);
 }
 

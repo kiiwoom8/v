@@ -135,7 +135,7 @@ static HGDIOBJ   g_grid_old;
 static int       g_grid_w, g_grid_h;
 static BOOL      g_grid_valid;
 
-static BOOL      g_scan_wait_first;  // first timeout passed, waiting for results
+static BOOL      g_scan_wait_first;  // timeout passed, waiting for the active window
 static DWORD     g_scan_t0;          // scan start tick (timeout / hard limit reference)
 
 // Early scan started when the hint hotkey's modifier goes down. g_pre_id 0 =
@@ -1366,7 +1366,8 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 finalize_scan();  // hard limit reached
                 return 0;
             }
-            if (g_scan_list && g_scan_list->count > 0) {
+            if (g_scan_list && g_scan_list->count > 0 &&
+                g_scan_list->fg_done) {
                 finalize_scan();
                 return 0;
             }
@@ -1375,8 +1376,10 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 if (elapsed >= SCAN_HARD_LIMIT_MS) {
                     finalize_scan();
                 } else {
-                    // Nothing yet: keep the status text and wait for the
-                    // first result, but not past the hard limit.
+                    // Nothing yet, or not the active window's elements (a
+                    // folder window Explorer has just opened answers late):
+                    // keep the status text and wait, but not past the hard
+                    // limit.
                     g_scan_wait_first = TRUE;
                     SetTimer(hwnd, TIMER_SCAN_ID,
                              SCAN_HARD_LIMIT_MS - elapsed, NULL);
@@ -2198,8 +2201,8 @@ void hint_on_elements(ClickList *list)
 
     if (list->done) {
         finalize_scan();
-    } else if (g_scan_wait_first && list->count > 0) {
-        // The first results arrived after the initial timeout: use them now.
+    } else if (g_scan_wait_first && list->count > 0 && list->fg_done) {
+        // The active window answered after the initial timeout: show now.
         finalize_scan();
     }
 }

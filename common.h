@@ -136,8 +136,8 @@ typedef struct {
                                // SCAN_WINDOW: only the foreground window and the taskbar
     int   scan_timeout;        // how long to wait for every window's elements before
                                // showing the ones found so far (100-5000 ms, default 400).
-                               // If none have arrived by then, the scan keeps running
-                               // until the first results or 3 s, then falls back to the grid.
+                               // The active window's are always waited for, up to 3 s;
+                               // with nothing found by then, the hints fall back to the grid.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
 } Config;
 
@@ -246,6 +246,7 @@ typedef struct {
 typedef struct ClickList {
     UINT scan_id;   // the id passed to uia_scan
     BOOL done;      // FALSE = partial result, more windows still being scanned
+    BOOL fg_done;   // the foreground window is in (or is not scanned); TRUE when done
     int  count;
     ClickTarget items[];   // cumulative: every post contains everything found so far
 } ClickList;
@@ -255,7 +256,8 @@ void uia_stop(void);
 BOOL uia_available(void);
 // Asynchronous scan of the monitor (g_cfg.scan_scope decides which windows).
 // Posts WM_APP_ELEMENTS with a malloc'd ClickList to g_main_wnd after each
-// window that added targets (done = FALSE) and once at the end (done = TRUE).
+// window that added targets and after the foreground window (done = FALSE),
+// and once at the end (done = TRUE).
 // A newer uia_scan or uia_cancel makes the old scan stop posting.
 void uia_scan(HMONITOR mon, UINT scan_id);
 void uia_cancel(void);
