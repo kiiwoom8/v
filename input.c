@@ -126,6 +126,9 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // text field only once the app has had this long to move it.
 #define FOCUS_CLICK_DELAY_MS 150
 #define FOCUS_KEY_DELAY_MS   100
+// A Shift + g bottom jump waits for Shift to come up; if that takes longer
+// than this, the press is forgotten.
+#define SCROLL_END_SHIFT_MS 1000
 // The hook may wait this long for an answer that is still being asked. It must
 // stay far below Windows' LowLevelHooksTimeout, or Windows removes the hook.
 // Waiting inside the hook keeps key order intact: no other key is processed
@@ -186,6 +189,13 @@ static BOOL s_alt_extended = FALSE;
 // top; any other key starts over.
 static BOOL  s_end_tap = FALSE;
 static DWORD s_end_tap_tick = 0;
+
+// Shift + g asked for the bottom while Shift was still held. Browsers turn
+// Shift + wheel into sideways scrolling, so the jump waits for the last
+// Shift to come up.
+static BOOL  s_end_shift = FALSE;
+static BOOL  s_end_shift_auto = FALSE;
+static DWORD s_end_shift_tick = 0;
 
 // A press bumps the direction's generation. The movement thread owns all
 // scroll timing and emission, so the hook only records the press and wakes it.
@@ -891,7 +901,16 @@ static void scroll_end_press(BOOL shift, BOOL armed, BOOL auto_target)
     DWORD now = GetTickCount();
 
     if (shift) {
-        scroll_press(ACT_FAST_DOWN, auto_target, TRUE);
+        // Browsers read Shift with GetKeyState and turn Shift + wheel into
+        // sideways scrolling. Wait for Shift to come up instead of injecting
+        // a fake Shift up/down, which could leave it stuck.
+        if (s_down[VK_LSHIFT] || s_down[VK_RSHIFT]) {
+            s_end_shift = TRUE;
+            s_end_shift_auto = auto_target;
+            s_end_shift_tick = now;
+        } else {
+            scroll_press(ACT_FAST_DOWN, auto_target, TRUE);
+        }
     } else if (armed && (DWORD)(now - s_end_tap_tick) <=
                             (DWORD)g_cfg.scroll_end_tap_ms) {
         scroll_press(ACT_FAST_UP, auto_target, TRUE);
@@ -899,6 +918,22 @@ static void scroll_end_press(BOOL shift, BOOL armed, BOOL auto_target)
         s_end_tap = TRUE;
         s_end_tap_tick = now;
     }
+}
+
+// The last Shift came up: send the bottom jump held back for it. A stale one
+// is dropped.
+static void scroll_end_shift_up(void)
+{
+    DWORD now;
+
+    if (!s_end_shift)
+        return;
+    if (s_down[VK_LSHIFT] || s_down[VK_RSHIFT])
+        return;
+    s_end_shift = FALSE;
+    now = GetTickCount();
+    if ((DWORD)(now - s_end_shift_tick) <= SCROLL_END_SHIFT_MS)
+        scroll_press(ACT_FAST_DOWN, s_end_shift_auto, TRUE);
 }
 
 static void left_press_key(void)
@@ -1290,9 +1325,10 @@ static BOOL handle_down(UINT vk)
     BOOL shift;
     BOOL bare;
 
-    // Any key ends a pending g g (a second g is armed by end_tap); modifiers
-    // never reach here.
+    // Any key ends a pending g g (a second g is armed by end_tap) and drops a
+    // bottom jump still waiting for Shift; modifiers never reach here.
     s_end_tap = FALSE;
+    s_end_shift = FALSE;
 
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1517,6 +1553,10 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
     if (!s_down[vk])
         return FALSE;
     s_down[vk] = 0;
+    // The app gets this Shift up before the wheel events queued after it, so
+    // the bottom jump can go out now.
+    if (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT)
+        scroll_end_shift_up();
     if (s_sc_active && (vk == VK_LMENU || vk == VK_RMENU))
         shortcut_end();
     return handle_up(vk);
@@ -1553,6 +1593,7 @@ static void reset_key_state(void)
     s_alt_consumed = FALSE;
     s_alt_scan = 0;
     s_alt_extended = FALSE;
+    s_end_shift = FALSE;
     shortcut_reset();
 }
 

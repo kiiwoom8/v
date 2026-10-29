@@ -45,6 +45,9 @@ is read-only), and reloads that file as soon as you save it.
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. Hotkeys are configurable in `vim.ini`.
 
+The bottom jump (`Shift+g`) starts once you release Shift, so browsers do not
+turn it into sideways scrolling.
+
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
 Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
