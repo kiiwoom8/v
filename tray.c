@@ -815,10 +815,11 @@ static void build_help_rows(void)
         _snwprintf(buf, 127, L"Alt + %s / %s", k1, k2);
         buf[127] = L'\0';
         help_add_row(buf, L"Fast scroll up / down");
-        if (g_cfg.scroll_end_tap_ms > 0) {
-            _snwprintf(buf, 127, L"Alt + %s %s / %s %s", k1, k1, k2, k2);
+        if (g_cfg.key_scroll_end && g_cfg.scroll_end_tap_ms > 0) {
+            format_key(g_cfg.key_scroll_end, k1, 16);
+            _snwprintf(buf, 127, L"Alt + %s %s / Alt + Shift + %s", k1, k1, k1);
             buf[127] = L'\0';
-            help_add_row(buf, L"Top / bottom (tap twice)");
+            help_add_row(buf, L"Scroll to the top / bottom");
         }
     }
     if (g_cfg.bare_keys &&
@@ -844,6 +845,12 @@ static void build_help_rows(void)
     help_add_key(g_cfg.key_scroll_down, L"Scroll down");
     help_add_key(g_cfg.key_scroll_left, L"Scroll left");
     help_add_key(g_cfg.key_scroll_right, L"Scroll right");
+    if (g_cfg.key_scroll_end && g_cfg.scroll_end_tap_ms > 0) {
+        format_key(g_cfg.key_scroll_end, mode, 64);
+        _snwprintf(buf, 127, L"%s %s / Shift + %s", mode, mode, mode);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Scroll to the top / bottom");
+    }
     help_add_key(g_cfg.key_hints, L"Click hints (mouse mode stays on)");
     help_add_key(g_cfg.key_help, L"This help window (also ?)");
     format_key(g_cfg.key_exit, mode, 64);

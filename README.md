@@ -33,7 +33,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+h` / `Alt+l` | Go back / forward (sent as `Alt+Left` / `Alt+Right`: browsers, Explorer, VS Code and most apps) |
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
-| `Alt+u u` / `Alt+d d` | Scroll to the top / bottom (two quick taps) |
+| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
@@ -48,10 +48,10 @@ UPPERCASE text. Hotkeys are configurable in `vim.ini`.
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
 Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
-`u` / `d` scroll fast (`u u` / `d d` to the top / bottom) and `,` / `.` scroll
-sideways. In a text field (an address bar, a search box, a chat box, a
-document, a terminal) those letters type as usual and the keys need Alt as
-before. A focused link, button, checkbox, dropdown or list counts as outside a
+`u` / `d` scroll fast, `g g` / `Shift+g` scroll to the top / bottom and `,` /
+`.` scroll sideways. In a text field (an address bar, a search box, a chat
+box, a document, a terminal) those letters type as usual and the keys need Alt
+as before. A focused link, button, checkbox, dropdown or list counts as outside a
 text field; tooltips and Chrome's link preview bubble do not count as an open
 menu. vim mouse asks UI Automation where the focus is after every focus
 change; while it is not sure (right after a click, in a game or a remote
@@ -99,6 +99,7 @@ a pass-through modifier.
 | `v` | Press and hold the left button (drag/select); `v` or `a` again releases |
 | `u` / `d` | Scroll up / down (tap = one notch, hold = continuous, accelerating) |
 | `,` / `.` | Scroll left / right |
+| `g g` / `Shift+g` | Scroll to the top (two quick taps) / bottom |
 | `f` | Click hints (mouse mode stays on afterwards) |
 | `/` or `?` | Help window |
 | `i`, `Esc`, `CapsLock` tap | Leave mouse mode |
@@ -177,7 +178,7 @@ text works, including Korean and other non-Latin scripts, and several lines.
 - While Alt is held, `Backspace` removes the last typed letter and `Esc` (or
   any key that is not a letter or digit) cancels; nothing is typed then.
 - A shortcut only starts when its first letter is not already an Alt key of
-  vim mouse: `Alt+F` (hints) and the Alt scroll keys (`h j k l u d`) keep
+  vim mouse: `Alt+F` (hints) and the Alt scroll keys (`h j k l u d g`) keep
   their meaning, so abbreviations should not start with those letters. Letters
   after the first can be anything.
 - Alt plus a letter that starts no abbreviation reaches the app as usual (menu
@@ -228,16 +229,17 @@ ones:
   precision" settings do not change it)
 - `scroll_speed`, `scroll_max_speed`, `smooth_scroll` (1 = small steps once
   per display frame, default; 0 = whole notches only)
-- `alt_scroll` (1 = Alt + `jk` scroll, Alt + `hl` back / forward and Alt +
-  `u`/`d` fast scroll anywhere), `alt_scroll_auto` (1 = scroll the nearest
-  scrollable area in line with the pointer when it is not over one),
+- `alt_scroll` (1 = Alt + `jk` scroll, Alt + `hl` back / forward, Alt +
+  `u`/`d` fast scroll and Alt + `g g` / Alt + `Shift+g` top / bottom
+  anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area in
+  line with the pointer when it is not over one),
   `alt_nav` (1 = Alt + `h`/`l` go back / forward and Alt + `,`/`.` scroll
   sideways, default; 0 = Alt + `h`/`l` scroll sideways),
   `bare_keys` (1 = outside text fields the Alt keys work without Alt,
   default; 0 = always Alt), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held),
-  `scroll_end_tap_ms` (two Alt + `u` / Alt + `d` taps within this many ms
-  scroll to the top / bottom, 0-1000, default 300; 0 = off)
+  `scroll_end_tap_ms` (two `g` taps within this many ms scroll to the top,
+  0-1000, default 300; 0 = `g g` and `Shift+g` off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for every window's elements before showing the ones
@@ -253,7 +255,8 @@ ones:
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,
-  `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_hints`,
+  `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_scroll_end`
+  (`g`: tap twice for the top, with Shift for the bottom), `key_hints`,
   `key_exit`, `key_help` remaps
 - `indicator`, `log`
 - `shortcut_method` (`paste` or `type`: how text shortcuts insert their text)
@@ -297,18 +300,19 @@ Left- or right-click the tray icon:
   `mingw32-make check` builds `tools\hint_check.exe` and
   `node tools\hint_check.mjs [url ...]` opens each page in a separate Chrome
   profile and lists the clickable elements the scan misses, with the reason.
-- **An app's Alt+H/J/K/L/U/D/,/. shortcut no longer works.** vim mouse uses
+- **An app's Alt+H/J/K/L/U/D/G/,/. shortcut no longer works.** vim mouse uses
   those for scrolling and back / forward; set `alt_scroll = 0` in `vim.ini` to
   give them back.
 - **A letter such as `j` or `f` does not reach an app.** Outside text fields
-  vim mouse takes `f h j k l u d , .` without Alt (YouTube's `j k l f`, for
-  example). Click into a text field to type them, or set `bare_keys = 0`.
+  vim mouse takes `f h j k l u d g , .` and `Shift+g` without Alt (YouTube's
+  `j k l f`, for example). Click into a text field to type them, or set
+  `bare_keys = 0`.
 - **A letter scrolls or goes back instead of typing.** vim mouse did not
   recognise that text field. With `log = 1`, `vim.log` shows what it decided
   after each focus change ("focus: text field" or "focus: no text field").
   `bare_keys = 0` turns the Alt-less keys off.
 - **A text shortcut types nothing.** Its first letter may be an Alt key of vim
-  mouse (`f h j k l u d` by default); the editor warns about this when you
+  mouse (`f h j k l u d g` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either
   (see above).
 - **I need the real CapsLock.** vim mouse intercepts CapsLock; use

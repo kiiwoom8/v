@@ -137,6 +137,8 @@ static BOOL first_key_taken(WCHAR first)
     }
     if (!g_cfg.alt_scroll)
         return FALSE;
+    if (vk == g_cfg.key_scroll_end && g_cfg.scroll_end_tap_ms > 0)
+        return TRUE;
     return vk == g_cfg.key_left || vk == g_cfg.key_down ||
            vk == g_cfg.key_up || vk == g_cfg.key_right ||
            vk == g_cfg.key_scroll_up || vk == g_cfg.key_scroll_down;

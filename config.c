@@ -562,6 +562,7 @@ void config_set_defaults(Config *c)
     parse_key(L"d", &c->key_scroll_down);
     parse_key(L",", &c->key_scroll_left);
     parse_key(L".", &c->key_scroll_right);
+    parse_key(L"g", &c->key_scroll_end);
     parse_key(L"f", &c->key_hints);
     parse_key(L"i", &c->key_exit);
     parse_key(L"/", &c->key_help);
@@ -849,6 +850,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_key(&c->key_scroll_left, line, key, val);
     else if (_wcsicmp(key, L"key_scroll_right") == 0)
         apply_key(&c->key_scroll_right, line, key, val);
+    else if (_wcsicmp(key, L"key_scroll_end") == 0)
+        apply_key(&c->key_scroll_end, line, key, val);
     else if (_wcsicmp(key, L"key_hints") == 0)
         apply_key(&c->key_hints, line, key, val);
     else if (_wcsicmp(key, L"key_exit") == 0)
@@ -1427,7 +1430,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; 0 = only whole notches, for apps that treat each wheel message as one.\r\n");
     appendf(buf, cch, L"smooth_scroll = %d\r\n", d.smooth_scroll ? 1 : 0);
     appendf(buf, cch, L"; 1 = Alt + the move keys (h j k l) scroll anywhere, also outside mouse\r\n");
-    appendf(buf, cch, L"; mode, and Alt + the scroll up/down keys (u d) scroll fast.\r\n");
+    appendf(buf, cch, L"; mode, Alt + the scroll up/down keys (u d) scroll fast and Alt + g g /\r\n");
+    appendf(buf, cch, L"; Alt + Shift + g go to the top / bottom.\r\n");
     appendf(buf, cch, L"alt_scroll = %d\r\n", d.alt_scroll ? 1 : 0);
     appendf(buf, cch, L"; 1 = Alt scrolling finds the scrollable area nearest to the pointer\r\n");
     appendf(buf, cch, L"; (when the pointer is not over one) and scrolls that. Within the window\r\n");
@@ -1438,7 +1442,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; right instead. 0 = Alt + h / Alt + l scroll left / right.\r\n");
     appendf(buf, cch, L"alt_nav = %d\r\n", d.alt_nav ? 1 : 0);
     appendf(buf, cch, L"; 1 = when the keyboard focus is not in a text field, the Alt keys also\r\n");
-    appendf(buf, cch, L"; work without Alt: f opens the hints, h j k l u d , . scroll and go\r\n");
+    appendf(buf, cch, L"; work without Alt: f opens the hints, h j k l u d , . g scroll and go\r\n");
     appendf(buf, cch, L"; back / forward. In a text field they need Alt and type as usual.\r\n");
     appendf(buf, cch, L"bare_keys = %d\r\n", d.bare_keys ? 1 : 0);
     appendf(buf, cch, L"; Notches per Alt + u / Alt + d tap (1-50), and the speeds while held.\r\n");
@@ -1447,8 +1451,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"fast_scroll_speed = %ls\r\n", num);
     fmt_double(d.fast_scroll_max_speed, num, sizeof(num) / sizeof(num[0]));
     appendf(buf, cch, L"fast_scroll_max_speed = %ls\r\n", num);
-    appendf(buf, cch, L"; Alt + u u / Alt + d d (two taps within this many ms) scroll to the\r\n");
-    appendf(buf, cch, L"; top / bottom; 0 = off.\r\n");
+    appendf(buf, cch, L"; Alt + g g (two taps within this many ms) scrolls to the top and\r\n");
+    appendf(buf, cch, L"; Alt + Shift + g to the bottom, also without Alt outside text fields\r\n");
+    appendf(buf, cch, L"; and in mouse mode; 0 = both off.\r\n");
     appendf(buf, cch, L"scroll_end_tap_ms = %d\r\n", d.scroll_end_tap_ms);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
@@ -1470,6 +1475,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
                  d.key_scroll_left);
     add_key_line(buf, cch, L"Scroll right.", L"key_scroll_right",
                  d.key_scroll_right);
+    add_key_line(buf, cch, L"Scroll to the top (tap twice) / bottom (with Shift).",
+                 L"key_scroll_end", d.key_scroll_end);
     add_key_line(buf, cch, L"Open the click hints.", L"key_hints",
                  d.key_hints);
     add_key_line(buf, cch, L"Leave mouse mode (Esc and CapsLock also leave it).",

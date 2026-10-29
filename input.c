@@ -109,7 +109,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // Scroll speed ramps from its base toward its maximum after this delay. A tap
 // still delivers at least one notch (fast_scroll_lines notches for the fast keys).
 #define SCROLL_HOLD_DELAY_MS 150.0
-// A double tap glides to the end instead of jumping: its fast stream starts at
+// g g / Shift + g glide to the end instead of jumping: the fast stream starts at
 // fast_scroll_speed and grows exponentially with this time constant. The exact
 // distance delivered after t is v0 * tau * (e^(t/tau) - 1); it stops once it
 // reaches SCROLL_JUMP_UNITS, 64 of the largest signed 16-bit wheel deltas.
@@ -139,7 +139,7 @@ enum {
     ACT_FAST_UP, ACT_FAST_DOWN,
     ACT_LEFT, ACT_CLICK_RIGHT, ACT_CLICK_MIDDLE, ACT_TOGGLE,
     ACT_HINTS, ACT_EXIT, ACT_HELP,
-    ACT_BACK, ACT_FORWARD
+    ACT_BACK, ACT_FORWARD, ACT_SCROLL_END
 };
 
 enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS, OWN_ALT_HELD };
@@ -160,10 +160,10 @@ static volatile LONG s_scroll_flags = 0;
 static volatile LONG s_scroll_auto = 0;
 static volatile LONG s_scroll_pending = 0;
 static volatile LONG s_target_gen = 0;
-// A double tap of an Alt fast-scroll key goes to the end of the page instead
-// of scrolling another step. With smooth scrolling the movement thread glides
-// there on that direction's fast stream; without it, it sends the whole jump at
-// once. The bit marks the press and is cleared when the thread starts it.
+// g g goes to the top of the page and Shift + g to the bottom. With smooth
+// scrolling the movement thread glides there on that direction's fast stream;
+// without it, it sends the whole jump at once. The bit marks the press and is
+// cleared when the thread starts it.
 static volatile LONG s_scroll_jump = 0;
 static volatile LONG s_move_exit = 0;
 
@@ -182,10 +182,10 @@ static BOOL s_alt_consumed = FALSE;
 static UINT s_alt_scan = 0;
 static BOOL s_alt_extended = FALSE;
 
-// Last Alt fast-scroll tap. A second press of the same key within
-// scroll_end_tap_ms jumps to the end; any other key starts over.
-static int   s_tap_act = ACT_NONE;
-static DWORD s_tap_tick = 0;
+// The last key was a lone g. A second g within scroll_end_tap_ms goes to the
+// top; any other key starts over.
+static BOOL  s_end_tap = FALSE;
+static DWORD s_end_tap_tick = 0;
 
 // A press bumps the direction's generation. The movement thread owns all
 // scroll timing and emission, so the hook only records the press and wakes it.
@@ -762,6 +762,9 @@ static int binding_action(UINT vk)
         return ACT_SCROLL_LEFT;
     if (g_cfg.key_scroll_right && vk == g_cfg.key_scroll_right)
         return ACT_SCROLL_RIGHT;
+    if (g_cfg.key_scroll_end && vk == g_cfg.key_scroll_end &&
+        g_cfg.scroll_end_tap_ms > 0)
+        return ACT_SCROLL_END;
     if (g_cfg.key_left_button && vk == g_cfg.key_left_button)
         return ACT_LEFT;
     if (g_cfg.key_right_click && vk == g_cfg.key_right_click)
@@ -850,7 +853,7 @@ static DWORD qpc_us_from(LARGE_INTEGER counter, LARGE_INTEGER freq)
 }
 
 // auto_target: Alt scrolling, which finds the nearest scrollable area first.
-// jump: the second tap of a double tap, which scrolls to the end instead of
+// jump: g g or Shift + g, which scrolls to the top / bottom instead of
 // starting a stream; it is not held.
 // Only record the press here; the movement thread does all timing and emission.
 static void scroll_press(int act, BOOL auto_target, BOOL jump)
@@ -878,6 +881,24 @@ static void scroll_release(int act)
 {
     int idx = act - ACT_SCROLL_UP;
     atomic_and(&s_scroll_flags, ~(LONG)(1 << idx));
+}
+
+// g g goes to the top and Shift + g to the bottom, as a jump on the fast up /
+// down stream. A lone g only waits for the second; armed: the key right before
+// was one.
+static void scroll_end_press(BOOL shift, BOOL armed, BOOL auto_target)
+{
+    DWORD now = GetTickCount();
+
+    if (shift) {
+        scroll_press(ACT_FAST_DOWN, auto_target, TRUE);
+    } else if (armed && (DWORD)(now - s_end_tap_tick) <=
+                            (DWORD)g_cfg.scroll_end_tap_ms) {
+        scroll_press(ACT_FAST_UP, auto_target, TRUE);
+    } else {
+        s_end_tap = TRUE;
+        s_end_tap_tick = now;
+    }
 }
 
 static void left_press_key(void)
@@ -987,8 +1008,9 @@ static void apply_action_down(int act)
 }
 
 // Alt + a move key scrolls that way, anywhere; Alt + the scroll up/down
-// keys scroll fast. With alt_nav, Alt + left / right go back / forward
-// instead and the side scroll keys scroll sideways.
+// keys scroll fast and Alt + the scroll-end key goes to the top / bottom.
+// With alt_nav, Alt + left / right go back / forward instead and the side
+// scroll keys scroll sideways.
 static int alt_key_action(UINT vk)
 {
     if (!g_cfg.alt_scroll)
@@ -1010,6 +1032,9 @@ static int alt_key_action(UINT vk)
         return ACT_FAST_UP;
     if (g_cfg.key_scroll_down && vk == g_cfg.key_scroll_down)
         return ACT_FAST_DOWN;
+    if (g_cfg.key_scroll_end && vk == g_cfg.key_scroll_end &&
+        g_cfg.scroll_end_tap_ms > 0)
+        return ACT_SCROLL_END;
     return ACT_NONE;
 }
 
@@ -1259,13 +1284,15 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
 static BOOL handle_down(UINT vk)
 {
     UINT mods = current_mods();
+    UINT base;
     int act;
-    int tap_prev = s_tap_act;
+    BOOL end_tap = s_end_tap;
+    BOOL shift;
     BOOL bare;
 
-    // Any key save the same Alt fast-scroll key ends a pending double tap;
-    // modifiers never reach here.
-    s_tap_act = ACT_NONE;
+    // Any key ends a pending g g (a second g is armed by end_tap); modifiers
+    // never reach here.
+    s_end_tap = FALSE;
 
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1286,8 +1313,13 @@ static BOOL handle_down(UINT vk)
         s_owner[vk] = OWN_PASS;
         return FALSE;
     }
+    // Shift goes along only with the scroll-end key (Shift + g: bottom); the
+    // other Alt keys take Alt alone.
+    act = alt_key_action(vk);
+    shift = act == ACT_SCROLL_END && (mods & KMOD_SHIFT);
+    base = shift ? mods & ~KMOD_SHIFT : mods;
     // Outside text fields the Alt keys below work without Alt.
-    bare = mods == 0 && bare_key_ok(vk);
+    bare = base == 0 && bare_key_ok(vk);
     if (bare && bare_hint_key(vk)) {
         s_owner[vk] = OWN_SWALLOW;
         hint_hotkey_fire();
@@ -1295,8 +1327,7 @@ static BOOL handle_down(UINT vk)
     }
     // Alt + letter reaches the app with Alt already down; the mask key keeps
     // the Alt release from opening its menu bar.
-    if (mods == KMOD_ALT || bare) {
-        act = alt_key_action(vk);
+    if (base == KMOD_ALT || bare) {
         if (act == ACT_BACK || act == ACT_FORWARD) {
             // One step per press: repeats are swallowed.
             mark_caps_used();
@@ -1304,26 +1335,22 @@ static BOOL handle_down(UINT vk)
             send_nav(act == ACT_FORWARD, !bare);
             return TRUE;
         }
+        if (act == ACT_SCROLL_END) {
+            // Not held: repeats are swallowed and never make a g g.
+            if (!bare)
+                send_mask_key();
+            mark_caps_used();
+            s_owner[vk] = OWN_SWALLOW;
+            scroll_end_press(shift, end_tap, g_cfg.alt_scroll_auto);
+            return TRUE;
+        }
         if (act != ACT_NONE) {
-            BOOL jump = FALSE;
-            DWORD now = GetTickCount();
-
-            if (act == ACT_FAST_UP || act == ACT_FAST_DOWN) {
-                if (g_cfg.scroll_end_tap_ms > 0 && tap_prev == act &&
-                    (DWORD)(now - s_tap_tick) <=
-                        (DWORD)g_cfg.scroll_end_tap_ms) {
-                    jump = TRUE;
-                } else if (g_cfg.scroll_end_tap_ms > 0) {
-                    s_tap_act = act;
-                    s_tap_tick = now;
-                }
-            }
             if (!bare)
                 send_mask_key();
             mark_caps_used();
             s_action[vk] = (unsigned char)act;
             s_owner[vk] = OWN_MOVE;
-            scroll_press(act, g_cfg.alt_scroll_auto, jump);
+            scroll_press(act, g_cfg.alt_scroll_auto, FALSE);
             return TRUE;
         }
         if (!bare && shortcut_begin(vk)) {
@@ -1351,6 +1378,13 @@ static BOOL handle_down(UINT vk)
             return TRUE;
         }
         act = binding_action(vk);
+        if (act == ACT_SCROLL_END) {
+            // Like the other mouse-mode scroll keys, under the cursor.
+            mark_caps_used();
+            s_owner[vk] = OWN_SWALLOW;
+            scroll_end_press((mods & KMOD_SHIFT) != 0, end_tap, FALSE);
+            return TRUE;
+        }
         if (act != ACT_NONE) {
             mark_caps_used();
             s_action[vk] = (unsigned char)act;
@@ -2152,8 +2186,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                             continue;
                         }
                         // Smooth: glide on this direction's fast stream from
-                        // wherever the first tap left the axis, while the
-                        // other vertical streams stop.
+                        // wherever the axis is, while the other vertical
+                        // streams stop.
                         scrActive[0] = scrActive[1] = 0;
                         scrActive[idx == 4 ? 5 : 4] = 0;
                         scrActive[idx] = 1;

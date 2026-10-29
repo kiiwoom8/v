@@ -109,8 +109,8 @@ typedef struct {
     int    bare_keys;          // 1 = outside text fields the Alt keys (hint hotkey, Alt
                                // scrolling, back / forward) work without Alt; default 1
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
-    int    scroll_end_tap_ms;  // Alt + u u / Alt + d d within this many ms jump
-                               // to the top / bottom, default 300 (0 = off)
+    int    scroll_end_tap_ms;  // Alt + g g within this many ms goes to the top (Alt +
+                               // Shift + g to the bottom), default 300 (0 = both off)
     double fast_scroll_speed;  // Alt + u/d held, default 3600
     double fast_scroll_max_speed; // default 14400
     UINT key_left, key_down, key_up, key_right;          // h j k l
@@ -122,6 +122,7 @@ typedef struct {
     UINT key_scroll_down;      // d
     UINT key_scroll_left;      // ,
     UINT key_scroll_right;     // .
+    UINT key_scroll_end;       // g  (g g = top, Shift + g = bottom)
     UINT key_hints;            // f  (open click hints)
     UINT key_exit;             // i  (leave mouse mode; Esc always works too)
     UINT key_help;             // /  (also shown as ?)
