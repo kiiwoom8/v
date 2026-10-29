@@ -2331,7 +2331,12 @@ void uia_cancel(void)
 #define SCROLL_CACHE_ROOTS 8
 #define SCROLL_STALE_MS 10000   // older than this: refresh and wait
 #define SCROLL_FRESH_MS 1000    // older than this: refresh in the background
+#define SCROLL_STALE_WAIT_MS 150 // how long a stale list waits for its refresh
 #define SCROLL_SIDE_REACH 64    // px a redirect may reach across the scroll
+#define SCROLL_WARM_MS 8000     // keep the cache warm this long after a press
+#define SCROLL_WARM_POLL_MS 700 // how often the idle worker warms it
+#define SCROLL_WARM_REFRESH_MS 600 // a hotter list is still fresh next press
+#define SCROLL_ENGINE_RETRY_MS 5000 // retry a failed engine this often
 
 typedef struct {
     RECT rc;
@@ -2359,6 +2364,7 @@ static HANDLE g_sc_wake;
 static CRITICAL_SECTION g_sc_cs;
 static volatile LONG g_sc_state;      // 0 = off, 1 = starting, 2 = running, 3 = failed
 static volatile LONG g_sc_quit;
+static volatile LONG g_sc_last_use;   // tick of the last uia_scroll_target call
 static ScrollCache g_sc_cache[SCROLL_CACHE_ROOTS];
 
 // The refresh request for the worker: one at a time, latest pending root wins.
@@ -2676,29 +2682,83 @@ static BOOL scroll_engine_init(IUIAutomation **automation,
     return FALSE;
 }
 
+static HWND scroll_root_for(POINT pt);
+
 static DWORD WINAPI scroll_worker(void *arg)
 {
     IUIAutomation *automation = NULL;
     IUIAutomationCondition *condition = NULL;
     IUIAutomationCacheRequest *cache = NULL;
     HRESULT hr;
-    BOOL ready;
+    BOOL ready, com_ready;
+    DWORD last_engine_try;
     (void)arg;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (hr == S_OK || hr == S_FALSE) {
+    com_ready = hr == S_OK || hr == S_FALSE;
+    if (com_ready) {
         engine_lock();
         ready = scroll_engine_init(&automation, &condition, &cache);
         engine_unlock();
     } else {
         ready = FALSE;
     }
+    last_engine_try = GetTickCount();
 
-    while (WaitForSingleObject(g_sc_wake, INFINITE) == WAIT_OBJECT_0 &&
-           !InterlockedCompareExchange(&g_sc_quit, 0, 0)) {
+    for (;;) {
+        DWORD now = GetTickCount();
+        DWORD wait_ms, woke;
         ScrollArea *items = NULL;
         int count = 0, cap = 0;
         HWND root;
+
+        // While the user has been scrolling lately, wake up now and then and
+        // refresh the list under the pointer, so the next press finds a fresh
+        // one instead of waiting for a full UI Automation search.
+        wait_ms = (DWORD)(now - (DWORD)InterlockedCompareExchange(
+                              &g_sc_last_use, 0, 0)) < SCROLL_WARM_MS
+                      ? SCROLL_WARM_POLL_MS
+                      : INFINITE;
+        woke = WaitForSingleObject(g_sc_wake, wait_ms);
+        if (woke != WAIT_OBJECT_0 && woke != WAIT_TIMEOUT)
+            break;
+        if (woke == WAIT_TIMEOUT) {
+            POINT pt;
+            HWND warm_root;
+
+            if (InterlockedCompareExchange(&g_sc_quit, 0, 0))
+                break;
+            if (!GetCursorPos(&pt))
+                continue;
+            // scroll_root_for makes no UI Automation calls, so it is fine on
+            // this thread, but everything shared stays under the lock.
+            warm_root = scroll_root_for(pt);
+            if (!warm_root)
+                continue;
+            now = GetTickCount();
+            EnterCriticalSection(&g_sc_cs);
+            {
+                ScrollCache *e = scroll_cache_find(warm_root);
+
+                if (e) {
+                    e->last_used = now;
+                    // A list this young is still fresh at the next press.
+                    if (!e->refreshing &&
+                        !(e->valid && (DWORD)(now - e->tick) <
+                          SCROLL_WARM_REFRESH_MS))
+                        scroll_queue_locked(warm_root, now);
+                } else {
+                    e = scroll_cache_alloc(warm_root, now);
+                    if (e)
+                        scroll_queue_locked(warm_root, now);
+                }
+            }
+            LeaveCriticalSection(&g_sc_cs);
+            continue;
+        }
+        if (InterlockedCompareExchange(&g_sc_quit, 0, 0))
+            break;
+        now = GetTickCount();
 
         EnterCriticalSection(&g_sc_cs);
         root = g_sc_req_pending ? g_sc_req_root : NULL;
@@ -2708,6 +2768,15 @@ static DWORD WINAPI scroll_worker(void *arg)
         if (!root)
             continue;
 
+        // An engine that failed to be created (several at once is enough) is
+        // retried now and then; until then auto-targeting has no list.
+        if (!ready && com_ready &&
+            (DWORD)(now - last_engine_try) >= SCROLL_ENGINE_RETRY_MS) {
+            engine_lock();
+            ready = scroll_engine_init(&automation, &condition, &cache);
+            engine_unlock();
+            last_engine_try = now;
+        }
         if (ready)
             scroll_collect(automation, condition, cache, root,
                            &items, &count, &cap);
@@ -2754,6 +2823,7 @@ static BOOL scroll_worker_init(void)
     g_sc_req_root = NULL;
     g_sc_req_pending = FALSE;
     g_sc_quit = 0;
+    g_sc_last_use = 0;
     g_sc_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (!g_sc_wake) {
         DeleteCriticalSection(&g_sc_cs);
@@ -2834,9 +2904,9 @@ BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
     HWND root;
     ScrollCache *e;
     HANDLE done;
-    DWORD start;
+    DWORD start, wait_ms;
     UINT gen;
-    BOOL redirect;
+    BOOL redirect, stale_answer = FALSE;
 
     root = scroll_root_for(pt);
     if (!root)
@@ -2845,6 +2915,8 @@ BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
         return FALSE;
 
     start = GetTickCount();
+    InterlockedExchange(&g_sc_last_use, (LONG)start);
+    wait_ms = timeout_ms;
     EnterCriticalSection(&g_sc_cs);
     e = scroll_cache_find(root);
     if (e && e->valid &&
@@ -2855,13 +2927,18 @@ BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
             scroll_queue_locked(root, start);
         e->last_used = start;
         redirect = scroll_area_answer(e, pt, vertical, target);
-        // Only a fresh list may send the wheel away from the pointer: the
-        // area under it may be new since (another chat opened in Teams),
-        // and an older list would aim at a side panel instead.
+        // Only a fresh list may send the wheel away from the pointer at
+        // once: the area under it may be new since (another chat opened in
+        // Teams), and an older list would aim at a side panel instead. A
+        // slightly old list that would redirect waits only briefly for its
+        // refresh, then still redirects with what it has: waiting the whole
+        // timeout for a slow search feels far worse than a stale answer.
         if (fresh || !redirect) {
             LeaveCriticalSection(&g_sc_cs);
             return redirect;
         }
+        stale_answer = TRUE;
+        wait_ms = SCROLL_STALE_WAIT_MS;
     }
     if (!e) {
         e = scroll_cache_alloc(root, start);
@@ -2881,8 +2958,8 @@ BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
     for (;;) {
         DWORD elapsed = GetTickCount() - start;
 
-        if (elapsed >= timeout_ms ||
-            WaitForSingleObject(done, timeout_ms - elapsed) != WAIT_OBJECT_0)
+        if (elapsed >= wait_ms ||
+            WaitForSingleObject(done, wait_ms - elapsed) != WAIT_OBJECT_0)
             break;
         EnterCriticalSection(&g_sc_cs);
         e = scroll_cache_find(root);
@@ -2900,8 +2977,12 @@ BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
     e = scroll_cache_find(root);
     if (e && e->waiters > 0)
         --e->waiters;
+    // The refresh missed its short deadline: the stale list's answer, still
+    // better than scrolling under the pointer when it is over another panel.
+    redirect = e && stale_answer &&
+               scroll_area_answer(e, pt, vertical, target);
     LeaveCriticalSection(&g_sc_cs);
-    return FALSE;
+    return redirect;
 }
 
 // Starts caching the scrollable areas of the window under pt. Never waits and
