@@ -551,15 +551,20 @@ void mouse_click_at(POINT pt, int button, int count)
 
 // Menus and flyouts are title-less popups owned by the app's window. The owner
 // test keeps out the taskbar, which lives in explorer.exe above every
-// Explorer window.
+// Explorer window. Tooltips and Chrome's link status bubble are popups too but
+// never take input, so they do not block bare keys.
 static BOOL window_is_popup(HWND hwnd)
 {
     LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    LONG exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
     WCHAR cls[32];
 
     if (!(style & WS_POPUP) || (style & WS_CAPTION) || !GetWindow(hwnd, GW_OWNER))
         return FALSE;
     GetClassNameW(hwnd, cls, 32);
+    if ((exstyle & WS_EX_TRANSPARENT) ||
+        lstrcmpW(cls, L"tooltips_class32") == 0)
+        return FALSE;
     return lstrcmpW(cls, L"Shell_TrayWnd") != 0 &&
            lstrcmpW(cls, L"Shell_SecondaryTrayWnd") != 0;
 }
