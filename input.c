@@ -601,7 +601,9 @@ static BOOL window_cloaked(HWND hwnd)
     return cloaked != 0;
 }
 
-static BOOL popup_open(void)
+// which (may be NULL) gets the window that counts as open: the popup, or the
+// foreground window while it is in menu mode.
+static BOOL popup_open(HWND *which)
 {
 #ifdef INPUT_TEST
     if (s_test_popup_on)
@@ -617,6 +619,8 @@ static BOOL popup_open(void)
     RECT rc;
     int steps;
 
+    if (which)
+        *which = NULL;
     fg = GetForegroundWindow();
     if (fg) {
         tid = GetWindowThreadProcessId(fg, &pid);
@@ -624,15 +628,21 @@ static BOOL popup_open(void)
         gti.cbSize = sizeof(gti);
         if (tid && GetGUIThreadInfo(tid, &gti) &&
             (gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE |
-                          GUI_SYSTEMMENUMODE)))
+                          GUI_SYSTEMMENUMODE))) {
+            if (which)
+                *which = fg;
             return TRUE;
+        }
     }
     if (!fg || pid == 0)
         return FALSE;
 
     root = GetAncestor(fg, GA_ROOT);
-    if (root && window_is_popup(root))
+    if (root && window_is_popup(root)) {
+        if (which)
+            *which = root;
         return TRUE;
+    }
 
     steps = 0;
     w = GetTopWindow(NULL);
@@ -643,8 +653,11 @@ static BOOL popup_open(void)
             GetWindowThreadProcessId(w, &wpid);
             if (wpid == pid && window_is_popup(w) &&
                 GetWindowRect(w, &rc) && !IsRectEmpty(&rc) &&
-                !window_cloaked(w))
+                !window_cloaked(w)) {
+                if (which)
+                    *which = w;
                 return TRUE;
+            }
         }
         w = GetWindow(w, GW_HWNDNEXT);
         steps++;
@@ -1242,18 +1255,68 @@ static BOOL bare_hint_key(UINT vk)
     return g_cfg.hint_hotkey.vk == vk && g_cfg.hint_hotkey.mods == KMOD_ALT;
 }
 
+// With log = 1, says why bare keys work or type as usual, once per change of
+// reason, so an app that looks like a text field can be told apart.
+static void bare_log(int kind, HWND popup)
+{
+    static int  last_kind = -1;
+    static HWND last_popup = NULL;
+    static HWND last_focus = NULL;
+    GUITHREADINFO gti;
+    HWND fg = GetForegroundWindow();
+    HWND focus = fg;
+    WCHAR cls[64], caret_cls[64];
+    DWORD tid;
+
+    ZeroMemory(&gti, sizeof(gti));
+    gti.cbSize = sizeof(gti);
+    tid = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
+    if (tid && GetGUIThreadInfo(tid, &gti) && gti.hwndFocus)
+        focus = gti.hwndFocus;
+    if (kind == last_kind && popup == last_popup && focus == last_focus)
+        return;
+    last_kind = kind;
+    last_popup = popup;
+    last_focus = focus;
+    cls[0] = caret_cls[0] = 0;
+    if (popup) {
+        GetClassNameW(popup, cls, 64);
+        app_log(L"bare keys: off, popup %p (%ls) is open", (void *)popup, cls);
+        return;
+    }
+    if (focus)
+        GetClassNameW(focus, cls, 64);
+    if (gti.hwndCaret)
+        GetClassNameW(gti.hwndCaret, caret_cls, 64);
+    app_log(L"bare keys: %ls, focus %ls in %p (%ls), caret %p (%ls)%ls",
+            kind == FOCUS_OTHER ? L"on" : L"off",
+            kind == FOCUS_TEXT ? L"text field" :
+            kind == FOCUS_OTHER ? L"no text field" : L"unknown",
+            (void *)focus, cls, (void *)gti.hwndCaret, caret_cls,
+            (gti.flags & GUI_CARETBLINKING) ? L" blinking" : L"");
+}
+
 // Checked only for an unmodified press of one of those keys. Anything not
 // known to be outside a text field (still asking, a menu open) types as usual.
 static BOOL bare_key_ok(UINT vk)
 {
+    HWND popup = NULL;
+    int kind;
+
     if (!g_cfg.bare_keys || flag_get(&s_mouse_mode))
         return FALSE;
     if (!bare_hint_key(vk) && alt_key_action(vk) == ACT_NONE)
         return FALSE;
     // No wait while a menu is open; otherwise give a pending answer a moment.
-    if (popup_open())
+    if (popup_open(&popup)) {
+        if (g_cfg.log)
+            bare_log(FOCUS_UNKNOWN, popup);
         return FALSE;
-    return uia_focus_wait(BARE_WAIT_MS) == FOCUS_OTHER;
+    }
+    kind = uia_focus_wait(BARE_WAIT_MS);
+    if (g_cfg.log)
+        bare_log(kind, NULL);
+    return kind == FOCUS_OTHER;
 }
 
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
@@ -1281,7 +1344,7 @@ static BOOL alt_should_withhold(void)
     // and the overlay still needs Alt hidden so its keys arrive intact.
     if (flag_get(&s_capture))
         return TRUE;
-    return !flag_get(&s_paused) && popup_open();
+    return !flag_get(&s_paused) && popup_open(NULL);
 }
 
 // The app never saw Alt, so hotkeys act without the 0xE8 menu mask.

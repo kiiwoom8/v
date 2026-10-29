@@ -33,7 +33,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+h` / `Alt+l` | Go back / forward (sent as `Alt+Left` / `Alt+Right`: browsers, Explorer, VS Code and most apps) |
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
-| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom |
+| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (once Shift is released, so browsers do not scroll sideways) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
@@ -44,9 +44,6 @@ is read-only), and reloads that file as soon as you save it.
 
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. Hotkeys are configurable in `vim.ini`.
-
-The bottom jump (`Shift+g`) starts once you release Shift, so browsers do not
-turn it into sideways scrolling.
 
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
@@ -310,6 +307,10 @@ Left- or right-click the tray icon:
   vim mouse takes `f h j k l u d g , .` and `Shift+g` without Alt (YouTube's
   `j k l f`, for example). Click into a text field to type them, or set
   `bare_keys = 0`.
+- **A letter types instead of scrolling outside a text field.** With
+  `log = 1`, `vim.log` says why on the first such key ("bare keys: off, popup
+  ... is open" or "bare keys: off, focus text field in ..." with the window
+  class and any caret).
 - **A letter scrolls or goes back instead of typing.** vim mouse did not
   recognise that text field. With `log = 1`, `vim.log` shows what it decided
   after each focus change ("focus: text field" or "focus: no text field").
