@@ -51,7 +51,9 @@ Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
 `u` / `d` scroll fast (`u u` / `d d` to the top / bottom) and `,` / `.` scroll
 sideways. In a text field (an address bar, a search box, a chat box, a
 document, a terminal) those letters type as usual and the keys need Alt as
-before. vim mouse asks UI Automation where the focus is after every focus
+before. A focused link, button, checkbox, dropdown or list counts as outside a
+text field; tooltips and Chrome's link preview bubble do not count as an open
+menu. vim mouse asks UI Automation where the focus is after every focus
 change; while it is not sure (right after a click, in a game or a remote
 desktop, with a menu open) the letters type as usual. A key pressed while it
 is still asking waits up to 0.1 s for the answer instead of typing at once.

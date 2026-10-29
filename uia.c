@@ -74,6 +74,9 @@
 #ifndef UIA_ListItemControlTypeId
 #define UIA_ListItemControlTypeId 50007
 #endif
+#ifndef UIA_ListControlTypeId
+#define UIA_ListControlTypeId 50008
+#endif
 #ifndef UIA_MenuItemControlTypeId
 #define UIA_MenuItemControlTypeId 50011
 #endif
@@ -3226,6 +3229,11 @@ static int focus_element_kind(IUIAutomationElement *el)
     if (cached_bool_property(el, UIA_IsPasswordPropertyId))
         return FOCUS_TEXT;
     if (control_takes_no_text(ct))
+        return FOCUS_OTHER;
+    // A closed dropdown or a list box picks an item with letters but takes no
+    // text; an editable combobox has the Text pattern.
+    if ((ct == UIA_ComboBoxControlTypeId || ct == UIA_ListControlTypeId) &&
+        !cached_bool_property(el, UIA_IsTextPatternAvailablePropertyId))
         return FOCUS_OTHER;
     value = cached_bool_property(el, UIA_IsValuePatternAvailablePropertyId);
     value_ro = value &&
