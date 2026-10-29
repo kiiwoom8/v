@@ -2110,6 +2110,8 @@ static void finalize_scan(void)
     memcpy(g_targets, list->items, (size_t)n * sizeof(*g_targets));
     g_target_count = n;
     free(list);
+    app_log(L"hint: %d targets after %lu ms", n,
+            (unsigned long)(GetTickCount() - g_scan_t0));
 
     qsort(g_targets, (size_t)n, sizeof(*g_targets), target_cmp);
 
@@ -2434,6 +2436,7 @@ void hint_open(void)
     input_set_key_capture(TRUE);
 
     if (!g_hint_wnd) {
+        app_log(L"hint: no overlay window; not opening");
         discard_prescan();
         input_set_key_capture(FALSE);
         return;
@@ -2442,6 +2445,8 @@ void hint_open(void)
     mon = cursor_monitor();
 
     mode = g_cfg.hint_mode;
+    app_log(L"hint: open (%ls)",
+            mode == HINT_MODE_GRID ? L"grid" : L"elements");
     // Without UI Automation there is nothing to label; the grid only opens
     // when hint_mode = grid asks for it.
     if (mode == HINT_MODE_ELEMENTS && !uia_available()) {
@@ -2452,6 +2457,7 @@ void hint_open(void)
     }
 
     if (!open_overlay(mon, mode, mode != HINT_MODE_ELEMENTS)) {
+        app_log(L"hint: the overlay could not be shown");
         g_open = FALSE;
         discard_prescan();
         input_set_key_capture(FALSE);

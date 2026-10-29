@@ -1967,7 +1967,23 @@ static void uia_engine_cleanup(UiaEngine *engine)
     memset(engine, 0, sizeof(*engine));
 }
 
-static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
+// Two threads setting up UI Automation in this process at the same time can
+// make one of them fail (the scan engine then never starts). Every engine
+// (scan, scroll target, focus) is created under this lock.
+static volatile LONG g_engine_lock;
+
+static void engine_lock(void)
+{
+    while (InterlockedCompareExchange(&g_engine_lock, 1, 0) != 0)
+        Sleep(1);
+}
+
+static void engine_unlock(void)
+{
+    InterlockedExchange(&g_engine_lock, 0);
+}
+
+static BOOL uia_engine_create(UiaEngine *engine, BOOL with_names)
 {
     IUIAutomation2 *automation2 = NULL;
     HRESULT hr;
@@ -1999,6 +2015,16 @@ static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
         return FALSE;
     }
     return TRUE;
+}
+
+static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
+{
+    BOOL ok;
+
+    engine_lock();
+    ok = uia_engine_create(engine, with_names);
+    engine_unlock();
+    return ok;
 }
 
 typedef struct {
@@ -2116,8 +2142,16 @@ static DWORD WINAPI uia_worker(void *arg)
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (hr == S_OK || hr == S_FALSE) {
+        BOOL engine_ok = FALSE;
+        int attempt;
+
         com_ready = TRUE;
-        if (uia_engine_init(&engine, FALSE)) {
+        for (attempt = 0; attempt < 3 && !engine_ok; ++attempt) {
+            if (attempt > 0)
+                Sleep(100);
+            engine_ok = uia_engine_init(&engine, FALSE);
+        }
+        if (engine_ok) {
             InterlockedExchange(&g_uia_available, TRUE);
             SetEvent(g_uia_ready);
 
@@ -2155,11 +2189,13 @@ static DWORD WINAPI uia_worker(void *arg)
             uia_pool_stop();
             uia_engine_cleanup(&engine);
         } else {
+            app_log(L"uia: engine init failed");
             SetEvent(g_uia_ready);
             uia_pool_stop();
         }
         CoUninitialize();
     } else {
+        app_log(L"uia: CoInitializeEx failed (0x%08lx)", (unsigned long)hr);
         SetEvent(g_uia_ready);
         uia_pool_stop();
     }
@@ -2650,8 +2686,13 @@ static DWORD WINAPI scroll_worker(void *arg)
     (void)arg;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    ready = (hr == S_OK || hr == S_FALSE) &&
-            scroll_engine_init(&automation, &condition, &cache);
+    if (hr == S_OK || hr == S_FALSE) {
+        engine_lock();
+        ready = scroll_engine_init(&automation, &condition, &cache);
+        engine_unlock();
+    } else {
+        ready = FALSE;
+    }
 
     while (WaitForSingleObject(g_sc_wake, INFINITE) == WAIT_OBJECT_0 &&
            !InterlockedCompareExchange(&g_sc_quit, 0, 0)) {
@@ -3230,8 +3271,11 @@ static DWORD WINAPI focus_worker(void *arg)
     (void)arg;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (hr == S_OK || hr == S_FALSE)
+    if (hr == S_OK || hr == S_FALSE) {
+        engine_lock();
         focus_engine_init(&automation, &cache);
+        engine_unlock();
+    }
 
     while (!InterlockedCompareExchange(&g_fx_quit, 0, 0)) {
         LONG gen;
