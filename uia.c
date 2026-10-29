@@ -3025,9 +3025,15 @@ void uia_scroll_stop(void)
 
 #define FOCUS_POLL_MS 500       // recheck this often while the user is active
 #define FOCUS_ACTIVE_MS 30000   // active = some input within this long
+#define FOCUS_RETRY_MS 100      // re-ask a change this soon while unknown
+#define FOCUS_RETRIES 3         // ... at most this many times per change
+#define FOCUS_WAIT_FRESH_MS 400 // a pending ask older than this is not waited for
+#define FOCUS_ENGINE_RETRY_MS 5000  // retry a failed engine init this often
+#define FOCUS_FAILED (-1)       // internal: the ask failed, not a classification
 
 static CRITICAL_SECTION g_fx_cs;
 static HANDLE g_fx_wake;
+static HANDLE g_fx_answered;        // manual reset: the current gen has an answer
 static HANDLE g_fx_thread;
 static volatile LONG g_fx_state;    // 0 stopped, 1 starting, 2 running, 3 failed
 static volatile LONG g_fx_quit;
@@ -3038,6 +3044,7 @@ static LONG  g_fx_answer_gen = -1;
 static HWND  g_fx_hwnd;
 static int   g_fx_answer = FOCUS_UNKNOWN;
 static DWORD g_fx_not_before;       // do not ask before this tick
+static DWORD g_fx_pending_since;    // when the current unanswered gen started
 
 // The window with the keyboard focus (the foreground window if its thread
 // names none), and the GUI thread state behind it. FALSE if unknown.
@@ -3187,12 +3194,12 @@ static int focus_classify(IUIAutomation *automation,
     if (!automation || !cache ||
         FAILED(automation->lpVtbl->GetFocusedElementBuildCache(
             automation, cache, &el)) || !el)
-        return FOCUS_UNKNOWN;
+        return FOCUS_FAILED;
     kind = focus_element_kind(el);
     el->lpVtbl->Release(el);
     // The focus moved to another window while we asked.
     if (!focus_window(&again, &gti, &pid) || again != focus)
-        return FOCUS_UNKNOWN;
+        return FOCUS_FAILED;
     return kind;
 }
 
@@ -3268,6 +3275,10 @@ static DWORD WINAPI focus_worker(void *arg)
     HRESULT hr;
     HWND last_hwnd = NULL;
     int last_kind = -1;
+    DWORD engine_tried = GetTickCount();
+    LONG retry_gen = -1;        // gen whose unknown answer gets fast retries
+    int retry_done = 0;
+    DWORD retry_at = 0;
     (void)arg;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -3279,7 +3290,7 @@ static DWORD WINAPI focus_worker(void *arg)
 
     while (!InterlockedCompareExchange(&g_fx_quit, 0, 0)) {
         LONG gen;
-        BOOL pending;
+        BOOL pending, retrying;
         DWORD wait = 0, now;
         HWND hwnd;
         int kind;
@@ -3288,17 +3299,22 @@ static DWORD WINAPI focus_worker(void *arg)
         gen = g_fx_gen;
         pending = g_fx_answer_gen != gen;
         now = GetTickCount();
-        if (pending && (LONG)(g_fx_not_before - now) > 0)
-            wait = g_fx_not_before - now;
+        retrying = !pending && retry_gen == gen && retry_done < FOCUS_RETRIES;
+        if (pending) {
+            if ((LONG)(g_fx_not_before - now) > 0)
+                wait = g_fx_not_before - now;
+        } else if (retrying && (LONG)(retry_at - now) > 0) {
+            wait = retry_at - now;
+        }
         LeaveCriticalSection(&g_fx_cs);
 
-        if (pending && wait > 0) {
+        if (wait > 0) {
             WaitForSingleObject(g_fx_wake, wait);
             continue;
         }
         // Answered: poll now and then. The old answer stays valid while the
         // poll asks again; any change wakes us and invalidates it.
-        if (!pending) {
+        if (!pending && !retrying) {
             BOOL active = g_cfg.bare_keys && user_active();
 
             if (WaitForSingleObject(g_fx_wake, active ? FOCUS_POLL_MS : 5000) !=
@@ -3306,13 +3322,65 @@ static DWORD WINAPI focus_worker(void *arg)
                 continue;
         }
 
+        // The engine may have failed to start (or died); try again now and
+        // then, but never more often than FOCUS_ENGINE_RETRY_MS.
+        now = GetTickCount();
+        if (!automation &&
+            (DWORD)(now - engine_tried) >= FOCUS_ENGINE_RETRY_MS) {
+            engine_tried = now;
+            engine_lock();
+            focus_engine_init(&automation, &cache);
+            engine_unlock();
+        }
+
+        if (pending) {
+            retry_gen = -1;
+            retry_done = 0;
+        }
+
         kind = focus_classify(automation, cache, &hwnd);
 
         EnterCriticalSection(&g_fx_cs);
         if (g_fx_gen == gen) {
-            g_fx_hwnd = hwnd;
-            g_fx_answer = kind;
-            g_fx_answer_gen = gen;
+            if (pending) {
+                // The old answer no longer applies. An ask that failed is an
+                // unknown, but ask again soon: a page navigation often makes
+                // the first ask fail or return a bare pane.
+                g_fx_hwnd = hwnd;
+                g_fx_answer = kind == FOCUS_FAILED ? FOCUS_UNKNOWN : kind;
+                g_fx_answer_gen = gen;
+                if (g_fx_answer == FOCUS_UNKNOWN) {
+                    retry_gen = gen;
+                    retry_done = 0;
+                    retry_at = GetTickCount() + FOCUS_RETRY_MS;
+                }
+                kind = g_fx_answer;
+                SetEvent(g_fx_answered);
+            } else {
+                BOOL keep = (kind == FOCUS_FAILED ||
+                             kind == FOCUS_UNKNOWN) &&
+                            hwnd == g_fx_hwnd;
+
+                // A poll that failed says nothing about the focus: keep the
+                // answer it asked about.
+                if (!keep) {
+                    g_fx_hwnd = hwnd;
+                    g_fx_answer = kind == FOCUS_FAILED ? FOCUS_UNKNOWN : kind;
+                    g_fx_answer_gen = gen;
+                }
+                kind = g_fx_answer;
+                hwnd = g_fx_hwnd;
+                SetEvent(g_fx_answered);
+                if (retry_gen == gen) {
+                    if (g_fx_answer == FOCUS_UNKNOWN &&
+                        retry_done < FOCUS_RETRIES) {
+                        ++retry_done;
+                        retry_at = GetTickCount() + FOCUS_RETRY_MS;
+                    } else {
+                        retry_gen = -1;    // upgraded: back to normal polls
+                    }
+                }
+            }
         }
         LeaveCriticalSection(&g_fx_cs);
 
@@ -3347,16 +3415,26 @@ static BOOL focus_worker_init(void)
     g_fx_hwnd = NULL;
     g_fx_answer = FOCUS_UNKNOWN;
     g_fx_not_before = GetTickCount();
+    g_fx_pending_since = g_fx_not_before;
     g_fx_quit = 0;
     g_fx_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
-    if (!g_fx_wake) {
+    g_fx_answered = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!g_fx_wake || !g_fx_answered) {
+        if (g_fx_wake)
+            CloseHandle(g_fx_wake);
+        if (g_fx_answered)
+            CloseHandle(g_fx_answered);
+        g_fx_wake = NULL;
+        g_fx_answered = NULL;
         DeleteCriticalSection(&g_fx_cs);
         return FALSE;
     }
     g_fx_thread = CreateThread(NULL, 0, focus_worker, NULL, 0, NULL);
     if (!g_fx_thread) {
         CloseHandle(g_fx_wake);
+        CloseHandle(g_fx_answered);
         g_fx_wake = NULL;
+        g_fx_answered = NULL;
         DeleteCriticalSection(&g_fx_cs);
         return FALSE;
     }
@@ -3373,14 +3451,21 @@ void uia_focus_changed(DWORD delay_ms)
         return;
     at = GetTickCount() + delay_ms;
     EnterCriticalSection(&g_fx_cs);
+    // A new change starts a new pending request; while one is already pending
+    // its start stays, so a hung app cannot make every key wait.
+    if (g_fx_answer_gen == g_fx_gen)
+        g_fx_pending_since = GetTickCount();
     ++g_fx_gen;
+    ResetEvent(g_fx_answered);
     if ((LONG)(at - g_fx_not_before) > 0)
         g_fx_not_before = at;
     LeaveCriticalSection(&g_fx_cs);
     SetEvent(g_fx_wake);
 }
 
-int uia_focus_state(void)
+// The cached state, plus whether an answer for the current focus is still
+// being asked for. Bumps the generation when the focus moved unannounced.
+static int focus_state_run(BOOL *asking)
 {
     GUITHREADINFO gti;
     HWND focus;
@@ -3388,6 +3473,7 @@ int uia_focus_state(void)
     int kind = FOCUS_UNKNOWN;
     BOOL moved = FALSE;
 
+    *asking = FALSE;
     if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
         return FOCUS_UNKNOWN;
     if (!focus_window(&focus, &gti, &pid))
@@ -3400,14 +3486,53 @@ int uia_focus_state(void)
             kind = g_fx_answer;
         } else {
             // The focus moved without an event (or before it arrived).
+            g_fx_pending_since = GetTickCount();
             ++g_fx_gen;
+            ResetEvent(g_fx_answered);
             moved = TRUE;
         }
     }
+    *asking = g_fx_answer_gen != g_fx_gen;
     LeaveCriticalSection(&g_fx_cs);
     if (moved)
         SetEvent(g_fx_wake);
     return kind;
+}
+
+int uia_focus_state(void)
+{
+    BOOL asking;
+
+    return focus_state_run(&asking);
+}
+
+int uia_focus_wait(DWORD max_ms)
+{
+    DWORD deadline = GetTickCount() + max_ms;
+    BOOL asking;
+    DWORD now, left;
+    int kind;
+
+    for (;;) {
+        kind = focus_state_run(&asking);
+        if (!asking)
+            return kind;
+        now = GetTickCount();
+        if ((LONG)(deadline - now) <= 0)
+            return kind;
+        EnterCriticalSection(&g_fx_cs);
+        // A request that has been pending this long is a hung app: never pay
+        // for it on every key. Nor wait for one that cannot start in time.
+        if ((DWORD)(now - g_fx_pending_since) >= FOCUS_WAIT_FRESH_MS ||
+            (LONG)(g_fx_not_before - deadline) > 0) {
+            LeaveCriticalSection(&g_fx_cs);
+            return kind;
+        }
+        LeaveCriticalSection(&g_fx_cs);
+        left = (DWORD)(deadline - now);
+        WaitForSingleObject(g_fx_answered, left);
+        // Wakeups can be spurious or for an older generation: re-check.
+    }
 }
 
 void uia_focus_stop(void)
@@ -3422,8 +3547,10 @@ void uia_focus_stop(void)
         return;
     CloseHandle(g_fx_thread);
     CloseHandle(g_fx_wake);
+    CloseHandle(g_fx_answered);
     g_fx_thread = NULL;
     g_fx_wake = NULL;
+    g_fx_answered = NULL;
     DeleteCriticalSection(&g_fx_cs);
     InterlockedExchange(&g_fx_state, 0);
 }

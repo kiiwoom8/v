@@ -123,6 +123,11 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // text field only once the app has had this long to move it.
 #define FOCUS_CLICK_DELAY_MS 150
 #define FOCUS_KEY_DELAY_MS   100
+// The hook may wait this long for an answer that is still being asked. It must
+// stay far below Windows' LowLevelHooksTimeout, or Windows removes the hook.
+// Waiting inside the hook keeps key order intact: no other key is processed
+// meanwhile.
+#define BARE_WAIT_MS 100
 
 enum {
     ACT_NONE = 0,
@@ -1177,7 +1182,10 @@ static BOOL bare_key_ok(UINT vk)
         return FALSE;
     if (!bare_hint_key(vk) && alt_key_action(vk) == ACT_NONE)
         return FALSE;
-    return uia_focus_state() == FOCUS_OTHER && !popup_open();
+    // No wait while a menu is open; otherwise give a pending answer a moment.
+    if (popup_open())
+        return FALSE;
+    return uia_focus_wait(BARE_WAIT_MS) == FOCUS_OTHER;
 }
 
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
@@ -1546,13 +1554,26 @@ static void CALLBACK focus_event_proc(HWINEVENTHOOK hook, DWORD event,
                                       HWND hwnd, LONG id_object,
                                       LONG id_child, DWORD thread, DWORD time)
 {
+    DWORD fg_pid = 0, pid = 0;
+    HWND fg;
+
     (void)hook;
-    (void)event;
-    (void)hwnd;
     (void)id_object;
     (void)id_child;
     (void)thread;
     (void)time;
+    // Background apps and IME windows report focus too; only the foreground
+    // window's focus changes concern it.
+    if (event == EVENT_OBJECT_FOCUS && hwnd) {
+        fg = GetForegroundWindow();
+        if (fg) {
+            GetWindowThreadProcessId(fg, &fg_pid);
+            GetWindowThreadProcessId(hwnd, &pid);
+        }
+        if (!fg || (GetAncestor(hwnd, GA_ROOT) != fg &&
+                    (!pid || pid != fg_pid)))
+            return;
+    }
     uia_focus_changed(0);
 }
 

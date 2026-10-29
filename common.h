@@ -286,10 +286,14 @@ void uia_scroll_stop(void);
 // before delay_ms from now (a click the app has not handled yet); the first
 // call starts the worker. uia_focus_state returns the cached answer for the
 // current focus, or FOCUS_UNKNOWN while it is being asked. Neither waits, so
-// both are safe from the keyboard hook. uia_stop stops it too.
+// both are safe from the keyboard hook. uia_focus_wait is the same as
+// uia_focus_state but blocks up to max_ms while the answer is being asked (and
+// the ask is recent), for the hook to keep a key in order. uia_stop stops it
+// too.
 enum { FOCUS_UNKNOWN = 0, FOCUS_TEXT = 1, FOCUS_OTHER = 2 };
 void uia_focus_changed(DWORD delay_ms);
 int  uia_focus_state(void);
+int  uia_focus_wait(DWORD max_ms);
 void uia_focus_stop(void);
 
 // ---------------------------------------------------------------------------

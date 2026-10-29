@@ -53,8 +53,9 @@ sideways. In a text field (an address bar, a search box, a chat box, a
 document, a terminal) those letters type as usual and the keys need Alt as
 before. vim mouse asks UI Automation where the focus is after every focus
 change; while it is not sure (right after a click, in a game or a remote
-desktop, with a menu open) the letters type as usual. Text shortcuts always
-need Alt. `bare_keys = 0` turns this off.
+desktop, with a menu open) the letters type as usual. A key pressed while it
+is still asking waits up to 0.1 s for the answer instead of typing at once.
+Text shortcuts always need Alt. `bare_keys = 0` turns this off.
 
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
