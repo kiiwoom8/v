@@ -119,6 +119,9 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // How long Alt scrolling waits for the nearest scrollable area before it
 // scrolls under the cursor instead.
 #define AUTO_TARGET_TIMEOUT_MS 500
+// While an auto-target stream runs, refresh its list this often in the
+// background so the next press (a tap, a held key) does not wait for it.
+#define SCROLL_PREFETCH_MS 500
 // After a click or a key that moves the focus, ask whether the focus is in a
 // text field only once the app has had this long to move it.
 #define FOCUS_CLICK_DELAY_MS 150
@@ -1538,7 +1541,7 @@ static void replace_hook(void)
     HHOOK hook;
 
     if (s_hook_replace_tick != 0 &&
-        (DWORD)(now - s_hook_replace_tick) < 5000)
+        (DWORD)(now - s_hook_replace_tick) < 1000)
         return;
     hook = SetWindowsHookExW(WH_KEYBOARD_LL, kb_proc, GetModuleHandleW(NULL), 0);
     if (!hook)
@@ -1851,6 +1854,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
     LONG seen_gen = 0;
     POINT target = { 0, 0 };
     BOOL target_ok = FALSE;
+    DWORD last_prefetch = 0;
     HANDLE timer;
 
     (void)param;
@@ -1923,6 +1927,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
             if (gen != seen_gen) {
                 POINT cur_pt;
                 LONG bits = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
+
                 seen_gen = gen;
                 target_ok = GetCursorPos(&cur_pt) &&
                     uia_scroll_target(cur_pt, !(bits & (SCR_LEFT | SCR_RIGHT)),
@@ -1933,6 +1938,21 @@ static DWORD WINAPI movement_thread(LPVOID param)
             pending = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
             aimed = target_ok ? InterlockedCompareExchange(&s_scroll_auto, 0, 0)
                               : 0;
+            // A bare key has no Alt press to prefetch on, so keep the list
+            // warm here: the next tap or held key then finds a fresh one
+            // instead of waiting for a search. uia_scroll_prefetch never
+            // waits.
+            if (aimed) {
+                DWORD tick = GetTickCount();
+                POINT cur_pt;
+
+                if ((last_prefetch == 0 ||
+                     (DWORD)(tick - last_prefetch) >= SCROLL_PREFETCH_MS) &&
+                    GetCursorPos(&cur_pt)) {
+                    uia_scroll_prefetch(cur_pt);
+                    last_prefetch = tick;
+                }
+            }
 
             QueryPerformanceCounter(&now);
             dt = (double)(now.QuadPart - prev.QuadPart) / (double)freq.QuadPart;
