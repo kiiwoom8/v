@@ -2293,6 +2293,7 @@ void uia_cancel(void)
 #define SCROLL_CACHE_ROOTS 8
 #define SCROLL_STALE_MS 10000   // older than this: refresh and wait
 #define SCROLL_FRESH_MS 1000    // older than this: refresh in the background
+#define SCROLL_SIDE_REACH 64    // px a redirect may reach across the scroll
 
 typedef struct {
     RECT rc;
@@ -2514,14 +2515,36 @@ static void scroll_queue_locked(HWND root, DWORD now)
     SetEvent(g_sc_wake);
 }
 
+// How far rc lies beside pt across the scroll direction: 0 when it is
+// directly above or below pt (left or right of it when scrolling sideways).
+static LONG scroll_side_gap(POINT pt, const RECT *rc, BOOL vertical)
+{
+    LONG p = vertical ? pt.x : pt.y;
+    LONG lo = vertical ? rc->left : rc->top;
+    LONG hi = vertical ? rc->right : rc->bottom;
+
+    if (p < lo)
+        return lo - p;
+    if (p >= hi)
+        return p - (hi - 1);
+    return 0;
+}
+
 // The same decision scroll_find used to make, from a cached area list.
+// Over the window, the wheel goes only to an area in line with the pointer
+// (a list under its toolbar) or just beside it. One further across is
+// another panel, and the panel under the pointer may scroll without UI
+// Automation saying so (Teams' conversation), as a plain wheel shows.
 static BOOL scroll_area_answer(const ScrollCache *e, POINT pt, BOOL vertical,
                                POINT *target)
 {
     LONG64 best_dist = -1, inside_area = -1;
     RECT best;
+    RECT win;
+    BOOL over_window;
     int i;
 
+    over_window = GetWindowRect(e->root, &win) && PtInRect(&win, pt);
     SetRectEmpty(&best);
     for (i = 0; i < e->count; ++i) {
         const ScrollArea *a = &e->areas[i];
@@ -2533,7 +2556,12 @@ static BOOL scroll_area_answer(const ScrollCache *e, POINT pt, BOOL vertical,
             if (inside_area < 0 || area < inside_area)
                 inside_area = area;
         } else {
-            LONG64 d = point_rect_distance2(pt, &a->rc);
+            LONG64 d;
+
+            if (over_window &&
+                scroll_side_gap(pt, &a->rc, vertical) > SCROLL_SIDE_REACH)
+                continue;
+            d = point_rect_distance2(pt, &a->rc);
             if (best_dist < 0 || d < best_dist) {
                 best_dist = d;
                 best = a->rc;

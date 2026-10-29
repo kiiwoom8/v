@@ -1421,7 +1421,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; mode, and Alt + the scroll up/down keys (u d) scroll fast.\r\n");
     appendf(buf, cch, L"alt_scroll = %d\r\n", d.alt_scroll ? 1 : 0);
     appendf(buf, cch, L"; 1 = Alt scrolling finds the scrollable area nearest to the pointer\r\n");
-    appendf(buf, cch, L"; (when the pointer is not over one) and scrolls that.\r\n");
+    appendf(buf, cch, L"; (when the pointer is not over one) and scrolls that. Within the window\r\n");
+    appendf(buf, cch, L"; only an area in line with the pointer or right beside it counts.\r\n");
     appendf(buf, cch, L"alt_scroll_auto = %d\r\n", d.alt_scroll_auto ? 1 : 0);
     appendf(buf, cch, L"; Notches per Alt + u / Alt + d tap (1-50), and the speeds while held.\r\n");
     appendf(buf, cch, L"fast_scroll_lines = %d\r\n", d.fast_scroll_lines);

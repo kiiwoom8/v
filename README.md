@@ -57,7 +57,10 @@ lets those Alt combinations reach the app again.
 Alt scrolling finds what to scroll by itself: when the pointer is not over
 something that scrolls that way, it scrolls the scrollable area nearest to the
 pointer in that window (a web page's side panel, a list, a document), found
-through UI Automation, without moving the pointer. Over the desktop or the
+through UI Automation, without moving the pointer. Within the window it only
+picks an area in line with the pointer (a list below its toolbar) or right
+beside it; over another panel the wheel stays with the pointer, since some
+apps (Teams) do not report everything that scrolls. Over the desktop or the
 taskbar it uses the active window. `alt_scroll_auto = 0` always scrolls what
 is under the pointer, like a mouse wheel.
 
@@ -202,8 +205,8 @@ ones:
 - `scroll_speed`, `scroll_max_speed`, `smooth_scroll` (1 = small steps once
   per display frame, default; 0 = whole notches only)
 - `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
-  anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area when
-  the pointer is not over one), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
+  anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area in
+  line with the pointer when it is not over one), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held),
   `scroll_end_tap_ms` (two Alt + `u` / Alt + `d` taps within this many ms
   scroll to the top / bottom, 0-1000, default 300; 0 = off)

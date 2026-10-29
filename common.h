@@ -101,7 +101,8 @@ typedef struct {
     double scroll_max_speed;   // default 4800  (40 notches/s)
     int    smooth_scroll;      // 1 = small steps once per display frame; default 1
     int    alt_scroll;         // 1 = Alt + move keys scroll anywhere, Alt + u/d fast; default 1
-    int    alt_scroll_auto;    // 1 = Alt scrolling goes to the nearest scrollable area; default 1
+    int    alt_scroll_auto;    // 1 = Alt scrolling goes to the nearest scrollable area in
+                               // line with the pointer; default 1
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
     int    scroll_end_tap_ms;  // Alt + u u / Alt + d d within this many ms jump
                                // to the top / bottom, default 300 (0 = off)
