@@ -30,9 +30,12 @@
 #define KEY_COLOR       RGB(255, 0, 255)
 #define TIMER_FLASH_ID  1
 #define TIMER_SCAN_ID   2
+#define TIMER_REFRESH_ID 3
+#define REFRESH_RETRY_MS 200
 #define MAX_MONITORS    16
 #define MAX_TARGETS     2000
 #define MAX_LABEL_LEN   16
+#define LABEL_QUEUE_MAX 100000
 #define MAX_QUEUED_KEYS 32
 #define DOT             L"\x00B7"
 #define SCAN_DEFAULT_MS 400
@@ -47,6 +50,14 @@ typedef struct {
 typedef struct {
     WCHAR s[MAX_LABEL_LEN];
 } HintLabel;
+
+// A label that is no longer shown. It is never given to another element; making
+// room may only turn it into a prefix of longer labels (expanded = TRUE), so a
+// stale label the user still remembers can only narrow, never click.
+typedef struct {
+    WCHAR s[MAX_LABEL_LEN];
+    BOOL  expanded;
+} RetiredLabel;
 
 typedef struct {
     UINT vk;
@@ -137,6 +148,16 @@ static BOOL      g_grid_valid;
 
 static BOOL      g_scan_wait_first;  // timeout passed, waiting for the active window
 static DWORD     g_scan_t0;          // scan start tick (timeout / hard limit reference)
+static BOOL      g_scan_retry;       // last scan found nothing: retry after TIMER_REFRESH_ID
+static BOOL      g_refresh_on;       // background scans keep the labels up to date
+
+// Labels that were shown and then went away. They are kept for the rest of
+// this open so they are never handed to a different element (see alloc_labels).
+static RetiredLabel *g_retired;
+static int       g_retired_count;
+static int       g_retired_cap;
+
+static BOOL      g_alloc_relabeled;  // make_room lengthened a shown label
 
 // Early scan started when the hint hotkey's modifier goes down. g_pre_id 0 =
 // none; the newest result for it is owned in g_pre_list.
@@ -157,6 +178,11 @@ static void invalidate(void);
 static void cycle_monitor(UINT mods);
 static void clear_prescan(void);
 static BOOL adopt_prescan(void);
+static void clear_retired(void);
+static BOOL retire_label(const WCHAR *s);
+static void schedule_refresh(void);
+static void start_refresh_scan(void);
+static void merge_scan(ClickList *list);
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -795,6 +821,7 @@ static void free_elements(void)
     g_targets = NULL;
     g_labels = NULL;
     g_target_count = 0;
+    clear_retired();
 }
 
 static int target_band(int top)
@@ -867,6 +894,348 @@ static HintLabel *build_labels(int n)
     }
     free(pool);
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Label retirement / merge allocation
+//
+// A label that has been on screen is never given to another element, even
+// after that element goes away: the user may still remember and type it. Such
+// labels go to g_retired and keep blocking their whole subtree, so a stale
+// label can only narrow the remaining matches. When room is needed, a retired
+// label may be "expanded" into longer labels (the stale shorter label then
+// only narrows), never reused as a whole.
+
+static void clear_retired(void)
+{
+    free(g_retired);
+    g_retired = NULL;
+    g_retired_count = 0;
+    g_retired_cap = 0;
+}
+
+static BOOL retire_label(const WCHAR *s)
+{
+    RetiredLabel *p;
+
+    if (g_retired_count >= g_retired_cap) {
+        int cap = g_retired_cap ? g_retired_cap * 2 : 64;
+        p = (RetiredLabel *)realloc(g_retired, (size_t)cap * sizeof(*p));
+        if (!p) return FALSE;
+        g_retired = p;
+        g_retired_cap = cap;
+    }
+    p = &g_retired[g_retired_count++];
+    p->expanded = FALSE;
+    wcsncpy(p->s, s, MAX_LABEL_LEN - 1);
+    p->s[MAX_LABEL_LEN - 1] = 0;
+    return TRUE;
+}
+
+// 1 = a shown label, 2 = a retired label, 3 = a retired label opened up with
+// longer labels; 0 = free.
+static int occupied_equal(const WCHAR *s)
+{
+    int i;
+
+    for (i = 0; i < g_target_count; ++i)
+        if (wcscmp(g_labels[i].s, s) == 0) return 1;
+    for (i = 0; i < g_retired_count; ++i)
+        if (wcscmp(g_retired[i].s, s) == 0)
+            return g_retired[i].expanded ? 3 : 2;
+    return 0;
+}
+
+// TRUE when an occupied label strictly extends s, so s cannot be used as a
+// whole (a shorter candidate is always a prefix of a live label); the caller
+// expands it instead. Descending into an equal label is never done, which is
+// what keeps a new label from extending a live one.
+static BOOL occupied_extends(const WCHAR *s)
+{
+    size_t len = wcslen(s);
+    int i;
+
+    for (i = 0; i < g_target_count; ++i) {
+        if (wcslen(g_labels[i].s) > len &&
+            label_has_prefix(g_labels[i].s, s)) return TRUE;
+    }
+    for (i = 0; i < g_retired_count; ++i) {
+        if (wcslen(g_retired[i].s) > len &&
+            label_has_prefix(g_retired[i].s, s)) return TRUE;
+    }
+    return FALSE;
+}
+
+// Shortlex BFS over the alphabet; returns how many of out[0..need) got a label,
+// or -1 when out of memory. cap bounds the queue (it grows on the next try).
+static int alloc_pass(int need, HintLabel *out, int alen, int cap)
+{
+    HintLabel *queue;
+    int head = 0, tail = 0, got = 0, j;
+
+    if (cap < alen + 1) cap = alen + 1;
+    queue = (HintLabel *)malloc((size_t)cap * sizeof(*queue));
+    if (!queue) return -1;
+
+    for (j = 0; j < alen && tail < cap; ++j) {
+        queue[tail].s[0] = lower_ascii(g_cfg.alphabet[j]);
+        queue[tail].s[1] = 0;
+        ++tail;
+    }
+
+    while (head < tail && got < need) {
+        WCHAR cur[MAX_LABEL_LEN];
+        int len, eq;
+
+        wcscpy(cur, queue[head].s);
+        ++head;
+        len = (int)wcslen(cur);
+        eq = occupied_equal(cur);
+
+        if (eq == 1 || eq == 2) continue;      // a real label: never reuse
+        if (eq == 3 || occupied_extends(cur)) {
+            // A live label is under here: only its longer labels may be used.
+            if (len >= MAX_LABEL_LEN - 1) continue;
+            for (j = 0; j < alen && tail < cap; ++j) {
+                wcscpy(queue[tail].s, cur);
+                queue[tail].s[len] = lower_ascii(g_cfg.alphabet[j]);
+                queue[tail].s[len + 1] = 0;
+                ++tail;
+            }
+            continue;
+        }
+        wcscpy(out[got].s, cur);
+        ++got;
+    }
+
+    free(queue);
+    return got;
+}
+
+static int alphabet_len(void)
+{
+    int alen = (int)wcslen(g_cfg.alphabet);
+    if (alen > 60) alen = 60;
+    return alen > 0 ? alen : 0;
+}
+
+// Frees room when the code is full: open up a retired label first (its longer
+// labels become candidates, the stale one only narrows), else make the
+// shortest shown label one character longer (typing the old one narrows).
+static BOOL make_room(void)
+{
+    int alen = alphabet_len();
+    int i, j, best = -1, bestlen = 0, len;
+
+    if (alen < 2) return FALSE;   // one letter cannot be split any further
+    for (i = 0; i < g_retired_count; ++i) {
+        if (g_retired[i].expanded) continue;
+        len = (int)wcslen(g_retired[i].s);
+        if (len >= MAX_LABEL_LEN - 1) continue;
+        if (best < 0 || len < bestlen) {
+            best = i;
+            bestlen = len;
+        }
+    }
+    if (best >= 0) {
+        g_retired[best].expanded = TRUE;
+        return TRUE;
+    }
+
+    // Find the shortest shown label with a free extension, then split it.
+    // Never pick an extension that is itself taken, or the stale label would
+    // point at two elements.
+    for (i = 0; i < g_target_count; ++i) {
+        len = (int)wcslen(g_labels[i].s);
+        if (len >= MAX_LABEL_LEN - 1) continue;
+        if (best < 0 || len < bestlen) {
+            WCHAR probe[MAX_LABEL_LEN];
+            int hit = -1;
+            for (j = 0; j < alen; ++j) {
+                wcscpy(probe, g_labels[i].s);
+                probe[len] = lower_ascii(g_cfg.alphabet[j]);
+                probe[len + 1] = 0;
+                if (occupied_equal(probe) == 0 && !occupied_extends(probe)) {
+                    hit = j;
+                    break;
+                }
+            }
+            if (hit < 0) continue;
+            best = i;
+            bestlen = len;
+        }
+    }
+    if (best < 0) return FALSE;
+
+    // Keep the old label itself unavailable (it must only narrow), then move
+    // the element to L + a free alphabet character.
+    {
+        WCHAR probe[MAX_LABEL_LEN];
+        int hit = -1;
+        for (j = 0; j < alen; ++j) {
+            wcscpy(probe, g_labels[best].s);
+            probe[bestlen] = lower_ascii(g_cfg.alphabet[j]);
+            probe[bestlen + 1] = 0;
+            if (occupied_equal(probe) == 0 && !occupied_extends(probe)) {
+                hit = j;
+                break;
+            }
+        }
+        if (hit < 0) return FALSE;
+        if (!retire_label(g_labels[best].s)) return FALSE;
+        g_retired[g_retired_count - 1].expanded = TRUE;
+        g_labels[best].s[bestlen] = lower_ascii(g_cfg.alphabet[hit]);
+        g_labels[best].s[bestlen + 1] = 0;
+    }
+    g_alloc_relabeled = TRUE;   // the caller must repaint
+    return TRUE;
+}
+
+// Allocates all labels a merge needs in one pass, so they stay as short as
+// possible and are prefix-free against shown and retired labels alike.
+static BOOL alloc_labels(int need, HintLabel *out)
+{
+    int alen = alphabet_len();
+    int tries, got, limit, cap;
+
+    if (need <= 0) return TRUE;
+    if (alen < 1) return FALSE;
+    limit = need + 2048;
+
+    for (tries = 0; tries < limit; ++tries) {
+        cap = (g_target_count + g_retired_count + need + 8) * alen;
+        if (cap < alen + 1) cap = alen + 1;
+        if (cap > LABEL_QUEUE_MAX) cap = LABEL_QUEUE_MAX;
+        got = alloc_pass(need, out, alen, cap);
+        if (got < 0) return FALSE;
+        if (got == need) return TRUE;
+        if (!make_room()) return FALSE;
+    }
+    return FALSE;
+}
+
+static BOOL same_element(const RECT *a, const RECT *b)
+{
+    int tol = 2 * g_dpi / 96;
+    int dl, dt, dr, db;
+
+    if (tol < 2) tol = 2;
+    dl = (int)(a->left - b->left);
+    dt = (int)(a->top - b->top);
+    dr = (int)(a->right - b->right);
+    db = (int)(a->bottom - b->bottom);
+    if (dl < 0) dl = -dl;
+    if (dt < 0) dt = -dt;
+    if (dr < 0) dr = -dr;
+    if (db < 0) db = -db;
+    return dl <= tol && dt <= tol && dr <= tol && db <= tol;
+}
+
+// Folds one refresh post into the shown targets. Labels of surviving elements
+// are kept; removed ones are retired; new ones get labels in one allocated
+// pass. Partial posts never remove anything (they have not seen every window).
+static void merge_scan(ClickList *list)
+{
+    ClickTarget *nt;
+    HintLabel *nl;
+    char *used, *gone;
+    int incoming = list ? list->count : 0;
+    int i, j, survivors = 0, need = 0, changed = FALSE;
+
+    if (incoming > MAX_TARGETS) incoming = MAX_TARGETS;
+    nt = (ClickTarget *)malloc((size_t)(g_target_count + incoming + 1) *
+                               sizeof(*nt));
+    nl = (HintLabel *)calloc((size_t)(g_target_count + incoming + 1),
+                             sizeof(*nl));
+    used = (char *)calloc((size_t)(incoming > 0 ? incoming : 1), sizeof(*used));
+    gone = (char *)calloc((size_t)(g_target_count > 0 ? g_target_count : 1),
+                          sizeof(*gone));
+    if (!nt || !nl || !used || !gone) {
+        free(nt);
+        free(nl);
+        free(used);
+        free(gone);
+        return;
+    }
+
+    // Pass 1: match, update moved elements, retire the ones that went away.
+    for (i = 0; i < g_target_count; ++i) {
+        int match = -1;
+        for (j = 0; j < incoming; ++j) {
+            if (used[j]) continue;
+            if (same_element(&g_targets[i].rc, &list->items[j].rc)) {
+                match = j;
+                break;
+            }
+        }
+        if (match >= 0) {
+            used[match] = 1;
+            if (g_targets[i].rc.left != list->items[match].rc.left ||
+                g_targets[i].rc.top != list->items[match].rc.top ||
+                g_targets[i].rc.right != list->items[match].rc.right ||
+                g_targets[i].rc.bottom != list->items[match].rc.bottom ||
+                g_targets[i].click.x != list->items[match].click.x ||
+                g_targets[i].click.y != list->items[match].click.y) {
+                g_targets[i].rc = list->items[match].rc;
+                g_targets[i].click = list->items[match].click;
+                changed = TRUE;
+            }
+        } else if (list->done && retire_label(g_labels[i].s)) {
+            // A done post covered every window: the element is really gone.
+            gone[i] = 1;
+            changed = TRUE;
+        }
+        // A partial post proves nothing about the elements it did not see.
+    }
+
+    // Compact the survivors, then swap them in so the allocator only sees
+    // labels that are still on screen (retired ones block separately).
+    for (i = 0; i < g_target_count; ++i) {
+        if (gone[i]) continue;
+        nt[survivors] = g_targets[i];
+        wcscpy(nl[survivors].s, g_labels[i].s);
+        ++survivors;
+    }
+    free(g_targets);
+    free(g_labels);
+    g_targets = nt;
+    g_labels = nl;
+    g_target_count = survivors;
+
+    // Pass 2: one allocation for every new element, in shortlex order.
+    for (j = 0; j < incoming; ++j)
+        if (!used[j]) ++need;
+    if (need > MAX_TARGETS - g_target_count)
+        need = MAX_TARGETS - g_target_count;
+    if (need > 0) {
+        HintLabel *allocated = (HintLabel *)calloc((size_t)need, sizeof(*allocated));
+        int added = 0;
+
+        g_alloc_relabeled = FALSE;
+        if (!allocated || !alloc_labels(need, allocated)) {
+            // No room (or no memory): keep the survivors, retry next refresh.
+            free(allocated);
+            free(used);
+            free(gone);
+            if (changed || g_alloc_relabeled) invalidate();
+            return;
+        }
+        if (g_alloc_relabeled) changed = TRUE;
+        for (j = 0; j < incoming && added < need; ++j) {
+            if (used[j]) continue;
+            g_targets[g_target_count].rc = list->items[j].rc;
+            g_targets[g_target_count].click = list->items[j].click;
+            wcscpy(g_labels[g_target_count].s, allocated[added].s);
+            ++g_target_count;
+            ++added;
+            changed = TRUE;
+        }
+        free(allocated);
+    }
+
+    free(used);
+    free(gone);
+    if (changed) invalidate();
 }
 
 static BOOL element_status_overlaps(RECT br)
@@ -1359,6 +1728,18 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             KillTimer(hwnd, TIMER_FLASH_ID);
             g_flash = FALSE;
             InvalidateRect(hwnd, NULL, FALSE);
+        } else if (wp == TIMER_REFRESH_ID) {
+            KillTimer(hwnd, TIMER_REFRESH_ID);
+            if (!g_open || g_mode != HINT_MODE_ELEMENTS) return 0;
+            if (g_scan_retry) {
+                // An empty first scan keeps trying (same scan, same input).
+                g_scan_retry = FALSE;
+                ++g_scan_id;
+                uia_scan(g_mon, g_scan_id);
+                return 0;
+            }
+            if (!g_scanning && g_refresh_on)
+                start_refresh_scan();
         } else if (wp == TIMER_SCAN_ID) {
             KillTimer(hwnd, TIMER_SCAN_ID);
             if (!g_scanning) return 0;
@@ -1492,12 +1873,16 @@ static void reset_input(void)
 
 static void cancel_scan(void)
 {
-    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
-    g_scan_wait_first = FALSE;
-    if (g_scanning) {
-        g_scanning = FALSE;
-        uia_cancel();
+    if (g_hint_wnd) {
+        KillTimer(g_hint_wnd, TIMER_SCAN_ID);
+        KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
     }
+    g_scan_wait_first = FALSE;
+    g_scan_retry = FALSE;
+    if (g_scanning || g_refresh_on)
+        uia_cancel();  // drops the first scan or a background refresh
+    g_scanning = FALSE;
+    g_refresh_on = FALSE;
     if (g_scan_list) {
         free(g_scan_list);
         g_scan_list = NULL;
@@ -1518,6 +1903,30 @@ static UINT scan_rest_ms(DWORD t0)
     DWORD elapsed = GetTickCount() - t0;
     UINT limit = scan_limit_ms();
     return elapsed < limit ? limit - elapsed : 1;
+}
+
+// Keeps the labels current while the overlay stays open, but only after the
+// first scan has finished (g_scanning FALSE) so keys are never delayed.
+static void schedule_refresh(void)
+{
+    if (!g_open || g_mode != HINT_MODE_ELEMENTS) return;
+    if (g_cfg.scan_refresh <= 0 || !uia_available()) return;
+    g_refresh_on = TRUE;
+    if (g_hint_wnd)
+        SetTimer(g_hint_wnd, TIMER_REFRESH_ID, (UINT)g_cfg.scan_refresh, NULL);
+}
+
+// Starts one background scan of this monitor. g_scanning, the typed prefix and
+// the key queue are left alone: the overlay stays usable during the refresh.
+static void start_refresh_scan(void)
+{
+    if (!g_open || !g_refresh_on) return;
+    if (g_scan_list) {
+        free(g_scan_list);
+        g_scan_list = NULL;
+    }
+    ++g_scan_id;
+    uia_scan(g_mon, g_scan_id);
 }
 
 static void clear_prescan(void)
@@ -1553,6 +1962,8 @@ static BOOL adopt_prescan(void)
 
     reset_input();
     free_elements();
+    g_refresh_on = FALSE;
+    g_scan_retry = FALSE;
     if (g_scan_list) {
         free(g_scan_list);
         g_scan_list = NULL;
@@ -1580,6 +1991,9 @@ static void start_scan(BOOL repaint)
     discard_prescan();
     reset_input();
     free_elements();
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
+    g_refresh_on = FALSE;
+    g_scan_retry = FALSE;
     if (g_scan_list) {
         free(g_scan_list);
         g_scan_list = NULL;
@@ -1637,20 +2051,62 @@ static void finalize_scan(void)
 {
     ClickList *list = g_scan_list;
     HintLabel *labels;
+    BOOL keep_scan;
     int n;
 
     g_scan_list = NULL;
-    g_scanning = FALSE;
-    g_scan_wait_first = FALSE;
-    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
-    uia_cancel();
-
     n = list ? list->count : 0;
     if (n > MAX_TARGETS) n = MAX_TARGETS;
+
+    // A page or app still starting may expose nothing yet: retry on the
+    // refresh timer instead of dropping straight to the grid. g_scanning,
+    // g_scan_t0 and the queued keys stay as they are, so keys keep being
+    // queued and the 3 s hard limit still ends this with the grid.
+    if (n <= 0 && g_cfg.scan_refresh > 0 && g_scanning &&
+        GetTickCount() - g_scan_t0 < SCAN_HARD_LIMIT_MS) {
+        DWORD elapsed = GetTickCount() - g_scan_t0;
+
+        free(list);
+        g_scan_retry = TRUE;
+        if (g_hint_wnd) {
+            // The scan timer carries on as for the first scan (its handler
+            // may have killed it before calling here): the initial timeout,
+            // then the wait for the active window, so a retry that finds it
+            // shows at once instead of waiting for every other window.
+            if (elapsed < scan_limit_ms()) {
+                g_scan_wait_first = FALSE;
+                SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_rest_ms(g_scan_t0),
+                         NULL);
+            } else {
+                g_scan_wait_first = TRUE;
+                SetTimer(g_hint_wnd, TIMER_SCAN_ID,
+                         SCAN_HARD_LIMIT_MS - elapsed, NULL);
+            }
+            SetTimer(g_hint_wnd, TIMER_REFRESH_ID, REFRESH_RETRY_MS, NULL);
+        }
+        return;
+    }
+
+    g_scanning = FALSE;
+    g_scan_wait_first = FALSE;
+    g_scan_retry = FALSE;
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
+
     if (n <= 0) {
+        uia_cancel();
         free(list);
         enter_grid_mode(L"No clickable elements found - grid");
         return;
+    }
+
+    // Showing early does not mean the scan is over: keep it and merge its
+    // remaining posts, then refresh in the background.
+    keep_scan = list && !list->done && g_cfg.scan_refresh > 0;
+    if (!keep_scan) {
+        uia_cancel();
+        if (g_cfg.scan_refresh > 0) schedule_refresh();
+    } else {
+        g_refresh_on = TRUE;
     }
 
     g_targets = (ClickTarget *)malloc((size_t)n * sizeof(*g_targets));
@@ -1944,6 +2400,9 @@ static BOOL open_overlay(HMONITOR mon, int mode, BOOL paint)
 
     reset_input();
     free_elements();
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
+    g_refresh_on = FALSE;
+    g_scan_retry = FALSE;
     g_mode = mode;
     g_start_mode = mode;
     g_scanning = (mode == HINT_MODE_ELEMENTS);
@@ -2191,8 +2650,26 @@ void hint_on_elements(ClickList *list)
         return;
     }
 
-    if (!g_scanning || list->scan_id != g_scan_id) {
+    if (list->scan_id != g_scan_id || (!g_scanning && !g_refresh_on)) {
         free(list);
+        return;
+    }
+
+    // A background refresh merges straight into the shown labels: g_scanning
+    // stays FALSE so keys are handled immediately and the status does not
+    // flicker back to "Finding clickable elements".
+    if (g_refresh_on && !g_scanning) {
+        BOOL done = list->done;
+
+        if (g_prefix_len > 0) {
+            // Mid-type: leave the shown labels alone; catch up next time.
+            free(list);
+            if (done) schedule_refresh();
+            return;
+        }
+        merge_scan(list);
+        free(list);
+        if (done) schedule_refresh();
         return;
     }
 
