@@ -897,17 +897,43 @@ static BOOL slow_check(HWND hwnd, DWORD pid, BOOL remember)
     return hit;
 }
 
-// Browsers and Electron apps build their tree lazily: a slow, nearly empty
-// first scan there is normal and must not get them skipped. So does Explorer
-// while a folder window it has just opened fills in.
-static BOOL lazy_tree_window(HWND hwnd)
+void uia_forget_slow(void)
+{
+    while (InterlockedExchange(&g_slow_lock, 1))
+        Sleep(0);
+    memset(g_slow, 0, sizeof(g_slow));
+    InterlockedExchange(&g_slow_lock, 0);
+}
+
+static BOOL CALLBACK find_chromium_child(HWND hwnd, LPARAM lp)
 {
     WCHAR cls[64];
     GetClassNameW(hwnd, cls, 64);
-    return wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0 ||
-           wcscmp(cls, L"MozillaWindowClass") == 0 ||
-           wcscmp(cls, L"CabinetWClass") == 0 ||
-           wcscmp(cls, L"ExploreWClass") == 0;
+    if (wcscmp(cls, L"Chrome_RenderWidgetHostHWND") == 0 ||
+        wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0) {
+        *(BOOL *)lp = TRUE;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// Browsers and Electron apps build their tree lazily: a slow, nearly empty
+// first scan there is normal and must not get them skipped. So does Explorer
+// while a folder window it has just opened fills in. WebView2 and CEF apps
+// (the new Teams) host Chromium under a top-level window of their own class.
+static BOOL lazy_tree_window(HWND hwnd)
+{
+    WCHAR cls[64];
+    BOOL chromium = FALSE;
+
+    GetClassNameW(hwnd, cls, 64);
+    if (wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0 ||
+        wcscmp(cls, L"MozillaWindowClass") == 0 ||
+        wcscmp(cls, L"CabinetWClass") == 0 ||
+        wcscmp(cls, L"ExploreWClass") == 0)
+        return TRUE;
+    EnumChildWindows(hwnd, find_chromium_child, (LPARAM)&chromium);
+    return chromium;
 }
 
 // Optional observer for candidates scan_window_uia rejects (hint_check.c).
@@ -920,9 +946,12 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             ScanResult *out, int *answered);
 
 // "Next to nothing" counts every element the window answered with, not the
-// targets kept: a window mostly covered by another keeps only a few.
+// targets kept: a window mostly covered by another keeps only a few. A scan
+// dropped before it ended (Alt went on to scroll, not to the hint hotkey)
+// ran while the app was busy, so it is no verdict.
 static void scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
-                        int z, const RECT *monitor, ScanResult *out)
+                        int z, const RECT *monitor, ScanResult *out,
+                        UiaContinueCallback keep_going, void *keep_user)
 {
     DWORD pid = 0, started;
     int answered = 0;
@@ -937,7 +966,8 @@ static void scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
     started = GetTickCount();
     scan_window_uia(engine, hwnd, zrects, z, monitor, out, &answered);
     if (GetTickCount() - started > SLOW_SCAN_MS &&
-        answered <= SLOW_SCAN_TARGETS && !lazy_tree_window(hwnd))
+        answered <= SLOW_SCAN_TARGETS &&
+        (!keep_going || keep_going(keep_user)) && !lazy_tree_window(hwnd))
         slow_check(hwnd, pid, TRUE);
 }
 
@@ -1437,7 +1467,8 @@ static DWORD WINAPI uia_helper(void *arg)
             }
             started = GetTickCount();
             scan_window(job->engine, task->hwnd, job->zrects, task->z,
-                        &job->monitor, &task->found);
+                        &job->monitor, &task->found, job->keep_going,
+                        job->keep_user);
             task->elapsed_ms = GetTickCount() - started;
             InterlockedExchange(&task->finished, 1);
             SetEvent(job->done_event);
@@ -1697,7 +1728,8 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                 ScanTask *task = &job->tasks[index];
                 DWORD started = GetTickCount();
                 scan_window(job->engine, task->hwnd, job->zrects, task->z,
-                            &job->monitor, &task->found);
+                            &job->monitor, &task->found, job->keep_going,
+                            job->keep_user);
                 task->elapsed_ms = GetTickCount() - started;
                 InterlockedExchange(&task->finished, 1);
             }
@@ -2746,12 +2778,19 @@ BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
     e = scroll_cache_find(root);
     if (e && e->valid &&
         (DWORD)(start - e->tick) < SCROLL_STALE_MS) {
-        if ((DWORD)(start - e->tick) > SCROLL_FRESH_MS && !e->refreshing)
+        BOOL fresh = (DWORD)(start - e->tick) <= SCROLL_FRESH_MS;
+
+        if (!fresh && !e->refreshing)
             scroll_queue_locked(root, start);
         e->last_used = start;
         redirect = scroll_area_answer(e, pt, vertical, target);
-        LeaveCriticalSection(&g_sc_cs);
-        return redirect;
+        // Only a fresh list may send the wheel away from the pointer: the
+        // area under it may be new since (another chat opened in Teams),
+        // and an older list would aim at a side panel instead.
+        if (fresh || !redirect) {
+            LeaveCriticalSection(&g_sc_cs);
+            return redirect;
+        }
     }
     if (!e) {
         e = scroll_cache_alloc(root, start);

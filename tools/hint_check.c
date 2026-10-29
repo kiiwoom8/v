@@ -1532,7 +1532,7 @@ static void run_scans(UiaEngine *engine, HWND hwnd, const RECT *winrect,
             g_scan_debug = scan_debug_cb;
         }
         started = GetTickCount();
-        scan_window(engine, hwnd, winrect, 0, monitor, &found);
+        scan_window(engine, hwnd, winrect, 0, monitor, &found, NULL, NULL);
         elapsed = GetTickCount() - started;
         for (i = 0; i < found.count; ++i)
             merge_target(&merged, &found.items[i]);

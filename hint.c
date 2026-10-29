@@ -2213,8 +2213,11 @@ void hint_hotkey_again(void)
 
     // Another press reloads what the hotkey opened: a fresh element scan
     // (also after a fallback to the grid), or the grid back at its start.
-    if (g_start_mode == HINT_MODE_ELEMENTS && uia_available())
+    // The fresh scan asks windows skipped for being slow again too.
+    if (g_start_mode == HINT_MODE_ELEMENTS && uia_available()) {
+        uia_forget_slow();
         start_element_mode();
-    else
+    } else {
         enter_grid_mode(NULL);
+    }
 }

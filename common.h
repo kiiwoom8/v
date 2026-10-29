@@ -261,6 +261,9 @@ BOOL uia_available(void);
 // A newer uia_scan or uia_cancel makes the old scan stop posting.
 void uia_scan(HMONITOR mon, UINT scan_id);
 void uia_cancel(void);
+// Forgets the windows skipped for answering slowly, so the next scan asks
+// them again (another hint hotkey press).
+void uia_forget_slow(void);
 // Alt scrolling: finds the element nearest to pt that scrolls that way in the
 // window under pt (UI Automation, on its own thread; waits up to timeout_ms).
 // TRUE with *target set when pt is not over such an element and the wheel
