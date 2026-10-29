@@ -103,6 +103,11 @@ typedef struct {
     int    alt_scroll;         // 1 = Alt + move keys scroll anywhere, Alt + u/d fast; default 1
     int    alt_scroll_auto;    // 1 = Alt scrolling goes to the nearest scrollable area in
                                // line with the pointer; default 1
+    int    alt_nav;            // 1 = Alt + key_left / key_right go back / forward (Alt+Left /
+                               // Alt+Right) and Alt + the side scroll keys scroll sideways;
+                               // default 1
+    int    bare_keys;          // 1 = outside text fields the Alt keys (hint hotkey, Alt
+                               // scrolling, back / forward) work without Alt; default 1
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
     int    scroll_end_tap_ms;  // Alt + u u / Alt + d d within this many ms jump
                                // to the top / bottom, default 300 (0 = off)
@@ -276,6 +281,16 @@ void uia_forget_slow(void);
 BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms, POINT *target);
 void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);
+// Bare keys: whether the keyboard focus is in a text field (UI Automation, on
+// its own thread). uia_focus_changed forgets the answer and asks again, not
+// before delay_ms from now (a click the app has not handled yet); the first
+// call starts the worker. uia_focus_state returns the cached answer for the
+// current focus, or FOCUS_UNKNOWN while it is being asked. Neither waits, so
+// both are safe from the keyboard hook. uia_stop stops it too.
+enum { FOCUS_UNKNOWN = 0, FOCUS_TEXT = 1, FOCUS_OTHER = 2 };
+void uia_focus_changed(DWORD delay_ms);
+int  uia_focus_state(void);
+void uia_focus_stop(void);
 
 // ---------------------------------------------------------------------------
 // Tray + help (tray.c). Main/UI thread.

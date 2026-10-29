@@ -793,9 +793,23 @@ static void build_help_rows(void)
         format_key(g_cfg.key_down, k2, 16);
         format_key(g_cfg.key_up, k3, 16);
         format_key(g_cfg.key_right, k4, 16);
-        _snwprintf(buf, 127, L"Alt + %s %s %s %s", k1, k2, k3, k4);
-        buf[127] = L'\0';
-        help_add_row(buf, L"Scroll left / down / up / right");
+        if (g_cfg.alt_nav) {
+            _snwprintf(buf, 127, L"Alt + %s %s", k2, k3);
+            buf[127] = L'\0';
+            help_add_row(buf, L"Scroll down / up");
+            _snwprintf(buf, 127, L"Alt + %s / %s", k1, k4);
+            buf[127] = L'\0';
+            help_add_row(buf, L"Back / forward (Alt+Left / Alt+Right)");
+            format_key(g_cfg.key_scroll_left, k1, 16);
+            format_key(g_cfg.key_scroll_right, k4, 16);
+            _snwprintf(buf, 127, L"Alt + %s %s", k1, k4);
+            buf[127] = L'\0';
+            help_add_row(buf, L"Scroll left / right");
+        } else {
+            _snwprintf(buf, 127, L"Alt + %s %s %s %s", k1, k2, k3, k4);
+            buf[127] = L'\0';
+            help_add_row(buf, L"Scroll left / down / up / right");
+        }
         format_key(g_cfg.key_scroll_up, k1, 16);
         format_key(g_cfg.key_scroll_down, k2, 16);
         _snwprintf(buf, 127, L"Alt + %s / %s", k1, k2);
@@ -807,6 +821,10 @@ static void build_help_rows(void)
             help_add_row(buf, L"Top / bottom (tap twice)");
         }
     }
+    if (g_cfg.bare_keys &&
+        (g_cfg.alt_scroll || g_cfg.hint_hotkey.mods == KMOD_ALT))
+        help_add_row(L"same keys, no Alt",
+                     L"Outside text fields Alt is not needed");
     help_add_row(L"Alt + abbreviation",
                  L"Type a text shortcut (tray: Text shortcuts...)");
 

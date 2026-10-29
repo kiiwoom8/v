@@ -542,6 +542,8 @@ void config_set_defaults(Config *c)
     c->smooth_scroll = 1;
     c->alt_scroll = 1;
     c->alt_scroll_auto = 1;
+    c->alt_nav = 1;
+    c->bare_keys = 1;
     c->shortcut_paste = 1;
     c->fast_scroll_lines = 5;
     c->scroll_end_tap_ms = 300;
@@ -811,6 +813,10 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_bool(&c->alt_scroll, line, key, val);
     else if (_wcsicmp(key, L"alt_scroll_auto") == 0)
         apply_bool(&c->alt_scroll_auto, line, key, val);
+    else if (_wcsicmp(key, L"alt_nav") == 0)
+        apply_bool(&c->alt_nav, line, key, val);
+    else if (_wcsicmp(key, L"bare_keys") == 0)
+        apply_bool(&c->bare_keys, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_lines") == 0)
         apply_int_range(&c->fast_scroll_lines, line, key, val, 1, 50);
     else if (_wcsicmp(key, L"scroll_end_tap_ms") == 0)
@@ -1427,6 +1433,14 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; (when the pointer is not over one) and scrolls that. Within the window\r\n");
     appendf(buf, cch, L"; only an area in line with the pointer or right beside it counts.\r\n");
     appendf(buf, cch, L"alt_scroll_auto = %d\r\n", d.alt_scroll_auto ? 1 : 0);
+    appendf(buf, cch, L"; 1 = Alt + h / Alt + l go back / forward (as Alt+Left / Alt+Right) in\r\n");
+    appendf(buf, cch, L"; browsers, Explorer and most apps, and Alt + , / Alt + . scroll left /\r\n");
+    appendf(buf, cch, L"; right instead. 0 = Alt + h / Alt + l scroll left / right.\r\n");
+    appendf(buf, cch, L"alt_nav = %d\r\n", d.alt_nav ? 1 : 0);
+    appendf(buf, cch, L"; 1 = when the keyboard focus is not in a text field, the Alt keys also\r\n");
+    appendf(buf, cch, L"; work without Alt: f opens the hints, h j k l u d , . scroll and go\r\n");
+    appendf(buf, cch, L"; back / forward. In a text field they need Alt and type as usual.\r\n");
+    appendf(buf, cch, L"bare_keys = %d\r\n", d.bare_keys ? 1 : 0);
     appendf(buf, cch, L"; Notches per Alt + u / Alt + d tap (1-50), and the speeds while held.\r\n");
     appendf(buf, cch, L"fast_scroll_lines = %d\r\n", d.fast_scroll_lines);
     fmt_double(d.fast_scroll_speed, num, sizeof(num) / sizeof(num[0]));

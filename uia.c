@@ -126,7 +126,8 @@ typedef struct IUIAutomationVtbl {
     void *GetRootElementBuildCache;
     void *ElementFromHandleBuildCache;
     void *ElementFromPointBuildCache;
-    void *GetFocusedElementBuildCache;
+    HRESULT (STDMETHODCALLTYPE *GetFocusedElementBuildCache)(IUIAutomation *This,
+        IUIAutomationCacheRequest *cacheRequest, IUIAutomationElement **element);
     void *CreateTreeWalker;
     void *get_ControlViewWalker;
     void *get_ContentViewWalker;
@@ -2219,6 +2220,7 @@ void uia_stop(void)
     HANDLE thread;
 
     uia_scroll_stop();
+    uia_focus_stop();
     if (!g_uia_thread)
         return;
 
@@ -2928,4 +2930,456 @@ void uia_scroll_stop(void)
     LeaveCriticalSection(&g_sc_cs);
     DeleteCriticalSection(&g_sc_cs);
     InterlockedExchange(&g_sc_state, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Typing context (bare keys): is the keyboard focus in a text field? Its own
+// MTA thread and engine. Each focus change (uia_focus_changed) makes the
+// answer unknown until the worker has asked UI Automation again; while the
+// user is active it also asks every FOCUS_POLL_MS, in case a change went
+// unreported. The hook only reads the cached answer (uia_focus_state).
+
+#ifndef UIA_IsPasswordPropertyId
+#define UIA_IsPasswordPropertyId 30019
+#endif
+#ifndef UIA_IsTextPatternAvailablePropertyId
+#define UIA_IsTextPatternAvailablePropertyId 30040
+#endif
+#ifndef UIA_IsValuePatternAvailablePropertyId
+#define UIA_IsValuePatternAvailablePropertyId 30043
+#endif
+#ifndef UIA_ValueIsReadOnlyPropertyId
+#define UIA_ValueIsReadOnlyPropertyId 30046
+#endif
+#ifndef UIA_IsLegacyIAccessiblePatternAvailablePropertyId
+#define UIA_IsLegacyIAccessiblePatternAvailablePropertyId 30090
+#endif
+#ifndef UIA_LegacyIAccessibleStatePropertyId
+#define UIA_LegacyIAccessibleStatePropertyId 30096
+#endif
+#ifndef UIA_CustomControlTypeId
+#define UIA_CustomControlTypeId 50025
+#endif
+#ifndef UIA_WindowControlTypeId
+#define UIA_WindowControlTypeId 50032
+#endif
+#ifndef UIA_PaneControlTypeId
+#define UIA_PaneControlTypeId 50033
+#endif
+#ifndef STATE_SYSTEM_READONLY
+#define STATE_SYSTEM_READONLY 0x40
+#endif
+#ifndef GUI_CARETBLINKING
+#define GUI_CARETBLINKING 0x00000001
+#endif
+#ifndef GUI_INMENUMODE
+#define GUI_INMENUMODE 0x00000004
+#endif
+#ifndef GUI_SYSTEMMENUMODE
+#define GUI_SYSTEMMENUMODE 0x00000008
+#endif
+#ifndef GUI_POPUPMENUMODE
+#define GUI_POPUPMENUMODE 0x00000010
+#endif
+
+#define FOCUS_POLL_MS 500       // recheck this often while the user is active
+#define FOCUS_ACTIVE_MS 30000   // active = some input within this long
+
+static CRITICAL_SECTION g_fx_cs;
+static HANDLE g_fx_wake;
+static HANDLE g_fx_thread;
+static volatile LONG g_fx_state;    // 0 stopped, 1 starting, 2 running, 3 failed
+static volatile LONG g_fx_quit;
+// g_fx_cs guards the rest. Every change bumps g_fx_gen; the answer counts
+// only while g_fx_answer_gen still equals it and the focus is still g_fx_hwnd.
+static LONG  g_fx_gen;
+static LONG  g_fx_answer_gen = -1;
+static HWND  g_fx_hwnd;
+static int   g_fx_answer = FOCUS_UNKNOWN;
+static DWORD g_fx_not_before;       // do not ask before this tick
+
+// The window with the keyboard focus (the foreground window if its thread
+// names none), and the GUI thread state behind it. FALSE if unknown.
+static BOOL focus_window(HWND *focus, GUITHREADINFO *gti, DWORD *pid)
+{
+    HWND fg = GetForegroundWindow();
+    DWORD tid;
+
+    *focus = NULL;
+    *pid = 0;
+    if (!fg)
+        return FALSE;
+    tid = GetWindowThreadProcessId(fg, pid);
+    ZeroMemory(gti, sizeof(*gti));
+    gti->cbSize = sizeof(*gti);
+    if (!tid || !GetGUIThreadInfo(tid, gti))
+        return FALSE;
+    *focus = gti->hwndFocus ? gti->hwndFocus : fg;
+    return TRUE;
+}
+
+static BOOL class_in(const WCHAR *cls, const WCHAR *const *list)
+{
+    int i;
+
+    for (i = 0; list[i]; ++i)
+        if (lstrcmpiW(cls, list[i]) == 0)
+            return TRUE;
+    return FALSE;
+}
+
+// Windows that take typing whatever UI Automation says: edit controls, and
+// terminals and editors whose text area is the whole window.
+static BOOL text_window(HWND focus)
+{
+    static const WCHAR *const focus_classes[] = {
+        L"Edit", L"Scintilla", NULL
+    };
+    static const WCHAR *const root_classes[] = {
+        L"ConsoleWindowClass", L"CASCADIA_HOSTING_WINDOW_CLASS",
+        L"PseudoConsoleWindow", L"mintty", L"PuTTY", L"VirtualConsoleClass",
+        L"Vim", L"Emacs", NULL
+    };
+    WCHAR cls[64];
+    HWND root;
+
+    cls[0] = 0;
+    GetClassNameW(focus, cls, 64);
+    if (class_in(cls, focus_classes) || _wcsnicmp(cls, L"RichEdit", 8) == 0)
+        return TRUE;
+    root = GetAncestor(focus, GA_ROOT);
+    cls[0] = 0;
+    if (root)
+        GetClassNameW(root, cls, 64);
+    return class_in(cls, root_classes);
+}
+
+static LONG cached_long_property(IUIAutomationElement *el, int property_id)
+{
+    VARIANT v;
+    LONG value = 0;
+
+    VariantInit(&v);
+    if (SUCCEEDED(el->lpVtbl->GetCachedPropertyValue(el, property_id, &v)) &&
+        v.vt == VT_I4)
+        value = v.lVal;
+    VariantClear(&v);
+    return value;
+}
+
+// Controls whose value is not typed in, though it may be writable (a web
+// checkbox's "on").
+static BOOL control_takes_no_text(int ct)
+{
+    switch (ct) {
+    case UIA_ButtonControlTypeId: case UIA_CheckBoxControlTypeId:
+    case UIA_HyperlinkControlTypeId: case UIA_ListItemControlTypeId:
+    case UIA_MenuItemControlTypeId: case UIA_RadioButtonControlTypeId:
+    case UIA_ScrollBarControlTypeId: case UIA_TabItemControlTypeId:
+    case UIA_TreeItemControlTypeId: case UIA_SplitButtonControlTypeId:
+    case UIA_HeaderItemControlTypeId:
+    case 50006:     // Image
+    case 50012:     // ProgressBar
+    case 50015:     // Slider
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// What typing into the focused element would do. A web page itself is a
+// read-only document; its inputs and contenteditable areas take a value.
+static int focus_element_kind(IUIAutomationElement *el)
+{
+    int ct = 0;
+    BOOL value, value_ro, readonly;
+
+    el->lpVtbl->get_CachedControlType(el, &ct);
+    if (cached_bool_property(el, UIA_IsPasswordPropertyId))
+        return FOCUS_TEXT;
+    if (control_takes_no_text(ct))
+        return FOCUS_OTHER;
+    value = cached_bool_property(el, UIA_IsValuePatternAvailablePropertyId);
+    value_ro = value &&
+               cached_bool_property(el, UIA_ValueIsReadOnlyPropertyId);
+    // Input fields, contenteditable areas, spreadsheet cells.
+    if (value && !value_ro)
+        return FOCUS_TEXT;
+    readonly = value_ro ||
+               (cached_bool_property(
+                    el, UIA_IsLegacyIAccessiblePatternAvailablePropertyId) &&
+                (cached_long_property(el, UIA_LegacyIAccessibleStatePropertyId) &
+                 STATE_SYSTEM_READONLY));
+    if (ct == UIA_EditControlTypeId || ct == UIA_DocumentControlTypeId)
+        return readonly ? FOCUS_OTHER : FOCUS_TEXT;
+    // Terminals and custom editors.
+    if (cached_bool_property(el, UIA_IsTextPatternAvailablePropertyId))
+        return FOCUS_TEXT;
+    // A bare window says nothing: a game, a remote desktop, a canvas.
+    if (ct == 0 || ct == UIA_PaneControlTypeId ||
+        ct == UIA_WindowControlTypeId || ct == UIA_CustomControlTypeId)
+        return FOCUS_UNKNOWN;
+    return FOCUS_OTHER;
+}
+
+static int focus_classify(IUIAutomation *automation,
+                          IUIAutomationCacheRequest *cache, HWND *out)
+{
+    IUIAutomationElement *el = NULL;
+    GUITHREADINFO gti;
+    HWND focus, again;
+    DWORD pid;
+    int kind;
+
+    *out = NULL;
+    if (!focus_window(&focus, &gti, &pid))
+        return FOCUS_UNKNOWN;
+    *out = focus;
+    if (gti.hwndCaret || (gti.flags & GUI_CARETBLINKING))
+        return FOCUS_TEXT;
+    if (gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE))
+        return FOCUS_UNKNOWN;
+    // Our own windows: never query the UI thread from here.
+    if (pid == GetCurrentProcessId())
+        return FOCUS_UNKNOWN;
+    if (text_window(focus))
+        return FOCUS_TEXT;
+    if (!automation || !cache ||
+        FAILED(automation->lpVtbl->GetFocusedElementBuildCache(
+            automation, cache, &el)) || !el)
+        return FOCUS_UNKNOWN;
+    kind = focus_element_kind(el);
+    el->lpVtbl->Release(el);
+    // The focus moved to another window while we asked.
+    if (!focus_window(&again, &gti, &pid) || again != focus)
+        return FOCUS_UNKNOWN;
+    return kind;
+}
+
+static BOOL focus_engine_init(IUIAutomation **automation,
+                              IUIAutomationCacheRequest **cache)
+{
+    static const int props[] = {
+        UIA_ControlTypePropertyId, UIA_IsPasswordPropertyId,
+        UIA_IsValuePatternAvailablePropertyId, UIA_ValueIsReadOnlyPropertyId,
+        UIA_IsTextPatternAvailablePropertyId,
+        UIA_IsLegacyIAccessiblePatternAvailablePropertyId,
+        UIA_LegacyIAccessibleStatePropertyId
+    };
+    IUIAutomation2 *automation2 = NULL;
+    HRESULT hr;
+    size_t i;
+
+    *automation = NULL;
+    *cache = NULL;
+    hr = CoCreateInstance(&g_clsid_uia8, NULL, CLSCTX_INPROC_SERVER,
+                          &g_iid_uia, (void **)automation);
+    if (FAILED(hr) || !*automation) {
+        *automation = NULL;
+        hr = CoCreateInstance(&g_clsid_uia, NULL, CLSCTX_INPROC_SERVER,
+                              &g_iid_uia, (void **)automation);
+    }
+    if (FAILED(hr) || !*automation) {
+        *automation = NULL;
+        return FALSE;
+    }
+    if (SUCCEEDED((*automation)->lpVtbl->QueryInterface(
+            *automation, &g_iid_uia2, (void **)&automation2)) && automation2) {
+        automation2->lpVtbl->put_TransactionTimeout(automation2, 1000);
+        automation2->lpVtbl->put_ConnectionTimeout(automation2, 1000);
+        automation2->lpVtbl->base.Release((IUIAutomation *)automation2);
+    }
+    if (FAILED((*automation)->lpVtbl->CreateCacheRequest(*automation, cache)) ||
+        !*cache) {
+        *cache = NULL;
+        (*automation)->lpVtbl->Release(*automation);
+        *automation = NULL;
+        return FALSE;
+    }
+    for (i = 0; i < sizeof(props) / sizeof(props[0]); ++i)
+        (*cache)->lpVtbl->AddProperty(*cache, props[i]);
+    (*cache)->lpVtbl->put_AutomationElementMode(*cache, UIA_MODE_NONE);
+    return TRUE;
+}
+
+static BOOL user_active(void)
+{
+    LASTINPUTINFO lii;
+
+    lii.cbSize = sizeof(lii);
+    if (!GetLastInputInfo(&lii))
+        return TRUE;
+    return (DWORD)(GetTickCount() - lii.dwTime) < FOCUS_ACTIVE_MS;
+}
+
+static const WCHAR *focus_kind_name(int kind)
+{
+    switch (kind) {
+    case FOCUS_TEXT:  return L"text field";
+    case FOCUS_OTHER: return L"no text field";
+    default:          return L"unknown";
+    }
+}
+
+static DWORD WINAPI focus_worker(void *arg)
+{
+    IUIAutomation *automation = NULL;
+    IUIAutomationCacheRequest *cache = NULL;
+    HRESULT hr;
+    HWND last_hwnd = NULL;
+    int last_kind = -1;
+    (void)arg;
+
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (hr == S_OK || hr == S_FALSE)
+        focus_engine_init(&automation, &cache);
+
+    while (!InterlockedCompareExchange(&g_fx_quit, 0, 0)) {
+        LONG gen;
+        BOOL pending;
+        DWORD wait = 0, now;
+        HWND hwnd;
+        int kind;
+
+        EnterCriticalSection(&g_fx_cs);
+        gen = g_fx_gen;
+        pending = g_fx_answer_gen != gen;
+        now = GetTickCount();
+        if (pending && (LONG)(g_fx_not_before - now) > 0)
+            wait = g_fx_not_before - now;
+        LeaveCriticalSection(&g_fx_cs);
+
+        if (pending && wait > 0) {
+            WaitForSingleObject(g_fx_wake, wait);
+            continue;
+        }
+        // Answered: poll now and then. The old answer stays valid while the
+        // poll asks again; any change wakes us and invalidates it.
+        if (!pending) {
+            BOOL active = g_cfg.bare_keys && user_active();
+
+            if (WaitForSingleObject(g_fx_wake, active ? FOCUS_POLL_MS : 5000) !=
+                    WAIT_TIMEOUT || !active)
+                continue;
+        }
+
+        kind = focus_classify(automation, cache, &hwnd);
+
+        EnterCriticalSection(&g_fx_cs);
+        if (g_fx_gen == gen) {
+            g_fx_hwnd = hwnd;
+            g_fx_answer = kind;
+            g_fx_answer_gen = gen;
+        }
+        LeaveCriticalSection(&g_fx_cs);
+
+        if (hwnd != last_hwnd || kind != last_kind) {
+            app_log(L"focus: %ls (window %p)", focus_kind_name(kind),
+                    (void *)hwnd);
+            // Bare scrolling may follow: cache the areas under the pointer.
+            if (kind == FOCUS_OTHER) {
+                POINT pt;
+                if (GetCursorPos(&pt))
+                    uia_scroll_prefetch(pt);
+            }
+            last_hwnd = hwnd;
+            last_kind = kind;
+        }
+    }
+
+    if (cache)
+        cache->lpVtbl->Release(cache);
+    if (automation)
+        automation->lpVtbl->Release(automation);
+    if (hr == S_OK || hr == S_FALSE)
+        CoUninitialize();
+    return 0;
+}
+
+static BOOL focus_worker_init(void)
+{
+    InitializeCriticalSection(&g_fx_cs);
+    g_fx_gen = 0;
+    g_fx_answer_gen = -1;
+    g_fx_hwnd = NULL;
+    g_fx_answer = FOCUS_UNKNOWN;
+    g_fx_not_before = GetTickCount();
+    g_fx_quit = 0;
+    g_fx_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!g_fx_wake) {
+        DeleteCriticalSection(&g_fx_cs);
+        return FALSE;
+    }
+    g_fx_thread = CreateThread(NULL, 0, focus_worker, NULL, 0, NULL);
+    if (!g_fx_thread) {
+        CloseHandle(g_fx_wake);
+        g_fx_wake = NULL;
+        DeleteCriticalSection(&g_fx_cs);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+void uia_focus_changed(DWORD delay_ms)
+{
+    DWORD at;
+
+    if (InterlockedCompareExchange(&g_fx_state, 1, 0) == 0)
+        InterlockedExchange(&g_fx_state, focus_worker_init() ? 2 : 3);
+    if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+        return;
+    at = GetTickCount() + delay_ms;
+    EnterCriticalSection(&g_fx_cs);
+    ++g_fx_gen;
+    if ((LONG)(at - g_fx_not_before) > 0)
+        g_fx_not_before = at;
+    LeaveCriticalSection(&g_fx_cs);
+    SetEvent(g_fx_wake);
+}
+
+int uia_focus_state(void)
+{
+    GUITHREADINFO gti;
+    HWND focus;
+    DWORD pid;
+    int kind = FOCUS_UNKNOWN;
+    BOOL moved = FALSE;
+
+    if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+        return FOCUS_UNKNOWN;
+    if (!focus_window(&focus, &gti, &pid))
+        return FOCUS_UNKNOWN;
+    if (gti.hwndCaret || (gti.flags & GUI_CARETBLINKING))
+        return FOCUS_TEXT;
+    EnterCriticalSection(&g_fx_cs);
+    if (g_fx_answer_gen == g_fx_gen) {
+        if (g_fx_hwnd == focus) {
+            kind = g_fx_answer;
+        } else {
+            // The focus moved without an event (or before it arrived).
+            ++g_fx_gen;
+            moved = TRUE;
+        }
+    }
+    LeaveCriticalSection(&g_fx_cs);
+    if (moved)
+        SetEvent(g_fx_wake);
+    return kind;
+}
+
+void uia_focus_stop(void)
+{
+    while (InterlockedCompareExchange(&g_fx_state, 1, 1) == 1)
+        Sleep(0);
+    if (InterlockedCompareExchange(&g_fx_state, 0, 0) != 2)
+        return;
+    InterlockedExchange(&g_fx_quit, 1);
+    SetEvent(g_fx_wake);
+    if (WaitForSingleObject(g_fx_thread, 3000) != WAIT_OBJECT_0)
+        return;
+    CloseHandle(g_fx_thread);
+    CloseHandle(g_fx_wake);
+    g_fx_thread = NULL;
+    g_fx_wake = NULL;
+    DeleteCriticalSection(&g_fx_cs);
+    InterlockedExchange(&g_fx_state, 0);
 }

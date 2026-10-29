@@ -119,6 +119,10 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // How long Alt scrolling waits for the nearest scrollable area before it
 // scrolls under the cursor instead.
 #define AUTO_TARGET_TIMEOUT_MS 500
+// After a click or a key that moves the focus, ask whether the focus is in a
+// text field only once the app has had this long to move it.
+#define FOCUS_CLICK_DELAY_MS 150
+#define FOCUS_KEY_DELAY_MS   100
 
 enum {
     ACT_NONE = 0,
@@ -126,7 +130,8 @@ enum {
     ACT_SCROLL_UP, ACT_SCROLL_DOWN, ACT_SCROLL_LEFT, ACT_SCROLL_RIGHT,
     ACT_FAST_UP, ACT_FAST_DOWN,
     ACT_LEFT, ACT_CLICK_RIGHT, ACT_CLICK_MIDDLE, ACT_TOGGLE,
-    ACT_HINTS, ACT_EXIT, ACT_HELP
+    ACT_HINTS, ACT_EXIT, ACT_HELP,
+    ACT_BACK, ACT_FORWARD
 };
 
 enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS, OWN_ALT_HELD };
@@ -199,6 +204,8 @@ static DWORD  s_input_tid = 0;
 static BOOL   s_started_ok = FALSE;
 
 static HHOOK s_hook = NULL;
+// Focus and foreground changes, for bare keys (uia_focus_changed).
+static HWINEVENTHOOK s_focus_hooks[2];
 static HWND  s_power_wnd = NULL;
 static HWND  s_ind_wnd = NULL;
 static HFONT s_ind_font = NULL;
@@ -294,9 +301,17 @@ static void send_absolute_move(int x, int y, int vx, int vy, int vw, int vh)
     SendInput(1, &in, sizeof(in));
 }
 
+// A click of ours may move the focus into or out of a text field.
+static void focus_clicked(void)
+{
+    if (g_cfg.bare_keys)
+        uia_focus_changed(FOCUS_CLICK_DELAY_MS);
+}
+
 static void send_button(int button, BOOL down)
 {
     INPUT in;
+    focus_clicked();
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
     if (button == BTN_LEFT)
@@ -311,6 +326,7 @@ static void send_button(int button, BOOL down)
 static void click_button(int button)
 {
     INPUT in[2];
+    focus_clicked();
     ZeroMemory(in, sizeof(in));
     in[0].type = INPUT_MOUSE;
     in[1].type = INPUT_MOUSE;
@@ -400,6 +416,37 @@ static void send_alt_tap(void)
     SendInput(2, in, sizeof(INPUT));
 }
 
+// Back / forward: Alt+Left / Alt+Right, which browsers, Explorer and most
+// apps share. With the real Alt held the app has seen its Alt go down already.
+static void send_nav(BOOL forward, BOOL alt_held)
+{
+    INPUT in[4];
+    UINT vk = forward ? VK_RIGHT : VK_LEFT;
+    UINT n = 0;
+
+    ZeroMemory(in, sizeof(in));
+    if (!alt_held) {
+        in[n].type = INPUT_KEYBOARD;
+        in[n].ki.wVk = VK_LMENU;
+        in[n].ki.wScan = (WORD)MapVirtualKeyW(VK_LMENU, MAPVK_VK_TO_VSC);
+        n++;
+    }
+    in[n].type = INPUT_KEYBOARD;
+    in[n].ki.wVk = (WORD)vk;
+    in[n].ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    in[n].ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+    n++;
+    in[n] = in[n - 1];
+    in[n].ki.dwFlags |= KEYEVENTF_KEYUP;
+    n++;
+    if (!alt_held) {
+        in[n] = in[0];
+        in[n].ki.dwFlags = KEYEVENTF_KEYUP;
+        n++;
+    }
+    SendInput(n, in, sizeof(INPUT));
+}
+
 static void left_set(BOOL held)
 {
     LONG old = InterlockedExchange(&s_left_held, held ? 1 : 0);
@@ -470,6 +517,7 @@ void mouse_click_at(POINT pt, int button, int count)
     int n;
     int i;
 
+    focus_clicked();
     SetCursorPos(pt.x, pt.y);
     if (count == 2)
         n = 4;
@@ -926,18 +974,24 @@ static void apply_action_down(int act)
 }
 
 // Alt + a move key scrolls that way, anywhere; Alt + the scroll up/down
-// keys scroll fast.
-static int alt_scroll_action(UINT vk)
+// keys scroll fast. With alt_nav, Alt + left / right go back / forward
+// instead and the side scroll keys scroll sideways.
+static int alt_key_action(UINT vk)
 {
     if (!g_cfg.alt_scroll)
         return ACT_NONE;
     if (g_cfg.key_left && vk == g_cfg.key_left)
-        return ACT_SCROLL_LEFT;
+        return g_cfg.alt_nav ? ACT_BACK : ACT_SCROLL_LEFT;
     if (g_cfg.key_down && vk == g_cfg.key_down)
         return ACT_SCROLL_DOWN;
     if (g_cfg.key_up && vk == g_cfg.key_up)
         return ACT_SCROLL_UP;
     if (g_cfg.key_right && vk == g_cfg.key_right)
+        return g_cfg.alt_nav ? ACT_FORWARD : ACT_SCROLL_RIGHT;
+    if (g_cfg.alt_nav && g_cfg.key_scroll_left && vk == g_cfg.key_scroll_left)
+        return ACT_SCROLL_LEFT;
+    if (g_cfg.alt_nav && g_cfg.key_scroll_right &&
+        vk == g_cfg.key_scroll_right)
         return ACT_SCROLL_RIGHT;
     if (g_cfg.key_scroll_up && vk == g_cfg.key_scroll_up)
         return ACT_FAST_UP;
@@ -1067,6 +1121,18 @@ static BOOL handle_locked(UINT vk, BOOL down, BOOL repeat)
     return TRUE;
 }
 
+static void hint_hotkey_fire(void)
+{
+    // hint_open adopts the early scan instead of starting a new one.
+    s_prepared = FALSE;
+    if (!flag_get(&s_capture)) {
+        flag_set(&s_capture, TRUE);
+        post_main(WM_APP_HINT_OPEN, 0, 0);
+    } else {
+        post_main(WM_APP_HINT_AGAIN, 0, 0);
+    }
+}
+
 static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
 {
     if (hotkey_match(&g_cfg.lock_hotkey, vk, mods)) {
@@ -1090,17 +1156,37 @@ static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
     if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
-        // hint_open adopts the early scan instead of starting a new one.
-        s_prepared = FALSE;
-        if (!flag_get(&s_capture)) {
-            flag_set(&s_capture, TRUE);
-            post_main(WM_APP_HINT_OPEN, 0, 0);
-        } else {
-            post_main(WM_APP_HINT_AGAIN, 0, 0);
-        }
+        hint_hotkey_fire();
         return TRUE;
     }
     return FALSE;
+}
+
+// Bare keys: outside text fields the Alt keys work without Alt. Only the
+// hint hotkey's own key counts, and only when Alt is its sole modifier.
+static BOOL bare_hint_key(UINT vk)
+{
+    return g_cfg.hint_hotkey.vk == vk && g_cfg.hint_hotkey.mods == KMOD_ALT;
+}
+
+// Checked only for an unmodified press of one of those keys. Anything not
+// known to be outside a text field (still asking, a menu open) types as usual.
+static BOOL bare_key_ok(UINT vk)
+{
+    if (!g_cfg.bare_keys || flag_get(&s_mouse_mode))
+        return FALSE;
+    if (!bare_hint_key(vk) && alt_key_action(vk) == ACT_NONE)
+        return FALSE;
+    return uia_focus_state() == FOCUS_OTHER && !popup_open();
+}
+
+// Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
+// it, so ask again once it has.
+static void focus_key_passed(UINT vk)
+{
+    if (g_cfg.bare_keys &&
+        (vk == VK_TAB || vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_F6))
+        uia_focus_changed(FOCUS_KEY_DELAY_MS);
 }
 
 static BOOL alt_hotkey_configured(void)
@@ -1159,6 +1245,7 @@ static BOOL handle_down(UINT vk)
     UINT mods = current_mods();
     int act;
     int tap_prev = s_tap_act;
+    BOOL bare;
 
     // Any key save the same Alt fast-scroll key ends a pending double tap;
     // modifiers never reach here.
@@ -1183,10 +1270,24 @@ static BOOL handle_down(UINT vk)
         s_owner[vk] = OWN_PASS;
         return FALSE;
     }
+    // Outside text fields the Alt keys below work without Alt.
+    bare = mods == 0 && bare_key_ok(vk);
+    if (bare && bare_hint_key(vk)) {
+        s_owner[vk] = OWN_SWALLOW;
+        hint_hotkey_fire();
+        return TRUE;
+    }
     // Alt + letter reaches the app with Alt already down; the mask key keeps
     // the Alt release from opening its menu bar.
-    if (mods == KMOD_ALT) {
-        act = alt_scroll_action(vk);
+    if (mods == KMOD_ALT || bare) {
+        act = alt_key_action(vk);
+        if (act == ACT_BACK || act == ACT_FORWARD) {
+            // One step per press: repeats are swallowed.
+            mark_caps_used();
+            s_owner[vk] = OWN_SWALLOW;
+            send_nav(act == ACT_FORWARD, !bare);
+            return TRUE;
+        }
         if (act != ACT_NONE) {
             BOOL jump = FALSE;
             DWORD now = GetTickCount();
@@ -1201,14 +1302,15 @@ static BOOL handle_down(UINT vk)
                     s_tap_tick = now;
                 }
             }
-            send_mask_key();
+            if (!bare)
+                send_mask_key();
             mark_caps_used();
             s_action[vk] = (unsigned char)act;
             s_owner[vk] = OWN_MOVE;
             scroll_press(act, g_cfg.alt_scroll_auto, jump);
             return TRUE;
         }
-        if (shortcut_begin(vk)) {
+        if (!bare && shortcut_begin(vk)) {
             send_mask_key();
             mark_caps_used();
             s_owner[vk] = OWN_SWALLOW;
@@ -1253,6 +1355,7 @@ static BOOL handle_down(UINT vk)
             return TRUE;
         }
     }
+    focus_key_passed(vk);
     s_owner[vk] = OWN_PASS;
     return FALSE;
 }
@@ -1437,6 +1540,43 @@ static void replace_hook(void)
     s_hook_replace_tick = now;
     s_hook_misses = 0;
     app_log(L"input: keyboard hook was removed by Windows; reinstalled");
+}
+
+static void CALLBACK focus_event_proc(HWINEVENTHOOK hook, DWORD event,
+                                      HWND hwnd, LONG id_object,
+                                      LONG id_child, DWORD thread, DWORD time)
+{
+    (void)hook;
+    (void)event;
+    (void)hwnd;
+    (void)id_object;
+    (void)id_child;
+    (void)thread;
+    (void)time;
+    uia_focus_changed(0);
+}
+
+// Bare keys hear about every focus and foreground change; without bare keys
+// nothing is hooked and nothing is asked.
+static void focus_hooks_update(void)
+{
+    static const DWORD events[2] = { EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS };
+    int i;
+
+    for (i = 0; i < 2; i++) {
+        if (g_cfg.bare_keys && !s_focus_hooks[i]) {
+            s_focus_hooks[i] = SetWinEventHook(
+                events[i], events[i], NULL, focus_event_proc, 0, 0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+            if (!s_focus_hooks[i])
+                app_log(L"input: focus event hook failed (%lu)", GetLastError());
+        } else if (!g_cfg.bare_keys && s_focus_hooks[i]) {
+            UnhookWinEvent(s_focus_hooks[i]);
+            s_focus_hooks[i] = NULL;
+        }
+    }
+    if (g_cfg.bare_keys)
+        uia_focus_changed(0);
 }
 
 static void suspend_input(void)
@@ -2512,8 +2652,16 @@ static void stop_movement_thread(void)
 
 static void cleanup_input(void)
 {
+    int i;
+
     leave_mouse_mode();
     uninstall_hook();
+    for (i = 0; i < 2; i++) {
+        if (s_focus_hooks[i]) {
+            UnhookWinEvent(s_focus_hooks[i]);
+            s_focus_hooks[i] = NULL;
+        }
+    }
     stop_movement_thread();
     if (s_ind_timer_on) {
         KillTimer(s_ind_wnd, IND_TIMER);
@@ -2582,6 +2730,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
         s_input_tid = 0;
         return 1;
     }
+    focus_hooks_update();
 
     while ((result = GetMessageW(&msg, NULL, 0, 0)) > 0) {
         if (msg.hwnd == NULL) {
@@ -2600,8 +2749,12 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 }
                 continue;
             }
-            if (msg.message == WM_INPUT_CONFIG ||
-                msg.message == WM_INPUT_IND_UPDATE) {
+            if (msg.message == WM_INPUT_CONFIG) {
+                focus_hooks_update();
+                indicator_update();
+                continue;
+            }
+            if (msg.message == WM_INPUT_IND_UPDATE) {
                 indicator_update();
                 continue;
             }

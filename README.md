@@ -30,7 +30,9 @@ is read-only), and reloads that file as soon as you save it.
 | Key | Action |
 |---|---|
 | `Alt+F` | Open click hints on the monitor under the cursor; press again to rescan |
-| `Alt+h` / `Alt+j` / `Alt+k` / `Alt+l` | Scroll left / down / up / right, anywhere (tap = one notch, hold = continuous) |
+| `Alt+j` / `Alt+k` | Scroll down / up, anywhere (tap = one notch, hold = continuous) |
+| `Alt+h` / `Alt+l` | Go back / forward (sent as `Alt+Left` / `Alt+Right`: browsers, Explorer, VS Code and most apps) |
+| `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
 | `Alt+u u` / `Alt+d d` | Scroll to the top / bottom (two quick taps) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
@@ -44,15 +46,28 @@ is read-only), and reloads that file as soon as you save it.
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. Hotkeys are configurable in `vim.ini`.
 
+**Without Alt.** When the keyboard focus is not in a text field (a web page
+you are reading, a list, the desktop), the Alt keys above also work without
+Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
+`u` / `d` scroll fast (`u u` / `d d` to the top / bottom) and `,` / `.` scroll
+sideways. In a text field (an address bar, a search box, a chat box, a
+document, a terminal) those letters type as usual and the keys need Alt as
+before. vim mouse asks UI Automation where the focus is after every focus
+change; while it is not sure (right after a click, in a game or a remote
+desktop, with a menu open) the letters type as usual. Text shortcuts always
+need Alt. `bare_keys = 0` turns this off.
+
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
 keyboard** item also unlocks it with the mouse. Windows still handles
 `Ctrl+Alt+Del` itself, and the mouse keeps working.
 
 Alt scrolling uses the mouse-mode keys (`key_left`, `key_down`, `key_up`,
-`key_right`, `key_scroll_up`, `key_scroll_down`), so remapping those remaps it
-too. It works with or without mouse mode; `alt_scroll = 0` turns it off and
-lets those Alt combinations reach the app again.
+`key_right`, `key_scroll_up`, `key_scroll_down`, `key_scroll_left`,
+`key_scroll_right`), so remapping those remaps it too. It works with or
+without mouse mode; `alt_scroll = 0` turns it off and lets those Alt
+combinations reach the app again. `alt_nav = 0` makes `Alt+h` / `Alt+l` scroll
+left / right again instead of going back / forward.
 
 Alt scrolling finds what to scroll by itself: when the pointer is not over
 something that scrolls that way, it scrolls the scrollable area nearest to the
@@ -210,9 +225,13 @@ ones:
   precision" settings do not change it)
 - `scroll_speed`, `scroll_max_speed`, `smooth_scroll` (1 = small steps once
   per display frame, default; 0 = whole notches only)
-- `alt_scroll` (1 = Alt + `hjkl` scroll and Alt + `u`/`d` fast scroll
-  anywhere), `alt_scroll_auto` (1 = scroll the nearest scrollable area in
-  line with the pointer when it is not over one), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
+- `alt_scroll` (1 = Alt + `jk` scroll, Alt + `hl` back / forward and Alt +
+  `u`/`d` fast scroll anywhere), `alt_scroll_auto` (1 = scroll the nearest
+  scrollable area in line with the pointer when it is not over one),
+  `alt_nav` (1 = Alt + `h`/`l` go back / forward and Alt + `,`/`.` scroll
+  sideways, default; 0 = Alt + `h`/`l` scroll sideways),
+  `bare_keys` (1 = outside text fields the Alt keys work without Alt,
+  default; 0 = always Alt), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held),
   `scroll_end_tap_ms` (two Alt + `u` / Alt + `d` taps within this many ms
   scroll to the top / bottom, 0-1000, default 300; 0 = off)
@@ -275,8 +294,16 @@ Left- or right-click the tray icon:
   `mingw32-make check` builds `tools\hint_check.exe` and
   `node tools\hint_check.mjs [url ...]` opens each page in a separate Chrome
   profile and lists the clickable elements the scan misses, with the reason.
-- **An app's Alt+H/J/K/L/U/D shortcut no longer works.** vim mouse uses those
-  for scrolling; set `alt_scroll = 0` in `vim.ini` to give them back.
+- **An app's Alt+H/J/K/L/U/D/,/. shortcut no longer works.** vim mouse uses
+  those for scrolling and back / forward; set `alt_scroll = 0` in `vim.ini` to
+  give them back.
+- **A letter such as `j` or `f` does not reach an app.** Outside text fields
+  vim mouse takes `f h j k l u d , .` without Alt (YouTube's `j k l f`, for
+  example). Click into a text field to type them, or set `bare_keys = 0`.
+- **A letter scrolls or goes back instead of typing.** vim mouse did not
+  recognise that text field. With `log = 1`, `vim.log` shows what it decided
+  after each focus change ("focus: text field" or "focus: no text field").
+  `bare_keys = 0` turns the Alt-less keys off.
 - **A text shortcut types nothing.** Its first letter may be an Alt key of vim
   mouse (`f h j k l u d` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either
