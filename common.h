@@ -143,7 +143,7 @@ typedef struct {
     int   scan_timeout;        // how long to wait for every window's elements before
                                // showing the ones found so far (100-5000 ms, default 400).
                                // The active window's are always waited for, up to 3 s;
-                               // with nothing found by then, the hints fall back to the grid.
+                               // with nothing found by then, the hints close.
     int   scan_refresh;        // while the hints are open, rescan this often so new or moved
                                // elements get labels (0-5000 ms, default 500; 0 = off).
                                // Existing labels never change meaning.
@@ -260,7 +260,7 @@ typedef struct ClickList {
     ClickTarget items[];   // cumulative: every post contains everything found so far
 } ClickList;
 
-BOOL uia_start(void);       // FALSE if UI Automation is unavailable (hints fall back to grid)
+BOOL uia_start(void);       // FALSE if UI Automation is unavailable (hints do not open)
 void uia_stop(void);
 BOOL uia_available(void);
 // Asynchronous scan of the monitor (g_cfg.scan_scope decides which windows).

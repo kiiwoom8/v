@@ -106,7 +106,6 @@ static int       g_queue_count;
 static ClickTarget *g_targets;
 static HintLabel *g_labels;
 static int       g_target_count;
-static WCHAR     g_notice[160]; // transient status for this open (grid fallback)
 
 static HMONITOR  g_mon;
 static RECT      g_mon_rect;
@@ -1287,10 +1286,6 @@ static void build_status(WCHAR *buf, int cch)
     }
 
     if (drop) lstrcatW(buf, L"Drop target: ");
-    if (g_notice[0]) {
-        lstrcatW(buf, g_notice);
-        lstrcatW(buf, L" " DOT L" ");
-    }
 
     if (g_state == 0) {
         lstrcatW(buf, L"Type a label " DOT L" Esc cancel "
@@ -1596,7 +1591,7 @@ static void paint_overlay(HWND hwnd)
     dc = ensure_back_buffer(w, h) ? g_mem_dc : hdc;
 
     if (g_open && g_mode == HINT_MODE_GRID && g_state == 0 && !g_scanning &&
-        !g_flash && g_notice[0] == 0 && !input_left_button_held() &&
+        !g_flash && !input_left_button_held() &&
         g_font_label && g_font_sub && ensure_grid_cache(w, h)) {
         if (!g_grid_valid) {
             render_grid0(g_grid_dc, w, h);
@@ -1867,7 +1862,6 @@ static void reset_input(void)
     g_prefix_len = 0;
     g_prefix[0] = 0;
     g_queue_count = 0;
-    g_notice[0] = 0;
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_FLASH_ID);
 }
 
@@ -2011,16 +2005,12 @@ static void start_scan(BOOL repaint)
     }
 }
 
-static void enter_grid_mode(const WCHAR *notice)
+static void enter_grid_mode(void)
 {
     cancel_scan();
     free_elements();
     g_mode = HINT_MODE_GRID;
     reset_input();
-    if (notice && *notice) {
-        wcsncpy(g_notice, notice, sizeof(g_notice) / sizeof(g_notice[0]) - 1);
-        g_notice[sizeof(g_notice) / sizeof(g_notice[0]) - 1] = 0;
-    }
     invalidate();
     if (g_hint_wnd) UpdateWindow(g_hint_wnd);
 }
@@ -2059,9 +2049,9 @@ static void finalize_scan(void)
     if (n > MAX_TARGETS) n = MAX_TARGETS;
 
     // A page or app still starting may expose nothing yet: retry on the
-    // refresh timer instead of dropping straight to the grid. g_scanning,
-    // g_scan_t0 and the queued keys stay as they are, so keys keep being
-    // queued and the 3 s hard limit still ends this with the grid.
+    // refresh timer instead of closing straight away. g_scanning, g_scan_t0
+    // and the queued keys stay as they are, so keys keep being queued and the
+    // 3 s hard limit still ends this.
     if (n <= 0 && g_cfg.scan_refresh > 0 && g_scanning &&
         GetTickCount() - g_scan_t0 < SCAN_HARD_LIMIT_MS) {
         DWORD elapsed = GetTickCount() - g_scan_t0;
@@ -2092,10 +2082,12 @@ static void finalize_scan(void)
     g_scan_retry = FALSE;
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SCAN_ID);
 
+    // Nothing to label: close. The grid opens only with hint_mode = grid.
     if (n <= 0) {
         uia_cancel();
         free(list);
-        enter_grid_mode(L"No clickable elements found - grid");
+        app_log(L"hint: no clickable elements found; closing");
+        hint_close();
         return;
     }
 
@@ -2112,7 +2104,7 @@ static void finalize_scan(void)
     g_targets = (ClickTarget *)malloc((size_t)n * sizeof(*g_targets));
     if (!g_targets) {
         free(list);
-        enter_grid_mode(L"No clickable elements found - grid");
+        hint_close();
         return;
     }
     memcpy(g_targets, list->items, (size_t)n * sizeof(*g_targets));
@@ -2123,8 +2115,7 @@ static void finalize_scan(void)
 
     labels = build_labels(n);
     if (!labels) {
-        free_elements();
-        enter_grid_mode(L"No clickable elements found - grid");
+        hint_close();
         return;
     }
     g_labels = labels;
@@ -2133,7 +2124,6 @@ static void finalize_scan(void)
     g_prefix[0] = 0;
     g_flash = FALSE;
     g_state = 0;
-    g_notice[0] = 0;
     invalidate();
     if (g_hint_wnd) UpdateWindow(g_hint_wnd);
 
@@ -2451,8 +2441,15 @@ void hint_open(void)
 
     mon = cursor_monitor();
 
-    mode = (g_cfg.hint_mode == HINT_MODE_ELEMENTS && uia_available())
-           ? HINT_MODE_ELEMENTS : HINT_MODE_GRID;
+    mode = g_cfg.hint_mode;
+    // Without UI Automation there is nothing to label; the grid only opens
+    // when hint_mode = grid asks for it.
+    if (mode == HINT_MODE_ELEMENTS && !uia_available()) {
+        app_log(L"hint: UI Automation unavailable; not opening");
+        discard_prescan();
+        input_set_key_capture(FALSE);
+        return;
+    }
 
     if (!open_overlay(mon, mode, mode != HINT_MODE_ELEMENTS)) {
         g_open = FALSE;
@@ -2688,13 +2685,13 @@ void hint_hotkey_again(void)
 {
     if (!g_open) return;
 
-    // Another press reloads what the hotkey opened: a fresh element scan
-    // (also after a fallback to the grid), or the grid back at its start.
-    // The fresh scan asks windows skipped for being slow again too.
+    // Another press reloads what the hotkey opened: a fresh element scan,
+    // or the grid back at its start (hint_mode = grid). The fresh scan asks
+    // windows skipped for being slow again too.
     if (g_start_mode == HINT_MODE_ELEMENTS && uia_available()) {
         uia_forget_slow();
         start_element_mode();
     } else {
-        enter_grid_mode(NULL);
+        enter_grid_mode();
     }
 }

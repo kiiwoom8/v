@@ -1516,7 +1516,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Milliseconds to wait for every window's elements before showing\r\n");
     appendf(buf, cch, L"; the ones found so far (100-5000, default 400). The active window's\r\n");
     appendf(buf, cch, L"; elements are always waited for, up to 3 seconds; with nothing found by\r\n");
-    appendf(buf, cch, L"; then, the hints fall back to the grid.\r\n");
+    appendf(buf, cch, L"; then, the hints close.\r\n");
     appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
     appendf(buf, cch, L"; While the hints are open, rescan this often (ms) so elements that\r\n");
     appendf(buf, cch, L"; appear or move get labels by themselves (0-5000, default 500; 0 = off).\r\n");

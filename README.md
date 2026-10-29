@@ -3,9 +3,8 @@
 vim mouse is a tiny Windows tray program that lets you drive the mouse pointer
 entirely from the keyboard. Tap CapsLock for mouse mode and move with `hjkl`,
 or press Alt+F to open click hints: labels appear on the clickable elements of
-the screen and one or two keypresses move the pointer and click one. When an
-app does not expose its elements, a labelled grid that can click anywhere
-opens instead. It runs
+the screen and one or two keypresses move the pointer and click one (or, with
+`hint_mode = grid`, a labelled grid that can click anywhere). It runs
 in the background with no console window, is configured by a plain-text
 `vim.ini` next to the executable (or in `%APPDATA%\vim mouse` when that folder
 is read-only), and reloads that file as soon as you save it.
@@ -113,7 +112,7 @@ hints stay open the monitor is scanned again every `scan_refresh` ms (default
 have already read never clicks something else (when labels run out one may
 grow a letter, and a label whose element went away is never reused). The
 hotkey again still forces a full rescan, and a scan that finds nothing keeps
-trying for up to 3 s before the grid. Hints work
+trying for up to 3 s, then closes the hints. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -129,12 +128,13 @@ hotkey's Alt, so the menu stays open.
 | `Esc` | Cancel |
 
 If an app does not expose UI Automation (some games, remote desktops,
-custom-drawn apps) the scan finds nothing and vim mouse falls back to the grid
-for that open; the hotkey then tries the scan again.
+custom-drawn apps) the scan finds nothing and the hints close again; the grid
+never opens by itself.
 
 #### Grid
 
-The grid labels every cell of the monitor. Each cell has a two-letter label:
+With `hint_mode = grid` the hotkey opens the grid instead of the element
+labels. The grid labels every cell of the monitor. Each cell has a two-letter label:
 **row letter + column letter**, like spreadsheet coordinates, so column letters
 line up vertically.
 
@@ -239,7 +239,7 @@ ones:
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for every window's elements before showing the ones
   found so far. The active window's elements are always waited for, up to
-  3 s; with nothing found by then, the hints fall back to the grid),
+  3 s; with nothing found by then, the hints close),
   `scan_refresh` (0-5000 ms, default 500: while the hints are open, rescan
   this often so elements that appear or move get labels by themselves;
   existing labels never change meaning. 0 = off),
@@ -282,8 +282,8 @@ Left- or right-click the tray icon:
 - **Hints on an open menu.** They work: while a menu or flyout is open vim
   mouse holds back the hotkey's Alt, so the menu stays open.
 - **An app shows no labels.** It does not expose UI Automation (some games,
-  remote desktops, custom-drawn apps), so the hints fall back to the grid.
-  Set `hint_mode = grid` to open the grid every time.
+  remote desktops, custom-drawn apps), so the hints close again. Set
+  `hint_mode = grid` to open the grid there instead.
   `mingw32-make probe` builds `tools\uia_probe.exe`, which lists what the scan
   finds on the monitor under the cursor (`-v` for every element).
 - **Few labels the first time in Chrome, Edge or an Electron app.** These build

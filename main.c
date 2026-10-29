@@ -521,7 +521,7 @@ int main(void)
         return 1;
     }
 
-    // Without UI Automation the hints simply fall back to the grid.
+    // Without UI Automation only hint_mode = grid opens anything.
     if (!uia_start())
         app_log(L"uia: UI Automation unavailable, element hints disabled");
 

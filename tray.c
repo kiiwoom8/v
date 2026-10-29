@@ -859,6 +859,9 @@ static void build_help_rows(void)
     buf[127] = L'\0';
     help_add_row(buf, L"Rescan (Esc closes)");
 
+    // The grid opens only with hint_mode = grid.
+    if (g_cfg.hint_mode != HINT_MODE_GRID)
+        return;
     help_add_header(L"Grid");
     help_add_row(L"row letter, column letter", L"Pick a grid cell");
     help_add_row(L"subgrid key", L"Pick a point inside the cell");
