@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `33a979f` (2026-10-30): 83
-commits, 69 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `f539e1f` (2026-10-31): 85
+commits, 71 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -321,6 +321,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 67 | `ee4f7fb` | 10-30 | 7 | Tray "Update to latest version": download the latest release, rename the running exe to `.old`, restart with `--updated` (`update.c`) | Updating meant quitting, downloading and replacing `vim.exe` by hand |
 | 68 | `7cf18c4` | 10-30 | 7 | Commit-log row for `ee4f7fb` | |
 | 69 | `33a979f` | 10-30 | 7 | `keep_labels` (default 1): a refresh never moves, retires or lengthens a shown label; elements overlapping a shown one (IoU >= 0.5) get no second label; new ones get as many free labels as fit | Labels moved, changed letters or vanished between reading and typing them, so the user misclicked |
+| 70 | `75ecb48` | 10-30 | 7 | Commit-log row for `33a979f` | |
+| 71 | `f539e1f` | 10-31 | 7 | Alt keys act from `alt_resolve` with Alt still withheld (`alt_action_down`) | While a Chrome bubble (downloads, extensions, notifications) was open, the first Alt+j went to Chrome as Alt+J; only the second press scrolled |
 
 ## 5. Lessons learned: rules not to break
 
@@ -345,7 +347,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   close on Alt down. While a popup is open or the hints capture keys, the
   left Alt is withheld (`alt_should_withhold`, `alt_resolve`) and replayed in
   front of any other key, or as a tap. Any new Alt combination must go
-  through that path, not around it.
+  through that path, not around it. The Alt keys (scrolling, back and
+  forward, `g g`) act from `alt_resolve` with Alt still hidden
+  (`alt_action_down`, `f539e1f`): replaying Alt in front of the first key
+  sent Chrome Alt+J while its download, extension or notification bubble
+  was open, so only the second press scrolled.
 - **"A popup is open" must exclude tooltips and click-through windows.**
   `5ea3a61`: Chrome's link status bubble and Win32 tooltips are owned
   popups, so `popup_open` thought a menu was open and turned bare keys off.
