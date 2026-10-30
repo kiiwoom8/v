@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `f539e1f` (2026-10-31): 85
-commits, 71 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `46f5976` (2026-10-31): 87
+commits, 73 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -323,6 +323,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 69 | `33a979f` | 10-30 | 7 | `keep_labels` (default 1): a refresh never moves, retires or lengthens a shown label; elements overlapping a shown one (IoU >= 0.5) get no second label; new ones get as many free labels as fit | Labels moved, changed letters or vanished between reading and typing them, so the user misclicked |
 | 70 | `75ecb48` | 10-30 | 7 | Commit-log row for `33a979f` | |
 | 71 | `f539e1f` | 10-31 | 7 | Alt keys act from `alt_resolve` with Alt still withheld (`alt_action_down`) | While a Chrome bubble (downloads, extensions, notifications) was open, the first Alt+j went to Chrome as Alt+J; only the second press scrolled |
+| 72 | `e261176` | 10-31 | 7 | Commit-log row for `f539e1f` | |
+| 73 | `46f5976` | 10-31 | 7 | Bare keys ignore Chrome's panels (`uia_chromium_panel`: a `Chrome_WidgetWin_*` owned popup without `WS_EX_NOACTIVATE` or `WS_EX_TOPMOST`); a panel's bare root focus counts as no text field | With the downloads or extensions panel open, bare `j`/`k` typed into Chrome; before `f539e1f` the replayed Alt had closed the panel |
 
 ## 5. Lessons learned: rules not to break
 
@@ -355,6 +357,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **"A popup is open" must exclude tooltips and click-through windows.**
   `5ea3a61`: Chrome's link status bubble and Win32 tooltips are owned
   popups, so `popup_open` thought a menu was open and turned bare keys off.
+  `46f5976`: Chrome's panels (downloads, extensions, permission prompts) are
+  owned popups too, but they take the focus themselves. Chromium gives its
+  menus `WS_EX_NOACTIVATE` and `WS_EX_TOPMOST` and its dropdowns
+  `WS_EX_NOACTIVATE`; a panel has neither (`widget_hwnd_utils.cc`,
+  `menu_host.cc`). `uia_chromium_panel` tests that, and only bare keys skip
+  panels (`popup_open(TRUE, ...)`); Alt is still withheld over them so they
+  stay open.
 - **Release held state on every suspend.** Sleep and resume (`cbdaf8c` on
   `bakup`), session lock (`0212997`), and RDP disconnect or user switch
   (`4b04fd5`) all suspend input and reset motion. `reset_key_state()` must
