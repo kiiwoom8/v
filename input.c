@@ -1347,10 +1347,49 @@ static BOOL alt_should_withhold(void)
     return !flag_get(&s_paused) && popup_open(NULL);
 }
 
+// The Alt scroll keys, from a normal Alt press and from a withheld Alt.
+// alt_seen: the app has already seen Alt go down, so the 0xE8 mask keeps the
+// Alt release from opening its menu bar; when it has not (bare keys, withheld
+// Alt), no mask is needed and send_nav injects its own Alt.
+// Returns FALSE for any other key, so the caller can continue.
+static BOOL alt_action_down(UINT vk, int act, BOOL shift, BOOL end_tap,
+                            BOOL alt_seen)
+{
+    if (act == ACT_BACK || act == ACT_FORWARD) {
+        // One step per press: repeats are swallowed.
+        mark_caps_used();
+        s_owner[vk] = OWN_SWALLOW;
+        send_nav(act == ACT_FORWARD, alt_seen);
+        return TRUE;
+    }
+    if (act == ACT_SCROLL_END) {
+        // Not held: repeats are swallowed and never make a g g.
+        if (alt_seen)
+            send_mask_key();
+        mark_caps_used();
+        s_owner[vk] = OWN_SWALLOW;
+        scroll_end_press(shift, end_tap, g_cfg.alt_scroll_auto);
+        return TRUE;
+    }
+    if (act != ACT_NONE) {
+        if (alt_seen)
+            send_mask_key();
+        mark_caps_used();
+        s_action[vk] = (unsigned char)act;
+        s_owner[vk] = OWN_MOVE;
+        scroll_press(act, g_cfg.alt_scroll_auto, FALSE);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 // The app never saw Alt, so hotkeys act without the 0xE8 menu mask.
 static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
 {
     UINT mods = current_mods();
+    UINT base;
+    int act;
+    BOOL shift;
 
     if (handle_hotkeys(vk, mods, FALSE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1370,6 +1409,25 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
             flag_set(&s_capture, FALSE);
         post_main(WM_APP_HINT_KEY, vk, mods);
         return TRUE;
+    }
+    // Chrome's downloads bubble, extensions menu and notification popups are
+    // owned popups, so popup_open sees a menu and Alt is withheld. Replaying
+    // Alt in front of the first key sent Chrome Alt+J rather than a scroll;
+    // act on the Alt keys now, with Alt still hidden.
+    if (!flag_get(&s_paused)) {
+        act = alt_key_action(vk);
+        shift = act == ACT_SCROLL_END && (mods & KMOD_SHIFT);
+        base = shift ? mods & ~KMOD_SHIFT : mods;
+        if (base == KMOD_ALT) {
+            BOOL end_tap = s_end_tap;
+
+            s_end_tap = FALSE;
+            s_end_shift = FALSE;
+            if (alt_action_down(vk, act, shift, end_tap, FALSE)) {
+                s_alt_consumed = TRUE;
+                return TRUE;
+            }
+        }
     }
     send_alt_replay(vk, scan, flags);
     s_owner[vk] = OWN_PASS;
@@ -1427,31 +1485,8 @@ static BOOL handle_down(UINT vk)
     // Alt + letter reaches the app with Alt already down; the mask key keeps
     // the Alt release from opening its menu bar.
     if (base == KMOD_ALT || bare) {
-        if (act == ACT_BACK || act == ACT_FORWARD) {
-            // One step per press: repeats are swallowed.
-            mark_caps_used();
-            s_owner[vk] = OWN_SWALLOW;
-            send_nav(act == ACT_FORWARD, !bare);
+        if (alt_action_down(vk, act, shift, end_tap, !bare))
             return TRUE;
-        }
-        if (act == ACT_SCROLL_END) {
-            // Not held: repeats are swallowed and never make a g g.
-            if (!bare)
-                send_mask_key();
-            mark_caps_used();
-            s_owner[vk] = OWN_SWALLOW;
-            scroll_end_press(shift, end_tap, g_cfg.alt_scroll_auto);
-            return TRUE;
-        }
-        if (act != ACT_NONE) {
-            if (!bare)
-                send_mask_key();
-            mark_caps_used();
-            s_action[vk] = (unsigned char)act;
-            s_owner[vk] = OWN_MOVE;
-            scroll_press(act, g_cfg.alt_scroll_auto, FALSE);
-            return TRUE;
-        }
         if (!bare && shortcut_begin(vk)) {
             send_mask_key();
             mark_caps_used();
