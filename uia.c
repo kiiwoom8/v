@@ -59,6 +59,10 @@
 #define UIA_IsTogglePatternAvailablePropertyId 30041
 #endif
 
+#ifndef UIA_ScrollPatternId
+#define UIA_ScrollPatternId 10004
+#endif
+
 #ifndef UIA_ButtonControlTypeId
 #define UIA_ButtonControlTypeId 50000
 #endif
@@ -116,6 +120,8 @@ typedef struct IUIAutomationElement IUIAutomationElement;
 typedef struct IUIAutomationElementArray IUIAutomationElementArray;
 typedef struct IUIAutomationCacheRequest IUIAutomationCacheRequest;
 typedef struct IUIAutomationCondition IUIAutomationCondition;
+typedef struct IUIAutomationTreeWalker IUIAutomationTreeWalker;
+typedef struct IUIAutomationScrollPattern IUIAutomationScrollPattern;
 
 typedef struct IUIAutomationVtbl {
     HRESULT (STDMETHODCALLTYPE *QueryInterface)(IUIAutomation *This,
@@ -127,7 +133,8 @@ typedef struct IUIAutomationVtbl {
     void *GetRootElement;
     HRESULT (STDMETHODCALLTYPE *ElementFromHandle)(IUIAutomation *This,
         UIA_HWND hwnd, IUIAutomationElement **element);
-    void *ElementFromPoint;
+    HRESULT (STDMETHODCALLTYPE *ElementFromPoint)(IUIAutomation *This,
+        POINT pt, IUIAutomationElement **element);
     void *GetFocusedElement;
     void *GetRootElementBuildCache;
     void *ElementFromHandleBuildCache;
@@ -137,7 +144,8 @@ typedef struct IUIAutomationVtbl {
     void *CreateTreeWalker;
     void *get_ControlViewWalker;
     void *get_ContentViewWalker;
-    void *get_RawViewWalker;
+    HRESULT (STDMETHODCALLTYPE *get_RawViewWalker)(IUIAutomation *This,
+        IUIAutomationTreeWalker **walker);
     void *get_RawViewCondition;
     void *get_ControlViewCondition;
     void *get_ContentViewCondition;
@@ -218,7 +226,8 @@ typedef struct IUIAutomationElementVtbl {
     HRESULT (STDMETHODCALLTYPE *GetCachedPropertyValue)(
         IUIAutomationElement *This, int propertyId, VARIANT *retVal);
     void *GetCachedPropertyValueEx;
-    void *GetCurrentPatternAs;
+    HRESULT (STDMETHODCALLTYPE *GetCurrentPatternAs)(IUIAutomationElement *This,
+        int patternId, REFIID riid, void **patternObject);
     void *GetCachedPatternAs;
     void *GetCurrentPattern;
     void *GetCachedPattern;
@@ -327,12 +336,60 @@ typedef struct IUIAutomationConditionVtbl {
     ULONG (STDMETHODCALLTYPE *Release)(IUIAutomationCondition *This);
 } IUIAutomationConditionVtbl;
 
+// The raw view's parent walk, used to find the scrollable area that contains
+// the element under a point (a web page's list inside its document).
+typedef struct IUIAutomationTreeWalkerVtbl {
+    void *QueryInterface;
+    void *AddRef;
+    ULONG (STDMETHODCALLTYPE *Release)(IUIAutomationTreeWalker *This);
+    HRESULT (STDMETHODCALLTYPE *GetParentElement)(IUIAutomationTreeWalker *This,
+        IUIAutomationElement *element, IUIAutomationElement **parent);
+    void *GetFirstChildElement;
+    void *GetLastChildElement;
+    void *GetNextSiblingElement;
+    void *GetPreviousSiblingElement;
+    void *NormalizeElement;
+    void *GetParentElementBuildCache;
+    void *GetFirstChildElementBuildCache;
+    void *GetLastChildElementBuildCache;
+    void *GetNextSiblingElementBuildCache;
+    void *GetPreviousSiblingElementBuildCache;
+    void *NormalizeElementBuildCache;
+    void *get_Condition;
+} IUIAutomationTreeWalkerVtbl;
+
+typedef struct IUIAutomationScrollPatternVtbl {
+    void *QueryInterface;
+    void *AddRef;
+    ULONG (STDMETHODCALLTYPE *Release)(IUIAutomationScrollPattern *This);
+    void *Scroll;
+    HRESULT (STDMETHODCALLTYPE *SetScrollPercent)(
+        IUIAutomationScrollPattern *This, double horizontalPercent,
+        double verticalPercent);
+    void *get_CurrentHorizontalScrollPercent;
+    HRESULT (STDMETHODCALLTYPE *get_CurrentVerticalScrollPercent)(
+        IUIAutomationScrollPattern *This, double *retVal);
+    void *get_CurrentHorizontalViewSize;
+    void *get_CurrentVerticalViewSize;
+    void *get_CurrentHorizontallyScrollable;
+    HRESULT (STDMETHODCALLTYPE *get_CurrentVerticallyScrollable)(
+        IUIAutomationScrollPattern *This, BOOL *retVal);
+    void *get_CachedHorizontalScrollPercent;
+    void *get_CachedVerticalScrollPercent;
+    void *get_CachedHorizontalViewSize;
+    void *get_CachedVerticalViewSize;
+    void *get_CachedHorizontallyScrollable;
+    void *get_CachedVerticallyScrollable;
+} IUIAutomationScrollPatternVtbl;
+
 struct IUIAutomation { IUIAutomationVtbl *lpVtbl; };
 struct IUIAutomation2 { IUIAutomation2Vtbl *lpVtbl; };
 struct IUIAutomationElement { IUIAutomationElementVtbl *lpVtbl; };
 struct IUIAutomationElementArray { IUIAutomationElementArrayVtbl *lpVtbl; };
 struct IUIAutomationCacheRequest { IUIAutomationCacheRequestVtbl *lpVtbl; };
 struct IUIAutomationCondition { IUIAutomationConditionVtbl *lpVtbl; };
+struct IUIAutomationTreeWalker { IUIAutomationTreeWalkerVtbl *lpVtbl; };
+struct IUIAutomationScrollPattern { IUIAutomationScrollPatternVtbl *lpVtbl; };
 
 _Static_assert(sizeof(IUIAutomationVtbl) == 58 * sizeof(void *),
                "IUIAutomation vtable size");
@@ -346,6 +403,10 @@ _Static_assert(sizeof(IUIAutomationCacheRequestVtbl) == 12 * sizeof(void *),
                "IUIAutomationCacheRequest vtable size");
 _Static_assert(sizeof(IUIAutomationConditionVtbl) == 3 * sizeof(void *),
                "IUIAutomationCondition vtable size");
+_Static_assert(sizeof(IUIAutomationTreeWalkerVtbl) == 16 * sizeof(void *),
+               "IUIAutomationTreeWalker vtable size");
+_Static_assert(sizeof(IUIAutomationScrollPatternVtbl) == 17 * sizeof(void *),
+               "IUIAutomationScrollPattern vtable size");
 
 static const GUID g_clsid_uia8 = {
     0xe22ad333, 0xb25f, 0x460c,
@@ -362,6 +423,10 @@ static const GUID g_iid_uia = {
 static const GUID g_iid_uia2 = {
     0x34723aff, 0x0c9d, 0x49d0,
     { 0x98, 0x96, 0x7a, 0xb5, 0x2d, 0xf8, 0xcd, 0x8a }
+};
+static const GUID g_iid_scroll_pattern = {
+    0x88f4d42a, 0xe881, 0x459d,
+    { 0xa7, 0x7c, 0x73, 0xbb, 0xbb, 0x7e, 0x02, 0xdc }
 };
 
 typedef struct {
@@ -3049,10 +3114,13 @@ void uia_scroll_prefetch(POINT pt)
     LeaveCriticalSection(&g_sc_cs);
 }
 
+static void scroll_end_stop(void);
+
 void uia_scroll_stop(void)
 {
     int i;
 
+    scroll_end_stop();
     while (InterlockedCompareExchange(&g_sc_state, 1, 1) == 1)
         Sleep(0);
     if (InterlockedCompareExchange(&g_sc_state, 0, 0) != 2)
@@ -3084,6 +3152,271 @@ void uia_scroll_stop(void)
     LeaveCriticalSection(&g_sc_cs);
     DeleteCriticalSection(&g_sc_cs);
     InterlockedExchange(&g_sc_state, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Scroll to the bottom on press (Shift + g). Its own MTA thread and engine,
+// not the scroll-target worker: that one may be busy for hundreds of
+// milliseconds in a FindAll, which would delay the jump. ScrollPattern's
+// SetScrollPercent ignores the held Shift, where a wheel event does not
+// (browsers turn Shift + wheel into sideways scrolling).
+
+// UIA's "leave this axis as it is" scroll percent. Its own name: the SDK
+// headers may spell the constant differently.
+#define SCROLL_PERCENT_UNCHANGED (-1.0)
+#define UIA_SCROLL_END_BELOW 99.9  // a percent this close to 100 is the bottom
+#define SCROLL_END_TREE_MAX 64     // walk at most this far up the raw view
+
+typedef struct {
+    BOOL  set;
+    LONG  seq;
+    POINT pt;
+} ScrollEndRequest;
+
+static HANDLE g_se_thread;
+static HANDLE g_se_wake;
+static HANDLE g_se_answered;          // auto reset: an answer has arrived
+static CRITICAL_SECTION g_se_cs;
+static volatile LONG g_se_state;      // 0 off, 1 starting, 2 running, 3 failed
+static volatile LONG g_se_quit;
+// g_se_cs guards the request slot and the answer; a late answer for an older
+// request is ignored by its sequence number.
+static ScrollEndRequest g_se_req;
+static LONG g_se_seq;
+static LONG g_se_answer_seq;
+static BOOL g_se_answer;
+
+// Scrolls the area at pt to the bottom, chaining up like a wheel does: an
+// element already at the bottom passes the ask to its parent. TRUE when a
+// vertically scrollable element was found at all (all at the bottom).
+static BOOL scroll_end_at(IUIAutomation *automation, POINT pt)
+{
+    IUIAutomationElement *el = NULL;
+    IUIAutomationTreeWalker *walker = NULL;
+    HWND hwnd;
+    DWORD pid = 0;
+    BOOL found = FALSE;
+    int depth;
+
+    hwnd = WindowFromPoint(pt);
+    if (!hwnd)
+        return FALSE;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId())
+        return FALSE;
+    if (FAILED(automation->lpVtbl->ElementFromPoint(automation, pt, &el)) ||
+        !el)
+        return FALSE;
+    if (FAILED(automation->lpVtbl->get_RawViewWalker(automation, &walker)) ||
+        !walker) {
+        el->lpVtbl->Release(el);
+        return FALSE;
+    }
+    for (depth = 0; depth < SCROLL_END_TREE_MAX; ++depth) {
+        IUIAutomationScrollPattern *sp = NULL;
+        IUIAutomationElement *parent = NULL;
+        BOOL vertical = FALSE;
+        HRESULT hr;
+
+        if (SUCCEEDED(el->lpVtbl->GetCurrentPatternAs(
+                el, UIA_ScrollPatternId, &g_iid_scroll_pattern,
+                (void **)&sp)) && sp) {
+            if (SUCCEEDED(sp->lpVtbl->get_CurrentVerticallyScrollable(
+                    sp, &vertical)) && vertical) {
+                double pct = 0.0;
+
+                found = TRUE;
+                // Unreadable counts as "not at the bottom": try the scroll.
+                if (FAILED(sp->lpVtbl->get_CurrentVerticalScrollPercent(
+                        sp, &pct)) || pct < UIA_SCROLL_END_BELOW) {
+                    hr = sp->lpVtbl->SetScrollPercent(
+                        sp, SCROLL_PERCENT_UNCHANGED, 100.0);
+                    sp->lpVtbl->Release(sp);
+                    el->lpVtbl->Release(el);
+                    walker->lpVtbl->Release(walker);
+                    return SUCCEEDED(hr);
+                }
+            }
+            sp->lpVtbl->Release(sp);
+        }
+        hr = walker->lpVtbl->GetParentElement(walker, el, &parent);
+        el->lpVtbl->Release(el);
+        el = NULL;
+        if (FAILED(hr) || !parent)
+            break;
+        el = parent;
+    }
+    if (el)
+        el->lpVtbl->Release(el);
+    walker->lpVtbl->Release(walker);
+    return found;
+}
+
+static DWORD WINAPI scroll_end_worker(void *arg)
+{
+    UiaEngine engine;
+    HRESULT hr;
+    BOOL ready = FALSE, com_ready;
+    DWORD last_engine_try;
+    (void)arg;
+
+    memset(&engine, 0, sizeof(engine));
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    com_ready = hr == S_OK || hr == S_FALSE;
+    // uia_engine_init takes the engine lock itself; it is not reentrant.
+    if (com_ready)
+        ready = uia_engine_init(&engine, FALSE);
+    last_engine_try = GetTickCount();
+
+    for (;;) {
+        ScrollEndRequest req;
+        BOOL answered = FALSE;
+        DWORD now, wait_ms;
+        DWORD woke;
+
+        // Without an engine, wake up now and then to retry it; while it runs,
+        // a request is the only thing that wakes the worker. A failed COM
+        // start can never get one, so there is nothing to wake up for.
+        wait_ms = ready || !com_ready ? INFINITE : SCROLL_ENGINE_RETRY_MS;
+        woke = WaitForSingleObject(g_se_wake, wait_ms);
+        if (woke != WAIT_OBJECT_0 && woke != WAIT_TIMEOUT)
+            break;
+        if (woke == WAIT_TIMEOUT) {
+            now = GetTickCount();
+            if (com_ready)
+                ready = uia_engine_init(&engine, FALSE);
+            last_engine_try = now;
+            if (InterlockedCompareExchange(&g_se_quit, 0, 0))
+                break;
+            continue;
+        }
+        if (InterlockedCompareExchange(&g_se_quit, 0, 0))
+            break;
+        EnterCriticalSection(&g_se_cs);
+        req = g_se_req;
+        g_se_req.set = FALSE;
+        LeaveCriticalSection(&g_se_cs);
+        if (!req.set)
+            continue;
+
+        // A request may have woken us before the retry interval was over.
+        now = GetTickCount();
+        if (!ready && com_ready &&
+            (DWORD)(now - last_engine_try) >= SCROLL_ENGINE_RETRY_MS) {
+            ready = uia_engine_init(&engine, FALSE);
+            last_engine_try = now;
+        }
+        if (ready)
+            answered = scroll_end_at(engine.automation, req.pt);
+
+        EnterCriticalSection(&g_se_cs);
+        g_se_answer_seq = req.seq;
+        g_se_answer = answered;
+        LeaveCriticalSection(&g_se_cs);
+        SetEvent(g_se_answered);
+    }
+
+    uia_engine_cleanup(&engine);
+    if (com_ready)
+        CoUninitialize();
+    return 0;
+}
+
+static BOOL scroll_end_worker_init(void)
+{
+    InitializeCriticalSection(&g_se_cs);
+    memset(&g_se_req, 0, sizeof(g_se_req));
+    g_se_seq = 0;
+    g_se_answer_seq = 0;
+    g_se_answer = FALSE;
+    g_se_quit = 0;
+    g_se_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    g_se_answered = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!g_se_wake || !g_se_answered) {
+        if (g_se_wake)
+            CloseHandle(g_se_wake);
+        if (g_se_answered)
+            CloseHandle(g_se_answered);
+        g_se_wake = NULL;
+        g_se_answered = NULL;
+        DeleteCriticalSection(&g_se_cs);
+        return FALSE;
+    }
+    g_se_thread = CreateThread(NULL, 0, scroll_end_worker, NULL, 0, NULL);
+    if (!g_se_thread) {
+        CloseHandle(g_se_wake);
+        CloseHandle(g_se_answered);
+        g_se_wake = NULL;
+        g_se_answered = NULL;
+        DeleteCriticalSection(&g_se_cs);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static BOOL scroll_end_worker_start(void)
+{
+    if (InterlockedCompareExchange(&g_se_state, 1, 0) == 0)
+        InterlockedExchange(&g_se_state, scroll_end_worker_init() ? 2 : 3);
+    while (InterlockedCompareExchange(&g_se_state, 1, 1) == 1)
+        Sleep(0);
+    return InterlockedCompareExchange(&g_se_state, 2, 2) == 2;
+}
+
+static void scroll_end_stop(void)
+{
+    while (InterlockedCompareExchange(&g_se_state, 1, 1) == 1)
+        Sleep(0);
+    if (InterlockedCompareExchange(&g_se_state, 0, 0) != 2)
+        return;
+    InterlockedExchange(&g_se_quit, 1);
+    SetEvent(g_se_wake);
+    if (WaitForSingleObject(g_se_thread, 3000) != WAIT_OBJECT_0)
+        return;
+    CloseHandle(g_se_thread);
+    CloseHandle(g_se_wake);
+    CloseHandle(g_se_answered);
+    g_se_thread = NULL;
+    g_se_wake = NULL;
+    g_se_answered = NULL;
+    DeleteCriticalSection(&g_se_cs);
+    InterlockedExchange(&g_se_state, 0);
+}
+
+BOOL uia_scroll_end(POINT pt, DWORD timeout_ms)
+{
+    DWORD start;
+    LONG seq;
+
+    if (!scroll_end_worker_start())
+        return FALSE;
+    EnterCriticalSection(&g_se_cs);
+    seq = ++g_se_seq;
+    g_se_req.pt = pt;
+    g_se_req.seq = seq;
+    g_se_req.set = TRUE;
+    LeaveCriticalSection(&g_se_cs);
+    SetEvent(g_se_wake);
+
+    start = GetTickCount();
+    for (;;) {
+        DWORD elapsed;
+
+        EnterCriticalSection(&g_se_cs);
+        if (g_se_answer_seq == seq) {
+            BOOL answer = g_se_answer;
+
+            LeaveCriticalSection(&g_se_cs);
+            return answer;
+        }
+        LeaveCriticalSection(&g_se_cs);
+        elapsed = GetTickCount() - start;
+        if (elapsed >= timeout_ms)
+            return FALSE;
+        if (WaitForSingleObject(g_se_answered, timeout_ms - elapsed) !=
+            WAIT_OBJECT_0)
+            return FALSE;
+    }
 }
 
 // ---------------------------------------------------------------------------

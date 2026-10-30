@@ -292,6 +292,14 @@ void uia_forget_slow(void);
 BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms, POINT *target);
 void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);
+// Shift + g (bottom) through UI Automation: scrolls the area at pt to the
+// bottom through its ScrollPattern on its own thread, so a held Shift does
+// not matter. Waits up to timeout_ms. TRUE when it scrolled, or when every
+// vertically scrollable area there was already at the bottom; FALSE when UI
+// Automation could not scroll there, and the caller falls back to the wheel
+// once Shift is released. One caller thread at a time (the movement thread).
+// uia_scroll_stop (and so uia_stop) stops it too.
+BOOL uia_scroll_end(POINT pt, DWORD timeout_ms);
 // Bare keys: whether the keyboard focus is in a text field (UI Automation, on
 // its own thread). uia_focus_changed forgets the answer and asks again, not
 // before delay_ms from now (a click the app has not handled yet); the first

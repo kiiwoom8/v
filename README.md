@@ -33,7 +33,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+h` / `Alt+l` | Go back / forward (sent as `Alt+Left` / `Alt+Right`: browsers, Explorer, VS Code and most apps) |
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
-| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (once Shift is released, so browsers do not scroll sideways) |
+| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press; where UI Automation cannot scroll that area, once Shift is released, so browsers do not scroll sideways) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |

@@ -126,9 +126,13 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // text field only once the app has had this long to move it.
 #define FOCUS_CLICK_DELAY_MS 150
 #define FOCUS_KEY_DELAY_MS   100
-// A Shift + g bottom jump waits for Shift to come up; if that takes longer
-// than this, the press is forgotten.
+// Shift + g scrolls to the bottom through UI Automation on press; only where
+// that cannot scroll the area does the wheel wait for Shift to come up. If
+// Shift stays held longer than this, the press is forgotten.
 #define SCROLL_END_SHIFT_MS 1000
+// How long the movement thread waits for that UI Automation scroll before it
+// falls back to the wheel at Shift release.
+#define SCROLL_END_UIA_MS 300
 // The hook may wait this long for an answer that is still being asked. It must
 // stay far below Windows' LowLevelHooksTimeout, or Windows removes the hook.
 // Waiting inside the hook keeps key order intact: no other key is processed
@@ -190,12 +194,24 @@ static BOOL s_alt_extended = FALSE;
 static BOOL  s_end_tap = FALSE;
 static DWORD s_end_tap_tick = 0;
 
-// Shift + g asked for the bottom while Shift was still held. Browsers turn
-// Shift + wheel into sideways scrolling, so the jump waits for the last
-// Shift to come up.
+// Shift + g asked for the bottom while Shift was still held. It scrolls
+// through UI Automation on press (Shift does not matter there); the wheel
+// sent once Shift comes up is only the fallback for where that cannot scroll
+// (browsers turn Shift + wheel into sideways scrolling).
 static BOOL  s_end_shift = FALSE;
 static BOOL  s_end_shift_auto = FALSE;
 static DWORD s_end_shift_tick = 0;
+// Where that bottom jump has got to. The hook only reads and moves it with
+// InterlockedCompareExchange; the movement thread asks UI Automation.
+enum {
+    END_UIA_IDLE = 0,    // nothing pending
+    END_UIA_ASK = 1,     // pressed with Shift held; the movement thread will ask
+    END_UIA_ASKING = 2,  // the movement thread is asking UI Automation
+    END_UIA_DONE = 3,    // UI Automation scrolled to the bottom
+    END_UIA_FAILED = 4,  // UI Automation could not; the hook sends the wheel
+    END_UIA_WHEEL = 5    // Shift came up first; the movement thread sends it
+};
+static volatile LONG s_end_uia = END_UIA_IDLE;
 
 // A press bumps the direction's generation. The movement thread owns all
 // scroll timing and emission, so the hook only records the press and wakes it.
@@ -919,16 +935,20 @@ static void scroll_end_press(BOOL shift, BOOL armed, BOOL auto_target)
     DWORD now = GetTickCount();
 
     if (shift) {
-        // Browsers read Shift with GetKeyState and turn Shift + wheel into
-        // sideways scrolling. Wait for Shift to come up instead of injecting
-        // a fake Shift up/down, which could leave it stuck.
+        // The movement thread scrolls through UI Automation on this press,
+        // which a held Shift does not affect. The wheel it may send at Shift
+        // up is the fallback: browsers read Shift with GetKeyState and turn
+        // Shift + wheel into sideways scrolling, and a fake Shift up/down
+        // could leave it stuck.
         if (s_down[VK_LSHIFT] || s_down[VK_RSHIFT]) {
             s_end_shift = TRUE;
             s_end_shift_auto = auto_target;
             s_end_shift_tick = now;
-        } else {
-            scroll_press(ACT_FAST_DOWN, auto_target, TRUE);
+            // The movement thread sees ASK, asks UI Automation and only falls
+            // back to the wheel itself if Shift came up meanwhile.
+            InterlockedExchange(&s_end_uia, END_UIA_ASK);
         }
+        scroll_press(ACT_FAST_DOWN, auto_target, TRUE);
     } else if (armed && (DWORD)(now - s_end_tap_tick) <=
                             (DWORD)g_cfg.scroll_end_tap_ms) {
         scroll_press(ACT_FAST_UP, auto_target, TRUE);
@@ -938,8 +958,9 @@ static void scroll_end_press(BOOL shift, BOOL armed, BOOL auto_target)
     }
 }
 
-// The last Shift came up: send the bottom jump held back for it. A stale one
-// is dropped.
+// The last Shift came up. UI Automation may already have scrolled; if it is
+// still asking, the movement thread sends the wheel itself only when that
+// fails; otherwise send the fallback wheel jump now. A stale press is dropped.
 static void scroll_end_shift_up(void)
 {
     DWORD now;
@@ -950,8 +971,28 @@ static void scroll_end_shift_up(void)
         return;
     s_end_shift = FALSE;
     now = GetTickCount();
-    if ((DWORD)(now - s_end_shift_tick) <= SCROLL_END_SHIFT_MS)
-        scroll_press(ACT_FAST_DOWN, s_end_shift_auto, TRUE);
+    if ((DWORD)(now - s_end_shift_tick) > SCROLL_END_SHIFT_MS) {
+        InterlockedExchange(&s_end_uia, END_UIA_IDLE);
+        return;
+    }
+    // Never block here: the movement thread owns the UI Automation ask.
+    for (;;) {
+        LONG state = InterlockedCompareExchange(&s_end_uia, 0, 0);
+
+        if (state == END_UIA_ASK || state == END_UIA_ASKING) {
+            if (InterlockedCompareExchange(&s_end_uia, END_UIA_WHEEL,
+                                           state) == state)
+                return;
+            continue;
+        }
+        if (state == END_UIA_DONE) {
+            InterlockedExchange(&s_end_uia, END_UIA_IDLE);
+            return;
+        }
+        InterlockedExchange(&s_end_uia, END_UIA_IDLE);
+        break;
+    }
+    scroll_press(ACT_FAST_DOWN, s_end_shift_auto, TRUE);
 }
 
 static void left_press_key(void)
@@ -1657,7 +1698,8 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
         return FALSE;
     s_down[vk] = 0;
     // The app gets this Shift up before the wheel events queued after it, so
-    // the bottom jump can go out now.
+    // the fallback bottom jump can go out now where UI Automation could not
+    // scroll.
     if (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT)
         scroll_end_shift_up();
     if (s_sc_active && (vk == VK_LMENU || vk == VK_RMENU))
@@ -1697,6 +1739,7 @@ static void reset_key_state(void)
     s_alt_scan = 0;
     s_alt_extended = FALSE;
     s_end_shift = FALSE;
+    InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
 }
 
@@ -2313,6 +2356,66 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     jump = InterlockedCompareExchange(&s_scroll_jump, 0, 0);
                     if (jump & (1 << idx)) {
                         atomic_and(&s_scroll_jump, ~(LONG)(1 << idx));
+                        // The bottom jump goes through UI Automation first, so
+                        // a held Shift does not turn it sideways. Only when
+                        // that cannot scroll this area does the wheel go out,
+                        // at Shift release.
+                        if (idx == 5) {
+                            LONG prev_uia = InterlockedCompareExchange(
+                                &s_end_uia, END_UIA_ASKING, END_UIA_ASK);
+                            BOOL send_wheel = TRUE;
+
+                            if (prev_uia == END_UIA_ASK) {
+                                POINT pt = { 0, 0 };
+                                LONG after;
+
+                                if ((aimed & (1 << idx)) && target_ok)
+                                    pt = target;
+                                else
+                                    GetCursorPos(&pt);
+                                if (uia_scroll_end(pt, SCROLL_END_UIA_MS)) {
+                                    after = InterlockedCompareExchange(
+                                        &s_end_uia, END_UIA_DONE,
+                                        END_UIA_ASKING);
+                                    // WHEEL: Shift came up while we asked and
+                                    // the wheel was held back for us; it is
+                                    // not needed now.
+                                    if (after == END_UIA_WHEEL)
+                                        InterlockedExchange(&s_end_uia,
+                                                            END_UIA_IDLE);
+                                    send_wheel = FALSE;
+                                } else {
+                                    after = InterlockedCompareExchange(
+                                        &s_end_uia, END_UIA_FAILED,
+                                        END_UIA_ASKING);
+                                    // WHEEL: Shift is already up, so the wheel
+                                    // is safe. Any other state means the press
+                                    // was reset or replaced: send nothing (the
+                                    // hook sends it at Shift up if FAILED).
+                                    if (after == END_UIA_WHEEL)
+                                        InterlockedExchange(&s_end_uia,
+                                                            END_UIA_IDLE);
+                                    else
+                                        send_wheel = FALSE;
+                                }
+                                // The wait does not count as scrolling time,
+                                // and a wheel jump after it starts from now.
+                                QueryPerformanceCounter(&now);
+                                prev = now;
+                                now_us = qpc_us_from(now, freq);
+                            } else if (prev_uia == END_UIA_WHEEL) {
+                                // Shift came up before the thread got here.
+                                InterlockedExchange(&s_end_uia, END_UIA_IDLE);
+                            }
+                            if (!send_wheel) {
+                                // Stop the vertical streams, as a wheel jump
+                                // does, and leave the rest to UI Automation.
+                                scrActive[0] = scrActive[1] = 0;
+                                scrActive[4] = scrActive[5] = 0;
+                                scrAccY = 0.0;
+                                continue;
+                            }
+                        }
                         if (!g_cfg.smooth_scroll) {
                             // No smooth scrolling: stop the axis and send
                             // the whole jump at once.
