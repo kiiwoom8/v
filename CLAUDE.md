@@ -21,3 +21,9 @@ Rules that past bugs keep coming back to:
   32 and 64 bit); guard newer constants with `#ifndef`.
 - A key or setting change also updates `config.c` defaults, parsing and
   template, the help window (`tray.c`), `README.md`, and `HISTORY.md`.
+
+## Git
+
+Always push finished work to `master` (the default branch; there is no
+`main`). Every push to `master` rebuilds `vim.exe` and republishes the
+rolling `latest` release (`release.yml`), so build-check before pushing.
