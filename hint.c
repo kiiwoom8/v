@@ -1021,7 +1021,9 @@ static int alphabet_len(void)
 // Frees room when the code is full: open up a retired label first (its longer
 // labels become candidates, the stale one only narrows), else make the
 // shortest shown label one character longer (typing the old one narrows).
-static BOOL make_room(void)
+// With may_lengthen = FALSE (keep_labels), only the first branch may run: a
+// label the user can see must keep its letters.
+static BOOL make_room(BOOL may_lengthen)
 {
     int alen = alphabet_len();
     int i, j, best = -1, bestlen = 0, len;
@@ -1040,6 +1042,7 @@ static BOOL make_room(void)
         g_retired[best].expanded = TRUE;
         return TRUE;
     }
+    if (!may_lengthen) return FALSE;
 
     // Find the shortest shown label with a free extension, then split it.
     // Never pick an extension that is itself taken, or the stale label would
@@ -1090,15 +1093,19 @@ static BOOL make_room(void)
     return TRUE;
 }
 
-// Allocates all labels a merge needs in one pass, so they stay as short as
+// Allocates labels a merge needs in one pass, so they stay as short as
 // possible and are prefix-free against shown and retired labels alike.
-static BOOL alloc_labels(int need, HintLabel *out)
+// Returns how many of out[0..need) got a label, or -1 when out of memory.
+// With keep_labels, a shown label may not grow: once every retired label is
+// open, the allocation stops at what fits and the rest stays unlabelled.
+static int alloc_labels(int need, HintLabel *out)
 {
     int alen = alphabet_len();
-    int tries, got, limit, cap;
+    int tries, got = 0, limit, cap;
+    BOOL lenient = g_cfg.keep_labels != 0;
 
-    if (need <= 0) return TRUE;
-    if (alen < 1) return FALSE;
+    if (need <= 0) return 0;
+    if (alen < 1) return -1;
     limit = need + 2048;
 
     for (tries = 0; tries < limit; ++tries) {
@@ -1106,11 +1113,11 @@ static BOOL alloc_labels(int need, HintLabel *out)
         if (cap < alen + 1) cap = alen + 1;
         if (cap > LABEL_QUEUE_MAX) cap = LABEL_QUEUE_MAX;
         got = alloc_pass(need, out, alen, cap);
-        if (got < 0) return FALSE;
-        if (got == need) return TRUE;
-        if (!make_room()) return FALSE;
+        if (got < 0) return -1;
+        if (got == need) return got;
+        if (!make_room(!lenient)) return lenient ? got : -1;
     }
-    return FALSE;
+    return lenient ? got : -1;
 }
 
 static BOOL same_element(const RECT *a, const RECT *b)
@@ -1130,16 +1137,52 @@ static BOOL same_element(const RECT *a, const RECT *b)
     return dl <= tol && dt <= tol && dr <= tol && db <= tol;
 }
 
+// Area of the intersection of two rects as long long (0 when they do not meet).
+static long long rect_intersection_area(const RECT *a, const RECT *b)
+{
+    long long l = a->left > b->left ? a->left : b->left;
+    long long t = a->top > b->top ? a->top : b->top;
+    long long r = a->right < b->right ? a->right : b->right;
+    long long btm = a->bottom < b->bottom ? a->bottom : b->bottom;
+
+    if (r <= l || btm <= t) return 0;
+    return (r - l) * (btm - t);
+}
+
+// TRUE when the rects overlap by at least half of their union (IoU >= 0.5):
+// a new element that only shifted a few pixels is the same target, not a
+// second one to label. A small button inside a large labelled card keeps a
+// much smaller overlap and still gets its own label.
+static BOOL overlaps_heavily(const RECT *a, const RECT *b)
+{
+    long long inter = rect_intersection_area(a, b);
+    long long area_a, area_b, uni;
+
+    if (inter <= 0) return FALSE;
+    area_a = (long long)(a->right - a->left) * (a->bottom - a->top);
+    area_b = (long long)(b->right - b->left) * (b->bottom - b->top);
+    uni = area_a + area_b - inter;
+    if (uni <= 0) return FALSE;
+    return inter * 2 >= uni;
+}
+
 // Folds one refresh post into the shown targets. Labels of surviving elements
 // are kept; removed ones are retired; new ones get labels in one allocated
 // pass. Partial posts never remove anything (they have not seen every window).
+// With keep_labels, a shown label is frozen for the rest of the open: it keeps
+// its text, rect and click point and is never retired by a merge, so nothing
+// the user is reading moves under them. An incoming element that overlaps a
+// shown one is treated as the same element; the rest get free labels, as many
+// as fit, without lengthening a shown label.
 static void merge_scan(ClickList *list)
 {
     ClickTarget *nt;
     HintLabel *nl;
     char *used, *gone;
     int incoming = list ? list->count : 0;
-    int i, j, survivors = 0, need = 0, changed = FALSE;
+    int i, j, survivors = 0, need = 0, got;
+    BOOL keep = g_cfg.keep_labels != 0;
+    BOOL changed = FALSE;
 
     if (incoming > MAX_TARGETS) incoming = MAX_TARGETS;
     nt = (ClickTarget *)malloc((size_t)(g_target_count + incoming + 1) *
@@ -1169,22 +1212,41 @@ static void merge_scan(ClickList *list)
         }
         if (match >= 0) {
             used[match] = 1;
-            if (g_targets[i].rc.left != list->items[match].rc.left ||
-                g_targets[i].rc.top != list->items[match].rc.top ||
-                g_targets[i].rc.right != list->items[match].rc.right ||
-                g_targets[i].rc.bottom != list->items[match].rc.bottom ||
-                g_targets[i].click.x != list->items[match].click.x ||
-                g_targets[i].click.y != list->items[match].click.y) {
+            // A frozen label keeps its rect and click point too: moving them
+            // would move the label and the click under the user.
+            if (!keep &&
+                (g_targets[i].rc.left != list->items[match].rc.left ||
+                 g_targets[i].rc.top != list->items[match].rc.top ||
+                 g_targets[i].rc.right != list->items[match].rc.right ||
+                 g_targets[i].rc.bottom != list->items[match].rc.bottom ||
+                 g_targets[i].click.x != list->items[match].click.x ||
+                 g_targets[i].click.y != list->items[match].click.y)) {
                 g_targets[i].rc = list->items[match].rc;
                 g_targets[i].click = list->items[match].click;
                 changed = TRUE;
             }
-        } else if (list->done && retire_label(g_labels[i].s)) {
+        } else if (!keep && list->done && retire_label(g_labels[i].s)) {
             // A done post covered every window: the element is really gone.
             gone[i] = 1;
             changed = TRUE;
         }
         // A partial post proves nothing about the elements it did not see.
+    }
+
+    // keep_labels: an incoming element that heavily overlaps a label already
+    // on screen is that element after a small shift, so it gets no second
+    // label. Done against the shown rects before compaction; nothing is
+    // removed in this mode.
+    if (keep) {
+        for (j = 0; j < incoming; ++j) {
+            if (used[j]) continue;
+            for (i = 0; i < g_target_count; ++i) {
+                if (overlaps_heavily(&g_targets[i].rc, &list->items[j].rc)) {
+                    used[j] = 1;
+                    break;
+                }
+            }
+        }
     }
 
     // Compact the survivors, then swap them in so the allocator only sees
@@ -1211,7 +1273,8 @@ static void merge_scan(ClickList *list)
         int added = 0;
 
         g_alloc_relabeled = FALSE;
-        if (!allocated || !alloc_labels(need, allocated)) {
+        got = allocated ? alloc_labels(need, allocated) : -1;
+        if (got < 0) {
             // No room (or no memory): keep the survivors, retry next refresh.
             free(allocated);
             free(used);
@@ -1220,7 +1283,9 @@ static void merge_scan(ClickList *list)
             return;
         }
         if (g_alloc_relabeled) changed = TRUE;
-        for (j = 0; j < incoming && added < need; ++j) {
+        // With keep_labels, alloc_labels may return fewer than need: label as
+        // many as fit and leave the rest for a reload by the hotkey.
+        for (j = 0; j < incoming && added < got; ++j) {
             if (used[j]) continue;
             g_targets[g_target_count].rc = list->items[j].rc;
             g_targets[g_target_count].click = list->items[j].click;

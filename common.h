@@ -153,6 +153,11 @@ typedef struct {
     int   scan_refresh;        // while the hints are open, rescan this often so new or moved
                                // elements get labels (0-5000 ms, default 500; 0 = off).
                                // Existing labels never change meaning.
+    int   keep_labels;         // 1 = a refresh never moves, retires or lengthens a label
+                               // already on screen; new elements get labels in free space,
+                               // as many as fit. The hotkey again relabels everything.
+                               // Default 1; 0 = labels follow their elements and disappear
+                               // with them.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
 } Config;
 

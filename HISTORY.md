@@ -450,6 +450,18 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Labels never change meaning while the overlay is open.** `8b0a194`:
   refreshed elements keep their labels, removed ones are retired for the
   rest of the open, and new ones are allocated prefix-free in shortlex order.
+  A label the user is reading must not move either: with `keep_labels`
+  (default 1) a merge freezes a shown label's text, rect and click point,
+  treats an incoming element that overlaps a shown one by at least half of
+  their union as the same element, and stops allocating instead of
+  lengthening a shown label (`make_room` may only open a retired one). The
+  remaining new elements stay unlabelled until the hotkey reloads. The old
+  follow-and-retire merge is `keep_labels = 0`. The cost is deliberate: a
+  label whose element moved far or went away still clicks where it is
+  drawn, which is where the user saw it. Matching by rect alone cannot tell
+  "moved" from "replaced" (UIA identity is not carried in `ClickTarget`), so
+  following elements gave a label a new letter or a new place between the
+  user reading it and typing it.
 
 ### Scrolling and movement
 
@@ -555,7 +567,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Hints label UIA elements; the grid opens only with `hint_mode = grid` | `64a5805`, `e51fecb` | Grid only (phase 0 and 1); grid as automatic fallback (`64a5805` to `1e8677d`) |
 | A scan that finds nothing retries up to 3 s, then closes the hints | `8b0a194`, `e51fecb` | Opening the grid |
 | Hotkey again rescans (and forgets slow-window skips) | `1e8677d`, `729e682` | Opening the grid |
-| Labels refresh while open and never change meaning | `8b0a194` | Static labels |
+| Labels refresh while open and never change meaning; shown labels stay put (`keep_labels = 0` restores the moving merge) | `8b0a194`, `keep_labels` | Static labels; labels that move, vanish and grow letters |
 | `Alt+h` / `Alt+l` go back / forward; `Alt+,` / `Alt+.` scroll sideways (`alt_nav = 0` restores) | `b474c89` | `Alt+h/l` scrolled sideways (`09b7fdb`) |
 | `g g` / `Shift+g` scroll to the top / bottom; `Alt+g g` / `Alt+Shift+g` in text fields | `6622ce0` | `Alt+u u` / `Alt+d d` (`b54285f`) |
 | The bottom jump fires after Shift is released | `ba62724` | Fired at once (broken in browsers) |
@@ -675,7 +687,7 @@ Version: `version.h` only (numbers and both strings). Icon: edit
   setting with its default and how to turn it off.
 - Every new behaviour gets a setting to turn it off (`prescan`,
   `smooth_scroll`, `bare_keys`, `alt_nav`, `alt_scroll_auto`, `scan_refresh`,
-  `scroll_end_tap_ms = 0`, `shortcut_method = type`).
+  `keep_labels`, `scroll_end_tap_ms = 0`, `shortcut_method = type`).
 - README, help window, default `vim.ini` and the `common.h` comments change
   in the same commit as the behaviour.
 - Comments explain *why* (often with the app that forced the rule); match

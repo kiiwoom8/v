@@ -112,11 +112,16 @@ Automation and labels each one. Type the label shown on the element to click
 it; labels are short (usually one letter) and never a prefix of another. The
 status bar says "Finding clickable elements" while the scan runs. While the
 hints stay open the monitor is scanned again every `scan_refresh` ms (default
-500), so elements that appear or move get labels by themselves; a label you
-have already read never clicks something else (when labels run out one may
-grow a letter, and a label whose element went away is never reused). The
-hotkey again still forces a full rescan, and a scan that finds nothing keeps
-trying for up to 3 s, then closes the hints. Hints work
+500), so elements that appear get labels by themselves. A label already on
+screen stays put and keeps its letters (`keep_labels`, default 1): a label you
+have read never moves, changes or disappears under you, and still clicks
+where it is drawn. An element that only shifted a few pixels gets no second
+label. New elements get labels in free space, as many as fit; to relabel
+everything, press the hotkey again. With `keep_labels = 0` labels follow
+their elements instead and disappear when an element goes away (when labels
+run out one may grow a letter, and a label whose element went away is never
+reused). A scan that finds nothing keeps trying for up to 3 s, then closes
+the hints. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -246,8 +251,11 @@ ones:
   found so far. The active window's elements are always waited for, up to
   3 s; with nothing found by then, the hints close),
   `scan_refresh` (0-5000 ms, default 500: while the hints are open, rescan
-  this often so elements that appear or move get labels by themselves;
-  existing labels never change meaning. 0 = off),
+  this often so elements that appear get labels by themselves. 0 = off),
+  `keep_labels` (1 = a label already on screen stays put and keeps its letters
+  while the hints refresh; new elements get labels in free space, and the
+  hotkey again relabels everything. 0 = labels follow their elements and
+  disappear when the element goes away. Default 1),
   `prescan` (1 = start finding elements and scrollable areas as soon as Alt
   goes down, so labels and Alt scrolling respond sooner; 0 = wait for the
   whole key combination)

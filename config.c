@@ -581,6 +581,7 @@ void config_set_defaults(Config *c)
     c->scan_scope = SCAN_MONITOR;
     c->scan_timeout = 400;
     c->scan_refresh = 500;
+    c->keep_labels = 1;
     c->prescan = 1;
 }
 
@@ -905,6 +906,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->scan_timeout, line, key, val, 100, 5000);
     else if (_wcsicmp(key, L"scan_refresh") == 0)
         apply_int_range(&c->scan_refresh, line, key, val, 0, 5000);
+    else if (_wcsicmp(key, L"keep_labels") == 0)
+        apply_bool(&c->keep_labels, line, key, val);
     else if (_wcsicmp(key, L"prescan") == 0)
         apply_bool(&c->prescan, line, key, val);
     else
@@ -1528,6 +1531,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; While the hints are open, rescan this often (ms) so elements that\r\n");
     appendf(buf, cch, L"; appear or move get labels by themselves (0-5000, default 500; 0 = off).\r\n");
     appendf(buf, cch, L"scan_refresh = %d\r\n", d.scan_refresh);
+    appendf(buf, cch, L"; 1 = a label already on screen stays where it is: a refresh never\r\n");
+    appendf(buf, cch, L"; moves it, lengthens it or takes it away; new elements get labels in\r\n");
+    appendf(buf, cch, L"; free space. The hotkey again relabels everything. 0 = labels follow\r\n");
+    appendf(buf, cch, L"; their elements and disappear when the element goes away.\r\n");
+    appendf(buf, cch, L"keep_labels = %d\r\n", d.keep_labels ? 1 : 0);
     appendf(buf, cch, L"; 1 = start finding clickable elements (and, for Alt scrolling, the\r\n");
     appendf(buf, cch, L"; scrollable areas) as soon as Alt goes down, so the labels and the\r\n");
     appendf(buf, cch, L"; first scroll come sooner. 0 = wait for the whole key combination.\r\n");
