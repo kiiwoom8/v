@@ -1,8 +1,8 @@
 CC = gcc
 WINDRES ?= windres
 CFLAGS = -Wall -Wextra -O2 -std=gnu11
-LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid -lcomdlg32
-SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c
+LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid -lcomdlg32 -lwininet
+SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
 TARGET = vim.exe
@@ -15,7 +15,7 @@ $(TARGET): $(OBJS) $(RESOBJ)
 %.o: %.c common.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-tray.o: version.h
+tray.o update.o: version.h
 
 vim.res.o: vim.rc vim.manifest vim.ico version.h
 	$(WINDRES) -I. -O coff -i vim.rc -o $@

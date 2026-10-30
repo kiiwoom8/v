@@ -428,6 +428,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         snippet_insert((const WCHAR *)lp);
         free((void *)lp);
         return 0;
+    case WM_APP_UPDATE_DONE:
+        update_on_done(wp);
+        return 0;
     case WM_CLOSE:
         app_quit();
         return 0;
@@ -457,8 +460,11 @@ int main(void)
 
     g_hinst = GetModuleHandleW(NULL);
 
+    // After an update the new exe starts while the old instance is still
+    // quitting; update_wait_for_old waits for it to let go of the mutex.
     mutex = CreateMutexW(NULL, TRUE, INSTANCE_MUTEX);
-    if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    if (mutex && GetLastError() == ERROR_ALREADY_EXISTS &&
+        !update_wait_for_old(mutex)) {
         existing = FindWindowW(MAIN_WND_CLASS, NULL);
         if (existing)
             PostMessageW(existing, WM_APP_ALREADY_RUNNING, 0, 0);
@@ -474,6 +480,8 @@ int main(void)
     if (!config_load(&g_cfg, &created))
         app_log(L"config: initial load failed");
     app_log(L"config: settings file %s", config_path());
+
+    update_cleanup();
 
     ZeroMemory(&wc, sizeof(wc));
     wc.cbSize        = sizeof(wc);
@@ -538,6 +546,8 @@ int main(void)
         text[511] = L'\0';
         tray_balloon(L"vim mouse is running", text);
     }
+    if (update_restarted())
+        tray_balloon(L"vim mouse updated", L"Now running the latest version.");
     if (config_warnings()[0])
         tray_balloon(L"Settings problem", config_warnings());
 

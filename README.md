@@ -276,7 +276,25 @@ Left- or right-click the tray icon:
 - Edit settings... (opens the settings file in use, falling back to Notepad)
 - Reload settings
 - Start with Windows (checked when enabled)
+- Update to latest version (see [Updating](#updating))
 - Quit
+
+## Updating
+
+"Update to latest version" in the tray menu downloads `vim.exe` from the
+[latest release](https://github.com/kiiwoom8/v/releases/latest) and compares
+it with the running program. If they are the same, a balloon says you are up
+to date. Otherwise the new `vim.exe` replaces the old one in the same folder
+and vim mouse restarts; a balloon confirms it. `vim.ini`, your text shortcuts
+and "Start with Windows" are kept, since the program keeps its name and
+folder.
+
+Windows cannot overwrite a running program, so the old one is first renamed
+to `vim.exe.old` and deleted when the new one starts. The download goes to
+`vim.exe.new` next to it, so the folder must be writable: in
+`C:\Program Files` the update fails and offers to open the download page, and
+you replace `vim.exe` yourself after quitting vim mouse. The same happens
+when GitHub cannot be reached.
 
 ## Troubleshooting
 
@@ -356,8 +374,11 @@ Source layout:
 - `input.c` - low-level keyboard hook, mouse mode, movement, Alt scrolling,
   text shortcut typing, sleep/lock handling
 - `hint.c` - click-hint overlay
+- `uia.c` - UI Automation: clickable-element scan, Alt scroll targets,
+  text-field detection for bare keys
 - `tray.c` - tray icon and menu, help window, start with Windows
 - `snippet.c` - text shortcut editor window
+- `update.c` - update to the latest release from the tray menu
 - `common.h` - shared contract between modules
 - `version.h` - version numbers and strings, shared by the code and `vim.rc`
 - `vim.rc`, `vim.manifest`, `vim.ico` - icon, manifest and version resources

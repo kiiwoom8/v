@@ -29,6 +29,7 @@ static const WCHAR HELP_TITLE[] =
 #define IDM_QUIT       1008
 #define IDM_TEXT       1009
 #define IDM_LOCK       1010
+#define IDM_UPDATE     1011
 
 #define HELP_MAX_ROWS  64
 #define HELP_INF       0x3fffffff
@@ -647,6 +648,12 @@ static void show_menu(void)
     append_item(menu, IDM_RELOAD, L"Reload settings", NULL, FALSE);
     append_item(menu, IDM_STARTUP, L"Start with Windows", NULL,
                 startup_enabled());
+    append_item(menu, IDM_UPDATE,
+                update_running() ? L"Downloading update..."
+                                 : L"Update to latest version",
+                NULL, FALSE);
+    if (update_running())
+        EnableMenuItem(menu, IDM_UPDATE, MF_BYCOMMAND | MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     append_item(menu, IDM_QUIT, L"Quit", NULL, FALSE);
 
@@ -698,6 +705,9 @@ BOOL tray_on_command(WORD id)
         return TRUE;
     case IDM_STARTUP:
         toggle_startup();
+        return TRUE;
+    case IDM_UPDATE:
+        update_start();
         return TRUE;
     case IDM_QUIT:
         app_quit();

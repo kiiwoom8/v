@@ -9,8 +9,12 @@
 //            mode, movement/scroll thread, mouse actions, Alt scrolling, text
 //            shortcut capture and typing, mode indicator, sleep/lock handling
 //   hint.c   click-hint overlay (main/UI thread)
+//   uia.c    UI Automation workers: clickable-element scan, Alt scroll
+//            targets, text-field focus for bare keys
 //   tray.c   tray icon + menu, help window, start-with-Windows
 //   snippet.c text shortcut editor window (tray "Text shortcuts...")
+//   update.c self-update from the latest GitHub release (tray "Update to
+//            latest version")
 
 #ifndef VIM_COMMON_H
 #define VIM_COMMON_H
@@ -58,6 +62,7 @@
 #define WM_APP_TYPE_TEXT        (WM_APP + 12) // lParam = malloc'd WCHAR* from input.c; -> snippet_insert, then free
 #define WM_APP_HINT_PREPARE     (WM_APP + 13) // wParam 1 = the hint hotkey's modifiers went down, start scanning early;
                                               // 0 = the hotkey will not follow; -> hint_prepare
+#define WM_APP_UPDATE_DONE      (WM_APP + 14) // wParam = result from the update worker; -> update_on_done
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -321,6 +326,26 @@ void snippet_editor_refresh(void);
 // Inserts a text shortcut's text into the focused window: pastes it through
 // the clipboard (restored afterwards), or types it (shortcut_method = type).
 void snippet_insert(const WCHAR *text);
+
+// ---------------------------------------------------------------------------
+// Self-update (update.c). Main/UI thread; the download runs on a worker.
+
+// Downloads the latest release's vim.exe (no-op with a balloon while one is
+// running). The worker posts WM_APP_UPDATE_DONE; update_on_done then says it
+// is up to date, reports the error, or swaps the exe in and restarts: the
+// running exe is renamed to "<exe>.old", the download takes its name, and the
+// new process starts with --updated, then this one quits.
+void update_start(void);
+void update_on_done(WPARAM result);     // WM_APP_UPDATE_DONE
+BOOL update_running(void);              // a download is in progress
+BOOL update_restarted(void);            // this process was started with --updated
+// Startup, when the instance mutex already exists: with --updated, waits up to
+// 30 s for the old instance to exit and returns TRUE once this process owns
+// the mutex. FALSE (at once without --updated): it is a second instance.
+BOOL update_wait_for_old(HANDLE mutex);
+// Startup: deletes "<exe>.old" (retrying briefly after an update) and any
+// partial "<exe>.new" left by quitting during a download.
+void update_cleanup(void);
 
 // ---------------------------------------------------------------------------
 // App helpers (main.c)
