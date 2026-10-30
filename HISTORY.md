@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `46f5976` (2026-10-31): 87
-commits, 73 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `be52799` (2026-10-31): 89
+commits, 75 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -30,12 +30,12 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 
 | File | Lines | Responsibility | Names worth knowing |
 |---|---|---|---|
-| `common.h` | 363 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
+| `common.h` | 377 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
 | `main.c` | 566 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2108 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey` |
-| `input.c` | 3128 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `input_thread_proc` |
+| `input.c` | 3271 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `input_thread_proc` |
 | `hint.c` | 2703 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, live refresh merging, monitor cycling. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay` |
-| `uia.c` | 3645 | UI Automation through hand-declared COM vtables. Three MTA workers: the element scan (one thread plus 8 helpers), the scroll-target cache and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_window_uia`, `filter_containers`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `uia.c` | 4106 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_window_uia`, `filter_containers`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1385 | Tray icon and menu, balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -51,9 +51,10 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 |---|---|---|
 | Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here. |
 | Input (highest priority) | `input.c` `input_thread_proc` | Installs the low-level hook (`kb_proc`), WinEvent focus hooks, raw keyboard input (hook-loss check) and the power/session window; owns the mode indicator window. |
-| Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Calls `uia_scroll_target`. |
+| Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Calls `uia_scroll_target` and `uia_scroll_end`. |
 | UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel, merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
 | UIA scroll worker | `uia.c` `scroll_worker` | Per-window cache (8 windows, LRU) of scrollable areas for Alt and bare scrolling, kept warm after a press. |
+| UIA scroll-end worker | `uia.c` `scroll_end_worker` | `Shift+g`: `ScrollPattern.SetScrollPercent` to 100 on the scrollable area at a point. Started on first use. |
 | UIA focus worker | `uia.c` `focus_worker` | Decides whether the focus is in a text field, after focus and foreground events and polls; the hook reads the cached answer. |
 | Settings watcher | `main.c` `watch_thread_proc` | Notices `vim.ini` changes and posts `WM_APP_RELOAD_CONFIG`. |
 | Update download (on demand) | `update.c` `update_worker` | Downloads `<exe>.new`, compares it with the running exe, posts `WM_APP_UPDATE_DONE`. The swap and restart run on the main thread. |
@@ -208,7 +209,9 @@ Invariants stated in `common.h` and enforced by history:
   (`27e5efe`), and bare keys were unreliable (`da32599`, `7855485`,
   `5ea3a61`); all three were fixed the same day.
 - `6622ce0`: scroll-to-end moved to `g g` / `Shift+g`, and `ba62724` made
-  `Shift+g` work in browsers.
+  `Shift+g` work in browsers by waiting for Shift to come up. `be52799`
+  made it act on press through UI Automation, with that wait as the
+  fallback.
 - `37b210c` adds diagnostics for the one unresolved bare-key case (section 7).
 - `ee4f7fb`: the tray menu updates the program to the latest release
   (`update.c`; the rename-then-restart rule is in section 5).
@@ -325,6 +328,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 71 | `f539e1f` | 10-31 | 7 | Alt keys act from `alt_resolve` with Alt still withheld (`alt_action_down`) | While a Chrome bubble (downloads, extensions, notifications) was open, the first Alt+j went to Chrome as Alt+J; only the second press scrolled |
 | 72 | `e261176` | 10-31 | 7 | Commit-log row for `f539e1f` | |
 | 73 | `46f5976` | 10-31 | 7 | Bare keys ignore Chrome's panels (`uia_chromium_panel`: a `Chrome_WidgetWin_*` owned popup without `WS_EX_NOACTIVATE` or `WS_EX_TOPMOST`); a panel's bare root focus counts as no text field | With the downloads or extensions panel open, bare `j`/`k` typed into Chrome; before `f539e1f` the replayed Alt had closed the panel |
+| 74 | `27d9313` | 10-31 | 7 | Commit-log row for `46f5976` | |
+| 75 | `be52799` | 10-31 | 7 | `Shift+g` scrolls to the bottom on press through UI Automation (`uia_scroll_end`: `ScrollPattern.SetScrollPercent`, own worker, 300 ms); the wheel after Shift release is only the fallback (`s_end_uia`) | The bottom jump waited for Shift to come up |
 
 ## 5. Lessons learned: rules not to break
 
@@ -344,7 +349,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
   Shift", remember the action in the hook and run it from the key-up path
   (`scroll_end_shift_up`). Apps read modifier state with `GetKeyState` when a
   wheel event arrives, so Shift held during a vertical wheel turns into
-  horizontal scrolling in browsers.
+  horizontal scrolling in browsers. To act while Shift is still held, do not
+  use the wheel: `be52799` scrolls `Shift+g` to the bottom through UI
+  Automation (`ScrollPattern.SetScrollPercent`), which ignores modifiers,
+  and keeps the after-Shift wheel only as the fallback. Its hand-off between
+  the hook and the movement thread (`s_end_uia`: ask, asking, done, failed,
+  wheel) is lock-free; the hook only moves the state with
+  `InterlockedCompareExchange`.
 - **Alt reaches menus before your hotkey does.** `c5e5472`: menus and flyouts
   close on Alt down. While a popup is open or the hints capture keys, the
   left Alt is withheld (`alt_should_withhold`, `alt_resolve`) and replayed in
@@ -428,6 +439,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   `uia_engine_init` (under `engine_lock`), and the scanner retries its start.
   **Any new UIA worker must use `uia_engine_init`** and retry a failed init
   (the scroll and focus workers retry every 5 s, `da32599`, `7855485`).
+  `uia_engine_init` takes `engine_lock` itself and the lock is not
+  reentrant: never wrap it in another `engine_lock` (only the scroll worker's
+  own `scroll_engine_init` is called under an explicit lock). The first draft
+  of `be52799` did, which would have spun forever and blocked every other
+  engine.
 - **Never run UIA on the UI thread** (`common.h`): querying our own windows
   from there can deadlock.
 - **A cancelled or partial scan must not change persistent state.** The
@@ -589,7 +605,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Labels refresh while open and never change meaning; shown labels stay put (`keep_labels = 0` restores the moving merge) | `8b0a194`, `33a979f` | Static labels; labels that followed their elements, vanished and grew letters (`8b0a194` to `33a979f`) |
 | `Alt+h` / `Alt+l` go back / forward; `Alt+,` / `Alt+.` scroll sideways (`alt_nav = 0` restores) | `b474c89` | `Alt+h/l` scrolled sideways (`09b7fdb`) |
 | `g g` / `Shift+g` scroll to the top / bottom; `Alt+g g` / `Alt+Shift+g` in text fields | `6622ce0` | `Alt+u u` / `Alt+d d` (`b54285f`) |
-| The bottom jump fires after Shift is released | `ba62724` | Fired at once (broken in browsers) |
+| The bottom jump fires on press through UI Automation; where that cannot scroll, the wheel goes after Shift is released | `be52799`, `ba62724` | Wheel at once (sideways in browsers, before `ba62724`); wheel only after Shift release (`ba62724` to `be52799`) |
 | Scroll-to-end glides | `aad1eaa` | 64-event burst (still used with `smooth_scroll = 0`) |
 | Bare keys outside text fields (`bare_keys = 0` restores) | `b474c89` | Alt always needed |
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
