@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `1c0a83b` (2026-10-30): 79
-commits, 65 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `ee4f7fb` (2026-10-30): 81
+commits, 67 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -197,7 +197,7 @@ Invariants stated in `common.h` and enforced by history:
 - Real-app robustness: Explorer (`348a968`) and Teams (`729e682`, `e987c6a`).
 
 ### Phase 7: live hints, bare keys, `g g` (2026-10-30)
-`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
+`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
 
 - `8b0a194`: labels stay current while the overlay is open (`scan_refresh`).
 - `b474c89`: **bare keys**. Outside text fields `f h j k l u d , .` work
@@ -210,6 +210,8 @@ Invariants stated in `common.h` and enforced by history:
 - `6622ce0`: scroll-to-end moved to `g g` / `Shift+g`, and `ba62724` made
   `Shift+g` work in browsers.
 - `37b210c` adds diagnostics for the one unresolved bare-key case (section 7).
+- `ee4f7fb`: the tray menu updates the program to the latest release
+  (`update.c`; the rename-then-restart rule is in section 5).
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -313,6 +315,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 63 | `f01dca8` | 10-30 | 7 | `HISTORY.md` and `CLAUDE.md` | This guide |
 | 64 | `1c2f611` | 10-30 | 7 | `CLAUDE.md`: push finished work to `master` | Every push to `master` republishes `latest` |
 | 65 | `1c0a83b` | 10-30 | 7 | Ask Chromium's `OBJID_CARET` before UI Automation (`caret_visible`) | Bare keys scrolled in Zendesk's autocomplete fields: Chromium names the `aria-activedescendant` option as the focus |
+| 66 | `35315a2` | 10-30 | 7 | Commit-log row for `1c0a83b` | |
+| 67 | `ee4f7fb` | 10-30 | 7 | Tray "Update to latest version": download the latest release, rename the running exe to `.old`, restart with `--updated` (`update.c`) | Updating meant quitting, downloading and replacing `vim.exe` by hand |
 
 ## 5. Lessons learned: rules not to break
 
