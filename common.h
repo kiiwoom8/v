@@ -303,6 +303,7 @@ void uia_scroll_stop(void);
 // too.
 enum { FOCUS_UNKNOWN = 0, FOCUS_TEXT = 1, FOCUS_OTHER = 2 };
 void uia_focus_changed(DWORD delay_ms);
+BOOL uia_chromium_panel(HWND hwnd);      // hwnd is one of Chrome's owned panels, not a menu
 int  uia_focus_state(void);
 int  uia_focus_wait(DWORD max_ms);
 void uia_focus_stop(void);

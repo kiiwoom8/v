@@ -602,8 +602,11 @@ static BOOL window_cloaked(HWND hwnd)
 }
 
 // which (may be NULL) gets the window that counts as open: the popup, or the
-// foreground window while it is in menu mode.
-static BOOL popup_open(HWND *which)
+// foreground window while it is in menu mode. With skip_panels, Chrome's panels
+// (downloads, extensions, permission prompts) do not count, neither as the
+// foreground root nor in the z-order walk, which keeps looking for a real menu
+// above them (one opened from inside the panel).
+static BOOL popup_open(BOOL skip_panels, HWND *which)
 {
 #ifdef INPUT_TEST
     if (s_test_popup_on)
@@ -638,7 +641,8 @@ static BOOL popup_open(HWND *which)
         return FALSE;
 
     root = GetAncestor(fg, GA_ROOT);
-    if (root && window_is_popup(root)) {
+    if (root && window_is_popup(root) &&
+        !(skip_panels && uia_chromium_panel(root))) {
         if (which)
             *which = root;
         return TRUE;
@@ -652,6 +656,7 @@ static BOOL popup_open(HWND *which)
         if (IsWindowVisible(w)) {
             GetWindowThreadProcessId(w, &wpid);
             if (wpid == pid && window_is_popup(w) &&
+                !(skip_panels && uia_chromium_panel(w)) &&
                 GetWindowRect(w, &rc) && !IsRectEmpty(&rc) &&
                 !window_cloaked(w)) {
                 if (which)
@@ -1308,7 +1313,7 @@ static BOOL bare_key_ok(UINT vk)
     if (!bare_hint_key(vk) && alt_key_action(vk) == ACT_NONE)
         return FALSE;
     // No wait while a menu is open; otherwise give a pending answer a moment.
-    if (popup_open(&popup)) {
+    if (popup_open(TRUE, &popup)) {
         if (g_cfg.log)
             bare_log(FOCUS_UNKNOWN, popup);
         return FALSE;
@@ -1344,7 +1349,7 @@ static BOOL alt_should_withhold(void)
     // and the overlay still needs Alt hidden so its keys arrive intact.
     if (flag_get(&s_capture))
         return TRUE;
-    return !flag_get(&s_paused) && popup_open(NULL);
+    return !flag_get(&s_paused) && popup_open(FALSE, NULL);
 }
 
 // The Alt scroll keys, from a normal Alt press and from a withheld Alt.

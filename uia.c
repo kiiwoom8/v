@@ -20,6 +20,9 @@
 #ifndef WS_EX_LAYERED
 #define WS_EX_LAYERED 0x00080000L
 #endif
+#ifndef WS_EX_NOACTIVATE
+#define WS_EX_NOACTIVATE 0x08000000L
+#endif
 
 #define UIA_TREESCOPE_DESCENDANTS 4
 #define UIA_TREESCOPE_CHILDREN 2
@@ -938,6 +941,32 @@ static BOOL lazy_tree_window(HWND hwnd)
         return TRUE;
     EnumChildWindows(hwnd, find_chromium_child, (LPARAM)&chromium);
     return chromium;
+}
+
+// Chrome's panels (the downloads bubble, the extensions menu, a permission
+// prompt) are owned WS_POPUP windows just like its menus, so popup_open counted
+// them as open menus and bare keys typed into Chrome. Their styles tell them
+// apart (Chromium's ui/views/widget/widget_hwnd_utils.cc, menu_host.cc): menus
+// carry WS_EX_NOACTIVATE and WS_EX_TOPMOST (a menu with no parent widget only
+// TOPMOST) and the address-bar dropdowns are NOACTIVATE, while a panel has
+// neither. A panel takes the keyboard focus itself, and a letter there does
+// nothing outside a text field. Only GetWindowLongW, GetClassNameW and
+// GetWindow, so the keyboard hook may call this.
+BOOL uia_chromium_panel(HWND hwnd)
+{
+    LONG style, exstyle;
+    WCHAR cls[64];
+
+    if (!hwnd)
+        return FALSE;
+    GetClassNameW(hwnd, cls, 64);
+    if (wcsncmp(cls, L"Chrome_WidgetWin_", 17) != 0)
+        return FALSE;
+    style = GetWindowLongW(hwnd, GWL_STYLE);
+    exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    return (style & WS_POPUP) != 0 &&
+           GetWindow(hwnd, GW_OWNER) != NULL &&
+           !(exstyle & (WS_EX_NOACTIVATE | WS_EX_TOPMOST));
 }
 
 // Optional observer for candidates scan_window_uia rejects (hint_check.c).
@@ -3380,6 +3409,11 @@ static int focus_classify(IUIAutomation *automation,
         return FOCUS_FAILED;
     kind = focus_element_kind(el);
     el->lpVtbl->Release(el);
+    // A panel's own root or pane holds the focus when none of its controls
+    // does, and a panel has no game or canvas that needs letters; its text
+    // fields are already caught by the caret check and focus_element_kind.
+    if (kind == FOCUS_UNKNOWN && uia_chromium_panel(GetAncestor(focus, GA_ROOT)))
+        kind = FOCUS_OTHER;
     // The focus moved to another window while we asked.
     if (!focus_window(&again, &gti, &pid) || again != focus)
         return FOCUS_FAILED;
