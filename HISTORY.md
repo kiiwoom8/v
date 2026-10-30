@@ -308,6 +308,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 60 | `6622ce0` | 10-30 | 7 | `g g` / `Shift+g` scroll to the top / bottom (`key_scroll_end`); `u u` / `d d` just scroll fast twice | Same glide or jump as before, on vim's keys |
 | 61 | `ba62724` | 10-30 | 7 | Send the bottom jump after Shift is released | Browsers read the held Shift and scrolled sideways |
 | 62 | `37b210c` | 10-30 | 7 | Log why bare keys are off (`log = 1`) | Explorer still types after selecting a file (open) |
+| 63 | `f01dca8` | 10-30 | 7 | `HISTORY.md` and `CLAUDE.md` | This guide |
+| 64 | `1c2f611` | 10-30 | 7 | `CLAUDE.md`: push finished work to `master` | Every push to `master` republishes `latest` |
 
 ## 5. Lessons learned: rules not to break
 
@@ -368,6 +370,16 @@ last ten are all `worktree-agent-*` into `element-hints`.
   answer; a failed poll replaced a good one. The fix: ignore focus events
   from other processes, keep the last good poll answer, retry unknown answers
   quickly, and let the hook wait briefly for a pending ask.
+- **In browsers, the UIA focus is not always where typing goes.** Chromium
+  reports an input's `aria-activedescendant` target (the highlighted option
+  of an autocomplete list) as the focused element, so Zendesk's CC, tags and
+  assignee fields looked like a ListItem, bare keys stayed on and `j`/`k`
+  scrolled while the user typed. Chromium makes no Win32 caret, but its
+  window answers `WM_GETOBJECT(OBJID_CARET)` with a caret that is visible
+  exactly while a text input has the focus (its `TEXT_INPUT_TYPE` is not
+  none). `focus_classify` asks for that caret (`caret_visible`) before UI
+  Automation. Ask the focused HWND only; Chromium's transparent child
+  `Chrome_RenderWidgetHostHWND` has a caret that never moves.
 - **Classify by UIA patterns, not control type alone.** `5ea3a61`: a closed
   `<select>` (ComboBox) and a listbox (List) have a writable Value pattern but
   no Text pattern, so letters there only pick an item. They count as
@@ -546,6 +558,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   collect that log from the failing setup. Suspects worth checking are an
   invisible owned popup, a caret owned by a different window, and the
   `FOCUS_UNKNOWN` path timing out.
+- **Zendesk autocomplete fields** (the browser caret check in
+  `focus_classify`, section 5) was built and reasoned from Chromium's source,
+  not tried on Windows. If bare keys still scroll in a Zendesk field, set
+  `log = 1`: `vim.log` says "focus: no text field" there, and the next step
+  is to see which element UI Automation names and whether the caret answers.
 - **Doc drift:** the `README.md` "Source layout" list and the file list at the
   top of `common.h` do not mention `uia.c`.
 - **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet.

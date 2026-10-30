@@ -3106,6 +3106,18 @@ void uia_scroll_stop(void)
 #ifndef GUI_POPUPMENUMODE
 #define GUI_POPUPMENUMODE 0x00000010
 #endif
+#ifndef WM_GETOBJECT
+#define WM_GETOBJECT 0x003D
+#endif
+#ifndef OBJID_CARET
+#define OBJID_CARET ((LONG)0xFFFFFFF8)
+#endif
+#ifndef CHILDID_SELF
+#define CHILDID_SELF 0
+#endif
+#ifndef STATE_SYSTEM_INVISIBLE
+#define STATE_SYSTEM_INVISIBLE 0x00008000
+#endif
 
 #define FOCUS_POLL_MS 500       // recheck this often while the user is active
 #define FOCUS_ACTIVE_MS 30000   // active = some input within this long
@@ -3113,6 +3125,7 @@ void uia_scroll_stop(void)
 #define FOCUS_RETRIES 3         // ... at most this many times per change
 #define FOCUS_WAIT_FRESH_MS 400 // a pending ask older than this is not waited for
 #define FOCUS_ENGINE_RETRY_MS 5000  // retry a failed engine init this often
+#define FOCUS_CARET_TIMEOUT_MS 200  // how long a window may take to name its caret
 #define FOCUS_FAILED (-1)       // internal: the ask failed, not a classification
 
 static CRITICAL_SECTION g_fx_cs;
@@ -3258,6 +3271,85 @@ static int focus_element_kind(IUIAutomationElement *el)
     return FOCUS_OTHER;
 }
 
+// The MSAA caret object (IAccessible); only get_accState is called.
+typedef struct IAccessibleCaret IAccessibleCaret;
+typedef struct IAccessibleCaretVtbl {
+    void *QueryInterface;
+    void *AddRef;
+    ULONG (STDMETHODCALLTYPE *Release)(IAccessibleCaret *This);
+    void *GetTypeInfoCount;
+    void *GetTypeInfo;
+    void *GetIDsOfNames;
+    void *Invoke;
+    void *get_accParent;
+    void *get_accChildCount;
+    void *get_accChild;
+    void *get_accName;
+    void *get_accValue;
+    void *get_accDescription;
+    void *get_accRole;
+    HRESULT (STDMETHODCALLTYPE *get_accState)(
+        IAccessibleCaret *This, VARIANT child, VARIANT *state);
+} IAccessibleCaretVtbl;
+struct IAccessibleCaret { IAccessibleCaretVtbl *lpVtbl; };
+
+_Static_assert(sizeof(IAccessibleCaretVtbl) == 15 * sizeof(void *),
+               "IAccessible vtable size up to get_accState");
+
+static const GUID g_iid_iaccessible = {
+    0x618736e0, 0x3c3d, 0x11cf,
+    { 0x81, 0x0c, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 }
+};
+
+typedef HRESULT (WINAPI *ObjectFromLresultFn)(LRESULT, REFIID, WPARAM,
+                                              void **);
+
+// Chromium (Chrome, Edge, Electron apps, WebView2) makes no Win32 caret, but
+// its window answers OBJID_CARET with a caret that is visible exactly while
+// typing goes into a text input. That holds where UI Automation names
+// something else: an input with aria-activedescendant (Zendesk's ticket
+// fields, any autocomplete box) reports the highlighted option as the focus.
+// Windows that do not answer themselves are skipped; their Win32 caret is
+// already in the GUI thread info. Runs on the focus worker only.
+static BOOL caret_visible(HWND hwnd)
+{
+    static ObjectFromLresultFn from_lresult;
+    static BOOL loaded;
+    DWORD_PTR result = 0;
+    IAccessibleCaret *caret = NULL;
+    VARIANT self, state;
+    BOOL visible = FALSE;
+
+    if (!loaded) {
+        HMODULE oleacc = LoadLibraryW(L"oleacc.dll");
+
+        loaded = TRUE;
+        if (oleacc)
+            from_lresult = (ObjectFromLresultFn)(void *)GetProcAddress(
+                oleacc, "ObjectFromLresult");
+    }
+    if (!from_lresult || !hwnd)
+        return FALSE;
+    if (!SendMessageTimeoutW(hwnd, WM_GETOBJECT, 0, (LPARAM)OBJID_CARET,
+                             SMTO_ABORTIFHUNG, FOCUS_CARET_TIMEOUT_MS,
+                             &result) ||
+        (LONG_PTR)result <= 0)
+        return FALSE;
+    if (FAILED(from_lresult((LRESULT)result, &g_iid_iaccessible, 0,
+                            (void **)&caret)) || !caret)
+        return FALSE;
+    VariantInit(&self);
+    self.vt = VT_I4;
+    self.lVal = CHILDID_SELF;
+    VariantInit(&state);
+    if (SUCCEEDED(caret->lpVtbl->get_accState(caret, self, &state)) &&
+        state.vt == VT_I4)
+        visible = (state.lVal & STATE_SYSTEM_INVISIBLE) == 0;
+    VariantClear(&state);
+    caret->lpVtbl->Release(caret);
+    return visible;
+}
+
 static int focus_classify(IUIAutomation *automation,
                           IUIAutomationCacheRequest *cache, HWND *out)
 {
@@ -3279,6 +3371,8 @@ static int focus_classify(IUIAutomation *automation,
     if (pid == GetCurrentProcessId())
         return FOCUS_UNKNOWN;
     if (text_window(focus))
+        return FOCUS_TEXT;
+    if (caret_visible(focus))
         return FOCUS_TEXT;
     if (!automation || !cache ||
         FAILED(automation->lpVtbl->GetFocusedElementBuildCache(

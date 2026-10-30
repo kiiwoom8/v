@@ -50,8 +50,8 @@ you are reading, a list, the desktop), the Alt keys above also work without
 Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
 `u` / `d` scroll fast, `g g` / `Shift+g` scroll to the top / bottom and `,` /
 `.` scroll sideways. In a text field (an address bar, a search box, a chat
-box, a document, a terminal) those letters type as usual and the keys need Alt
-as before. A focused link, button, checkbox, dropdown or list counts as outside a
+box, a document, a terminal, an autocomplete field with its suggestions open)
+those letters type as usual and the keys need Alt as before. A focused link, button, checkbox, dropdown or list counts as outside a
 text field; tooltips and Chrome's link preview bubble do not count as an open
 menu. vim mouse asks UI Automation where the focus is after every focus
 change; while it is not sure (right after a click, in a game or a remote
