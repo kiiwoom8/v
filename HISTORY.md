@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `ee4f7fb` (2026-10-30): 81
-commits, 67 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `33a979f` (2026-10-30): 83
+commits, 69 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -197,7 +197,7 @@ Invariants stated in `common.h` and enforced by history:
 - Real-app robustness: Explorer (`348a968`) and Teams (`729e682`, `e987c6a`).
 
 ### Phase 7: live hints, bare keys, `g g` (2026-10-30)
-`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
+`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
 
 - `8b0a194`: labels stay current while the overlay is open (`scan_refresh`).
 - `b474c89`: **bare keys**. Outside text fields `f h j k l u d , .` work
@@ -212,6 +212,8 @@ Invariants stated in `common.h` and enforced by history:
 - `37b210c` adds diagnostics for the one unresolved bare-key case (section 7).
 - `ee4f7fb`: the tray menu updates the program to the latest release
   (`update.c`; the rename-then-restart rule is in section 5).
+- `33a979f`: labels already on screen stay put while the hints refresh
+  (`keep_labels`), so a label cannot change between reading and typing it.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -317,6 +319,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 65 | `1c0a83b` | 10-30 | 7 | Ask Chromium's `OBJID_CARET` before UI Automation (`caret_visible`) | Bare keys scrolled in Zendesk's autocomplete fields: Chromium names the `aria-activedescendant` option as the focus |
 | 66 | `35315a2` | 10-30 | 7 | Commit-log row for `1c0a83b` | |
 | 67 | `ee4f7fb` | 10-30 | 7 | Tray "Update to latest version": download the latest release, rename the running exe to `.old`, restart with `--updated` (`update.c`) | Updating meant quitting, downloading and replacing `vim.exe` by hand |
+| 68 | `7cf18c4` | 10-30 | 7 | Commit-log row for `ee4f7fb` | |
+| 69 | `33a979f` | 10-30 | 7 | `keep_labels` (default 1): a refresh never moves, retires or lengthens a shown label; elements overlapping a shown one (IoU >= 0.5) get no second label; new ones get as many free labels as fit | Labels moved, changed letters or vanished between reading and typing them, so the user misclicked |
 
 ## 5. Lessons learned: rules not to break
 
@@ -567,7 +571,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Hints label UIA elements; the grid opens only with `hint_mode = grid` | `64a5805`, `e51fecb` | Grid only (phase 0 and 1); grid as automatic fallback (`64a5805` to `1e8677d`) |
 | A scan that finds nothing retries up to 3 s, then closes the hints | `8b0a194`, `e51fecb` | Opening the grid |
 | Hotkey again rescans (and forgets slow-window skips) | `1e8677d`, `729e682` | Opening the grid |
-| Labels refresh while open and never change meaning; shown labels stay put (`keep_labels = 0` restores the moving merge) | `8b0a194`, `keep_labels` | Static labels; labels that move, vanish and grow letters |
+| Labels refresh while open and never change meaning; shown labels stay put (`keep_labels = 0` restores the moving merge) | `8b0a194`, `33a979f` | Static labels; labels that followed their elements, vanished and grew letters (`8b0a194` to `33a979f`) |
 | `Alt+h` / `Alt+l` go back / forward; `Alt+,` / `Alt+.` scroll sideways (`alt_nav = 0` restores) | `b474c89` | `Alt+h/l` scrolled sideways (`09b7fdb`) |
 | `g g` / `Shift+g` scroll to the top / bottom; `Alt+g g` / `Alt+Shift+g` in text fields | `6622ce0` | `Alt+u u` / `Alt+d d` (`b54285f`) |
 | The bottom jump fires after Shift is released | `ba62724` | Fired at once (broken in browsers) |
