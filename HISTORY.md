@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `37b210c` (2026-10-30): 76
-commits, 62 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `1c0a83b` (2026-10-30): 79
+commits, 65 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -310,6 +310,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 62 | `37b210c` | 10-30 | 7 | Log why bare keys are off (`log = 1`) | Explorer still types after selecting a file (open) |
 | 63 | `f01dca8` | 10-30 | 7 | `HISTORY.md` and `CLAUDE.md` | This guide |
 | 64 | `1c2f611` | 10-30 | 7 | `CLAUDE.md`: push finished work to `master` | Every push to `master` republishes `latest` |
+| 65 | `1c0a83b` | 10-30 | 7 | Ask Chromium's `OBJID_CARET` before UI Automation (`caret_visible`) | Bare keys scrolled in Zendesk's autocomplete fields: Chromium names the `aria-activedescendant` option as the focus |
 
 ## 5. Lessons learned: rules not to break
 
@@ -378,7 +379,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
   window answers `WM_GETOBJECT(OBJID_CARET)` with a caret that is visible
   exactly while a text input has the focus (its `TEXT_INPUT_TYPE` is not
   none). `focus_classify` asks for that caret (`caret_visible`) before UI
-  Automation. Ask the focused HWND only; Chromium's transparent child
+  Automation (`1c0a83b`). Ask the focused HWND only; Chromium's transparent child
   `Chrome_RenderWidgetHostHWND` has a caret that never moves.
 - **Classify by UIA patterns, not control type alone.** `5ea3a61`: a closed
   `<select>` (ComboBox) and a listbox (List) have a writable Value pattern but
@@ -558,7 +559,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
   collect that log from the failing setup. Suspects worth checking are an
   invisible owned popup, a caret owned by a different window, and the
   `FOCUS_UNKNOWN` path timing out.
-- **Zendesk autocomplete fields** (the browser caret check in
+- **Zendesk autocomplete fields** (`1c0a83b`, the browser caret check in
   `focus_classify`, section 5) was built and reasoned from Chromium's source,
   not tried on Windows. If bare keys still scroll in a Zendesk field, set
   `log = 1`: `vim.log` says "focus: no text field" there, and the next step
