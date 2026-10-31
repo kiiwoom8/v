@@ -277,7 +277,9 @@ ones:
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_scroll_end`
   (`g`: tap twice for the top, with Shift for the bottom), `key_hints`,
   `key_exit`, `key_help` remaps
-- `indicator`, `log`
+- `indicator`, `log` (1 = write `vim.log`; 2 = also write, for every hint
+  open, each element of the active window with where it is and whether it
+  got a label or why not, and turn the early scan off)
 - `shortcut_method` (`paste` or `type`: how text shortcuts insert their text)
 - `[shortcuts]`: text shortcuts, see [Text shortcuts](#text-shortcuts)
 
@@ -339,6 +341,16 @@ when GitHub cannot be reached.
   the hints wait for that (`scan_settle`); after scrolling with the mouse
   wheel or clicking with the mouse, wait a moment before opening the hints,
   or press the hint hotkey again to relabel.
+- **A panel, menu or page element gets no label.** Set `log = 2`, open the
+  hints where the label is missing, press `Esc`, and look in `vim.log` for
+  the lines starting with `scan:`. Each element of the active window is
+  listed with its position, size and name, and either `kept` or why it was
+  left out: `offscreen (UI Automation)` or `disabled (UI Automation)` (the
+  app itself hides it from UI Automation), `hidden by a window` (another
+  window is on top of it; the window lines above say which), `container`,
+  `too small` and so on. An element that is not listed at all is not
+  exposed by the app. Set `log` back to 0 or 1 afterwards; the lines are
+  many.
 - **A web page element gets no label.** With Node and Chrome installed,
   `mingw32-make check` builds `tools\hint_check.exe` and
   `node tools\hint_check.mjs [url ...]` opens each page in a separate Chrome

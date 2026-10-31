@@ -93,7 +93,9 @@ typedef struct {
     Hotkey lock_hotkey;        // default Ctrl+Alt+L; locks / unlocks the keyboard
     UINT   mouse_mode_key;     // default VK_CAPITAL; tap toggles, hold = momentary
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
-    int    log;                // 1 = also write log lines to vim.log; default 0
+    int    log;                // 1 = also write log lines to vim.log; 2 = also what each
+                               // hint open's scan made of every element of the active
+                               // window (and no early scan); default 0
     int    shortcut_paste;     // text shortcuts: 1 = paste via the clipboard (default), 0 = type keys
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
@@ -287,7 +289,9 @@ BOOL uia_available(void);
 // window that added targets and after the foreground window (done = FALSE),
 // and once at the end (done = TRUE).
 // A newer uia_scan or uia_cancel makes the old scan stop posting.
-void uia_scan(HMONITOR mon, UINT scan_id);
+// detail (log = 2): once the scan is posted, writes the windows on the monitor
+// and every element of the active window with what became of it to vim.log.
+void uia_scan(HMONITOR mon, UINT scan_id, BOOL detail);
 void uia_cancel(void);
 // Forgets the windows skipped for answering slowly, so the next scan asks
 // them again (another hint hotkey press).

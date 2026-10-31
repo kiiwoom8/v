@@ -274,7 +274,7 @@ int main(int argc, char **argv)
             print_line(L"run %d:\n", run + 1);
             started = GetTickCount();
             uia_scan_monitor(&engine, mon, NULL, NULL, probe_on_window,
-                             &report, &result);
+                             &report, &result, FALSE);
             elapsed = GetTickCount() - started;
             print_line(L"total: %d targets, %lu ms wall, %d windows (%d scanned)\n",
                        result.count, elapsed, report.windows, report.scanned);

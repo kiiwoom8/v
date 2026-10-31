@@ -778,8 +778,12 @@ static void process_general(Config *c, int line, const WCHAR *key,
         else
             warn_add(line, L"bad value \"%ls\" for \"indicator\" "
                      L"(use cursor, corner or off)", val);
-    } else if (_wcsicmp(key, L"log") == 0)
-        apply_bool(&c->log, line, key, val);
+    } else if (_wcsicmp(key, L"log") == 0) {
+        if (_wcsicmp(val, L"2") == 0)
+            c->log = 2;
+        else
+            apply_bool(&c->log, line, key, val);
+    }
     else if (_wcsicmp(key, L"shortcut_method") == 0) {
         if (_wcsicmp(val, L"paste") == 0)
             c->shortcut_paste = 1;
@@ -1407,7 +1411,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
         break;
     }
     appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to this file.\r\n");
-    appendf(buf, cch, L"log = %d\r\n", d.log ? 1 : 0);
+    appendf(buf, cch, L"; 2 = also log what each hint open found in the active window, element by\r\n");
+    appendf(buf, cch, L"; element, and why any was left out (for a window or panel without labels).\r\n");
+    appendf(buf, cch, L"log = %d\r\n", d.log);
     appendf(buf, cch, L"; How text shortcuts insert their text: paste (through the clipboard,\r\n");
     appendf(buf, cch, L"; which is restored afterwards; works best in browsers and with an IME)\r\n");
     appendf(buf, cch, L"; or type (key by key, for apps that block pasting).\r\n");

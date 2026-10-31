@@ -1805,7 +1805,7 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 // An empty first scan keeps trying (same scan, same input).
                 g_scan_retry = FALSE;
                 ++g_scan_id;
-                uia_scan(g_mon, g_scan_id);
+                uia_scan(g_mon, g_scan_id, g_cfg.log >= 2);
                 return 0;
             }
             if (!g_scanning && g_refresh_on)
@@ -2022,7 +2022,7 @@ static void start_refresh_scan(void)
         g_scan_list = NULL;
     }
     ++g_scan_id;
-    uia_scan(g_mon, g_scan_id);
+    uia_scan(g_mon, g_scan_id, FALSE);
 }
 
 static void clear_prescan(void)
@@ -2083,11 +2083,12 @@ static BOOL adopt_prescan(void)
 }
 
 // The first scan of an open (or a reload). Its timeouts count from here.
+// With log = 2 it writes what it made of each element of the active window.
 static void begin_scan(void)
 {
     g_scan_t0 = GetTickCount();
     ++g_scan_id;
-    uia_scan(g_mon, g_scan_id);
+    uia_scan(g_mon, g_scan_id, g_cfg.log >= 2);
     if (g_hint_wnd)
         SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_limit_ms(), NULL);
 }
@@ -2617,13 +2618,15 @@ void hint_prepare(BOOL on)
     discard_prescan();
     // Right after our scroll or click a browser still reports the old page:
     // hint_open starts the scan once it has caught up (settle_wait_ms).
-    if (settle_wait_ms() > 0)
+    // log = 2 skips the early scan too: every Alt press would log one, and
+    // the open's own scan is the one to report.
+    if (settle_wait_ms() > 0 || g_cfg.log >= 2)
         return;
     ++g_scan_id;
     g_pre_id = g_scan_id;
     g_pre_mon = cursor_monitor();
     g_pre_t0 = GetTickCount();
-    uia_scan(g_pre_mon, g_pre_id);
+    uia_scan(g_pre_mon, g_pre_id, FALSE);
 }
 
 void hint_close(void)

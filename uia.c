@@ -4,6 +4,8 @@
 #include <math.h>
 #include <objbase.h>
 #include <oleauto.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
@@ -433,6 +435,11 @@ typedef struct {
     IUIAutomation *automation;
     IUIAutomationCondition *condition;
     IUIAutomationCacheRequest *cache;
+    // log = 2: the same element types without the offscreen and enabled
+    // tests, and a cache that also holds those two and the name, so the log
+    // can say what UI Automation itself left out.
+    IUIAutomationCondition *detail_condition;
+    IUIAutomationCacheRequest *detail_cache;
     BOOL with_names;
 } UiaEngine;
 
@@ -443,11 +450,20 @@ typedef struct {
     WCHAR name[128];
 } ScanTarget;
 
+// log = 2 collects its lines here and writes them after the scan is posted:
+// app_log opens vim.log for every line, which must not slow the scan down.
+typedef struct {
+    WCHAR *text;                // lines separated by '\n'
+    size_t len;
+    size_t cap;
+} DetailText;
+
 typedef struct {
     ScanTarget *items;
     int count;
     int cap;
     BOOL fg_done;               // uia_scan_monitor: foreground window merged
+    DetailText detail;          // log = 2: what the scan made of each element
 } ScanResult;
 
 typedef struct {
@@ -528,6 +544,136 @@ static BOOL cached_bool_property(IUIAutomationElement *el, int property_id)
         value = TRUE;
     VariantClear(&v);
     return value;
+}
+
+static void cached_name(IUIAutomationElement *el, WCHAR *out, int cch)
+{
+    BSTR name = NULL;
+
+    out[0] = 0;
+    if (SUCCEEDED(el->lpVtbl->get_CachedName(el, &name)) && name)
+        lstrcpynW(out, name, cch);
+    if (name)
+        SysFreeString(name);
+}
+
+static void detail_add(DetailText *d, const WCHAR *fmt, ...)
+{
+    WCHAR line[512];
+    va_list ap;
+    size_t n;
+
+    va_start(ap, fmt);
+    _vsnwprintf(line, 511, fmt, ap);
+    va_end(ap);
+    line[511] = 0;
+    n = wcslen(line);
+    if (d->len + n + 2 > d->cap) {
+        size_t cap = d->cap ? d->cap * 2 : 8192;
+        WCHAR *text;
+        while (cap < d->len + n + 2)
+            cap *= 2;
+        text = (WCHAR *)realloc(d->text, cap * sizeof(*text));
+        if (!text)
+            return;
+        d->text = text;
+        d->cap = cap;
+    }
+    memcpy(d->text + d->len, line, n * sizeof(*line));
+    d->len += n;
+    d->text[d->len++] = L'\n';
+    d->text[d->len] = 0;
+}
+
+// Moves src's lines to the end of d.
+static void detail_take(DetailText *d, DetailText *src)
+{
+    WCHAR *line = src->text;
+
+    while (line && *line) {
+        WCHAR *next = wcschr(line, L'\n');
+        if (next)
+            *next++ = 0;
+        else
+            next = line + wcslen(line);
+        detail_add(d, L"%ls", line);
+        line = next;
+    }
+    free(src->text);
+    memset(src, 0, sizeof(*src));
+}
+
+static void detail_flush(DetailText *d)
+{
+    WCHAR *line = d->text;
+
+    while (line && *line) {
+        WCHAR *next = wcschr(line, L'\n');
+        if (next)
+            *next++ = 0;
+        else
+            next = line + wcslen(line);
+        app_log(L"%ls", line);
+        line = next;
+    }
+    free(d->text);
+    memset(d, 0, sizeof(*d));
+}
+
+static void control_type_label(int id, WCHAR *out, int cch)
+{
+    static const struct { int id; const WCHAR *name; } names[] = {
+        { UIA_ButtonControlTypeId, L"Button" },
+        { UIA_CheckBoxControlTypeId, L"CheckBox" },
+        { UIA_ComboBoxControlTypeId, L"ComboBox" },
+        { UIA_EditControlTypeId, L"Edit" },
+        { UIA_HyperlinkControlTypeId, L"Hyperlink" },
+        { UIA_ListItemControlTypeId, L"ListItem" },
+        { UIA_ListControlTypeId, L"List" },
+        { UIA_MenuItemControlTypeId, L"MenuItem" },
+        { UIA_RadioButtonControlTypeId, L"RadioButton" },
+        { UIA_TabItemControlTypeId, L"TabItem" },
+        { UIA_TreeItemControlTypeId, L"TreeItem" },
+        { UIA_DataItemControlTypeId, L"DataItem" },
+        { UIA_DocumentControlTypeId, L"Document" },
+        { UIA_SplitButtonControlTypeId, L"SplitButton" },
+        { UIA_ScrollBarControlTypeId, L"ScrollBar" },
+        { UIA_HeaderItemControlTypeId, L"HeaderItem" }
+    };
+    int i;
+
+    for (i = 0; i < (int)(sizeof(names) / sizeof(names[0])); ++i) {
+        if (names[i].id == id) {
+            lstrcpynW(out, names[i].name, cch);
+            return;
+        }
+    }
+    _snwprintf(out, (size_t)cch, L"Type%d", id);
+    out[cch - 1] = 0;
+}
+
+// One log = 2 line: type, position and size, what became of it, and the name.
+static void detail_element(DetailText *d, const WCHAR *name, const RECT *rc,
+                           int control_type, const WCHAR *what,
+                           const POINT *click)
+{
+    WCHAR type[24];
+    WCHAR clean[61];
+    WCHAR at[40];
+    int i;
+
+    control_type_label(control_type, type, 24);
+    for (i = 0; name && name[i] && i < 60; ++i)
+        clean[i] = name[i] < 32 ? L' ' : name[i];
+    clean[i] = 0;
+    at[0] = 0;
+    if (click) {
+        _snwprintf(at, 39, L" at %ld,%ld", click->x, click->y);
+        at[39] = 0;
+    }
+    detail_add(d, L"scan:   %ls %ld,%ld %ldx%ld %ls%ls \"%ls\"", type,
+               rc->left, rc->top, rc->right - rc->left, rc->bottom - rc->top,
+               what, at, clean);
 }
 
 // List, table and tree items are fetched by type alone. Without a pattern
@@ -817,7 +963,7 @@ static int compare_indices(const void *a, const void *b)
 
 // Decides which candidates are containers and picks the click point for the
 // ones that are kept. Candidates are unchanged; drop and new_click receive
-// one entry per candidate, in index order.
+// one entry per candidate, in index order. cands must be in tree order.
 static void filter_containers(const ScanTarget *cands, int count,
                               const RECT *zrects, int z,
                               void (*debug)(const RECT *, int, const WCHAR *),
@@ -826,6 +972,7 @@ static void filter_containers(const ScanTarget *cands, int count,
     ClickGrid grid;
     LONG64 *areas;
     int *matches;
+    int *content_end;
     int i;
 
     for (i = 0; i < count; ++i) {
@@ -837,13 +984,31 @@ static void filter_containers(const ScanTarget *cands, int count,
 
     areas = (LONG64 *)malloc((size_t)count * sizeof(*areas));
     matches = (int *)malloc((size_t)count * sizeof(*matches));
-    if (!areas || !matches || !click_grid_build(cands, count, &grid)) {
+    content_end = (int *)malloc((size_t)count * sizeof(*content_end));
+    if (!areas || !matches || !content_end ||
+        !click_grid_build(cands, count, &grid)) {
         free(areas);
         free(matches);
+        free(content_end);
         return;
     }
     for (i = 0; i < count; ++i)
         areas[i] = rect_area(&cands[i].target.rc);
+
+    // Only an element's own content can make it a container. FindAll lists
+    // elements in tree order, so its descendants follow it without a break;
+    // the run of candidates right after it whose click points are inside it
+    // stands in for them. A panel or menu drawn over a page is not the
+    // content of the page elements under it, nor they of its rows: counting
+    // them dropped the rows of Google's account menu and Zendesk's overlays
+    // as containers of the links behind them.
+    for (i = 0; i < count; ++i) {
+        int e = i + 1;
+        while (e < count &&
+               PtInRect(&cands[i].target.rc, cands[e].target.click))
+            ++e;
+        content_end[i] = e;
+    }
 
     for (i = 0; i < count; ++i) {
         const RECT *rc = &cands[i].target.rc;
@@ -891,13 +1056,16 @@ static void filter_containers(const ScanTarget *cands, int count,
                   compare_indices);
 
         for (m = 0; m < matched; ++m) {
-            const ClickTarget *t = &cands[matches[m]].target;
+            int j = matches[m];
+            const ClickTarget *t = &cands[j].target;
+            if (j <= i || j >= content_end[i])
+                continue;
             if (first >= 0 &&
                 rects_duplicate(&cands[first].target.rc,
                                 cands[first].target.click, &t->rc, t->click))
                 continue;
             if (first < 0)
-                first = matches[m];
+                first = j;
             ++inner;
             covered += rect_intersection_area(&t->rc, rc);
         }
@@ -909,8 +1077,10 @@ static void filter_containers(const ScanTarget *cands, int count,
         else
             drop[i] = !(inner == 1 && covered * 4 < area);
 
+        // The click point still keeps off every smaller target on it, its
+        // own or one drawn over it.
         new_click[i] = cands[i].target.click;
-        if (!drop[i] && inner > 0)
+        if (!drop[i] && matched > 0)
             new_click[i] = choose_outer_click_point(
                 cands, matches, matched, i, zrects, z);
         if (drop[i] && debug)
@@ -918,6 +1088,7 @@ static void filter_containers(const ScanTarget *cands, int count,
                   inner >= 2 ? L"container" : L"wrapper");
     }
 
+    free(content_end);
     free(matches);
     free(areas);
     free(grid.order);
@@ -1055,37 +1226,71 @@ static void (*g_scan_debug)(const RECT *rc, int control_type,
 
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
-                            ScanResult *out, int *answered);
+                            ScanResult *out, int *answered, BOOL detail);
 
 // "Next to nothing" counts every element the window answered with, not the
 // targets kept: a window mostly covered by another keeps only a few. A scan
 // dropped before it ended (Alt went on to scroll, not to the hint hotkey)
 // ran while the app was busy, so it is no verdict.
+// detail (log = 2): out->detail gets a line for every element and a summary.
 static void scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
                         int z, const RECT *monitor, ScanResult *out,
-                        UiaContinueCallback keep_going, void *keep_user)
+                        UiaContinueCallback keep_going, void *keep_user,
+                        BOOL detail)
 {
     DWORD pid = 0, started;
     int answered = 0;
 
+    memset(&out->detail, 0, sizeof(out->detail));
     GetWindowThreadProcessId(hwnd, &pid);
     if (slow_check(hwnd, pid, FALSE)) {
         out->items = NULL;
         out->count = 0;
         out->cap = 0;
+        if (detail)
+            detail_add(&out->detail, L"scan: active window %p skipped: "
+                       L"answered slowly before", (void *)hwnd);
         return;
     }
     started = GetTickCount();
-    scan_window_uia(engine, hwnd, zrects, z, monitor, out, &answered);
+    scan_window_uia(engine, hwnd, zrects, z, monitor, out, &answered, detail);
+    if (detail)
+        detail_add(&out->detail, L"scan: active window %p: UI Automation "
+                   L"listed %d, %d kept, %lu ms", (void *)hwnd, answered,
+                   out->count, (unsigned long)(GetTickCount() - started));
     if (GetTickCount() - started > SLOW_SCAN_MS &&
         answered <= SLOW_SCAN_TARGETS &&
         (!keep_going || keep_going(keep_user)) && !lazy_tree_window(hwnd))
         slow_check(hwnd, pid, TRUE);
 }
 
+// An element the scan passes over. log = 2 writes why, with its name.
+static void scan_reject(IUIAutomationElement *el, ScanResult *out,
+                        BOOL detail, const RECT *rc, int control_type,
+                        const WCHAR *reason)
+{
+    if (g_scan_debug)
+        g_scan_debug(rc, control_type, reason);
+    if (detail) {
+        WCHAR name[128];
+        cached_name(el, name, 128);
+        detail_element(&out->detail, name, rc, control_type, reason, NULL);
+    }
+}
+
+// What the normal condition leaves out (log = 2 asks without it).
+static const WCHAR *detail_left_out(IUIAutomationElement *el)
+{
+    if (cached_bool_property(el, UIA_IsOffscreenPropertyId))
+        return L"offscreen (UI Automation)";
+    if (!cached_bool_property(el, UIA_IsEnabledPropertyId))
+        return L"disabled (UI Automation)";
+    return NULL;
+}
+
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
-                            ScanResult *out, int *answered)
+                            ScanResult *out, int *answered, BOOL detail)
 {
     // Scroll bars and their arrow/page buttons are not worth a label.
     RECT scrollbars[64];
@@ -1099,6 +1304,8 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     POINT *new_click;
     IUIAutomationElement *root = NULL;
     IUIAutomationElementArray *array = NULL;
+    IUIAutomationCondition *condition = engine->condition;
+    IUIAutomationCacheRequest *cache = engine->cache;
     int length = 0;
     int i;
 
@@ -1106,14 +1313,27 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     out->count = 0;
     out->cap = 0;
     *answered = 0;
+    if (detail) {
+        if (engine->detail_condition && engine->detail_cache) {
+            condition = engine->detail_condition;
+            cache = engine->detail_cache;
+        } else {
+            detail = FALSE;
+        }
+    }
 
     if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
-            engine->automation, (UIA_HWND)hwnd, &root)) || !root)
+            engine->automation, (UIA_HWND)hwnd, &root)) || !root) {
+        if (detail)
+            detail_add(&out->detail, L"scan:   no UI Automation element");
         return;
+    }
 
     if (FAILED(root->lpVtbl->FindAllBuildCache(
-            root, UIA_TREESCOPE_DESCENDANTS, engine->condition,
-            engine->cache, &array)) || !array) {
+            root, UIA_TREESCOPE_DESCENDANTS, condition,
+            cache, &array)) || !array) {
+        if (detail)
+            detail_add(&out->detail, L"scan:   FindAll failed");
         root->lpVtbl->Release(root);
         return;
     }
@@ -1128,7 +1348,8 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         int control_type = 0;
         if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
             continue;
-        if (SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
+        if ((!detail || !detail_left_out(el)) &&
+            SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
             if (control_type == UIA_ScrollBarControlTypeId &&
                 scrollbar_count < 64 &&
                 SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(
@@ -1161,7 +1382,6 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         RECT clip;
         POINT click;
         int control_type = 0;
-        BSTR name = NULL;
         ScanTarget target;
         LONG64 orig_area;
         LONG64 clip_area;
@@ -1176,30 +1396,35 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
             continue;
         }
 
+        if (detail) {
+            const WCHAR *left_out = detail_left_out(el);
+            if (left_out) {
+                scan_reject(el, out, TRUE, &rc, control_type, left_out);
+                el->lpVtbl->Release(el);
+                continue;
+            }
+        }
+
         if (control_type == UIA_DocumentControlTypeId) {
-            if (g_scan_debug)
-                g_scan_debug(&rc, control_type, L"document");
+            scan_reject(el, out, detail, &rc, control_type, L"document");
             el->lpVtbl->Release(el);
             continue;
         }
 
         orig_area = rect_area(&rc);
         if (orig_area <= 0) {
-            if (g_scan_debug)
-                g_scan_debug(&rc, control_type, L"zero area");
+            scan_reject(el, out, detail, &rc, control_type, L"zero area");
             el->lpVtbl->Release(el);
             continue;
         }
         if (control_type == UIA_ScrollBarControlTypeId ||
             inside_any(scrollbars, scrollbar_count, &rc)) {
-            if (g_scan_debug)
-                g_scan_debug(&rc, control_type, L"scrollbar");
+            scan_reject(el, out, detail, &rc, control_type, L"scrollbar");
             el->lpVtbl->Release(el);
             continue;
         }
         if (!IntersectRect(&clip, &rc, monitor)) {
-            if (g_scan_debug)
-                g_scan_debug(&rc, control_type, L"off monitor");
+            scan_reject(el, out, detail, &rc, control_type, L"off monitor");
             el->lpVtbl->Release(el);
             continue;
         }
@@ -1207,8 +1432,8 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         clip_area = rect_area(&clip);
         monitor_area = rect_area(monitor);
         if (clip_area * 2 < orig_area) {
-            if (g_scan_debug)
-                g_scan_debug(&clip, control_type, L"mostly off monitor");
+            scan_reject(el, out, detail, &clip, control_type,
+                        L"mostly off monitor");
             el->lpVtbl->Release(el);
             continue;
         }
@@ -1238,34 +1463,28 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 
         clip_area = rect_area(&clip);
         if (clip.right - clip.left < 4 || clip.bottom - clip.top < 4) {
-            if (g_scan_debug)
-                g_scan_debug(&clip, control_type, L"too small");
+            scan_reject(el, out, detail, &clip, control_type, L"too small");
             el->lpVtbl->Release(el);
             continue;
         }
         if (monitor_area > 0 && clip_area * 100 > monitor_area * 40) {
-            if (g_scan_debug)
-                g_scan_debug(&clip, control_type, L"too large");
+            scan_reject(el, out, detail, &clip, control_type, L"too large");
             el->lpVtbl->Release(el);
             continue;
         }
 
         click = choose_click_point(zrects, z, &clip);
         if (click.x < 0 && click.y < 0) {
-            if (g_scan_debug)
-                g_scan_debug(&clip, control_type, L"hidden");
+            scan_reject(el, out, detail, &clip, control_type,
+                        L"hidden by a window");
             el->lpVtbl->Release(el);
             continue;
         }
 
         target.actionable = element_actionable(el, control_type);
         target.name[0] = 0;
-        if (engine->with_names) {
-            if (SUCCEEDED(el->lpVtbl->get_CachedName(el, &name)) && name)
-                lstrcpynW(target.name, name, 128);
-            if (name)
-                SysFreeString(name);
-        }
+        if (engine->with_names || detail)
+            cached_name(el, target.name, 128);
         el->lpVtbl->Release(el);
 
         target.target.rc = clip;
@@ -1292,6 +1511,8 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     // only clickable through the card. So keep inner == 0; for an actionable
     // element keep inner == 1, or inner >= 2 when enough of it is free; for a
     // plain list or table item keep only inner == 1 with mostly free space.
+    // Inner targets are the element's own content only (filter_containers),
+    // never a panel drawn over it or the page under a panel.
     // Smaller targets that duplicate each other count once: Google wraps each
     // result's menu button in a clickable element of the same size, and that
     // pair alone must not turn the result link into a container. Decisions and
@@ -1305,6 +1526,13 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         filter_containers(cands, cand_count, zrects, z, g_scan_debug,
                           drop, new_click);
     for (i = 0; i < cand_count; ++i) {
+        if (detail)
+            detail_element(&out->detail, cands[i].name,
+                           &cands[i].target.rc, cands[i].control_type,
+                           drop && drop[i] ? L"container" : L"kept",
+                           drop && drop[i] ? NULL
+                           : (new_click ? &new_click[i]
+                                        : &cands[i].target.click));
         if (!drop || !drop[i]) {
             cands[kept] = cands[i];
             if (drop && new_click)
@@ -1489,6 +1717,7 @@ typedef struct {
     UiaContinueCallback keep_going;
     void *keep_user;
     UINT keep_scan_id;          // keep_user's pointee; see uia_scan_monitor
+    HWND detail_hwnd;           // log = 2: the active window, else NULL
     ScanTask *tasks;
     int task_count;
     volatile LONG next;
@@ -1514,8 +1743,10 @@ static void job_release_ref(ScanJob *job)
     if (InterlockedDecrement(&job->refs) != 0)
         return;
     if (job->tasks) {
-        for (i = 0; i < job->task_count; ++i)
+        for (i = 0; i < job->task_count; ++i) {
             free(job->tasks[i].found.items);
+            free(job->tasks[i].found.detail.text);
+        }
         free(job->tasks);
     }
     if (job->done_event)
@@ -1580,7 +1811,7 @@ static DWORD WINAPI uia_helper(void *arg)
             started = GetTickCount();
             scan_window(job->engine, task->hwnd, job->zrects, task->z,
                         &job->monitor, &task->found, job->keep_going,
-                        job->keep_user);
+                        job->keep_user, task->hwnd == job->detail_hwnd);
             task->elapsed_ms = GetTickCount() - started;
             InterlockedExchange(&task->finished, 1);
             SetEvent(job->done_event);
@@ -1658,10 +1889,12 @@ static void uia_pool_stop(void)
     g_pool_cs_ready = FALSE;
 }
 
+// detail (log = 2): result->detail gets the windows on the monitor and what
+// became of every element of the active window.
 static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                              UiaContinueCallback keep_going, void *keep_user,
                              UiaWindowCallback cb, void *cb_user,
-                             ScanResult *result)
+                             ScanResult *result, BOOL detail)
 {
     MONITORINFO mi;
     EnumContext ctx;
@@ -1770,6 +2003,33 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
         fg_task = task_of_win[fg_index];
     result->fg_done = (fg_task < 0);
 
+    // Every visible window on the monitor, top first. An owned popup (a
+    // menu, Chrome's panels) shows up here as its own window.
+    if (detail) {
+        detail_add(&result->detail, L"scan: detail (log = 2), monitor "
+                   L"%ld,%ld %ldx%ld", mi.rcMonitor.left, mi.rcMonitor.top,
+                   mi.rcMonitor.right - mi.rcMonitor.left,
+                   mi.rcMonitor.bottom - mi.rcMonitor.top);
+        for (i = 0; i < ctx.count; ++i) {
+            WinInfo *win = &ctx.items[i];
+            if (win->base_skip && wcscmp(win->base_skip, L"click-through"))
+                continue;
+            detail_add(&result->detail, L"scan: window %p %ls ex %08lx "
+                       L"owner %p %ld,%ld %ldx%ld%ls: %ls",
+                       (void *)win->hwnd, win->cls,
+                       (unsigned long)GetWindowLongW(win->hwnd, GWL_EXSTYLE),
+                       (void *)GetWindow(win->hwnd, GW_OWNER),
+                       win->rect.left, win->rect.top,
+                       win->rect.right - win->rect.left,
+                       win->rect.bottom - win->rect.top,
+                       win->is_fg ? L" active" : L"",
+                       win->do_scan ? L"scanned" : window_skip(win));
+        }
+        if (fg_task < 0)
+            detail_add(&result->detail, L"scan: the active window %p is not "
+                       L"scanned", (void *)fg_root);
+    }
+
     job = (ScanJob *)calloc(1, sizeof(*job));
     if (!job)
         goto done;
@@ -1787,6 +2047,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
         job->keep_user = &job->keep_scan_id;
     }
     job->task_count = task_count;
+    job->detail_hwnd = (detail && fg_task >= 0) ? fg_root : NULL;
     job->done_event = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (!job->done_event)
         goto done;
@@ -1841,7 +2102,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                 DWORD started = GetTickCount();
                 scan_window(job->engine, task->hwnd, job->zrects, task->z,
                             &job->monitor, &task->found, job->keep_going,
-                            job->keep_user);
+                            job->keep_user, task->hwnd == job->detail_hwnd);
                 task->elapsed_ms = GetTickCount() - started;
                 InterlockedExchange(&task->finished, 1);
             }
@@ -1869,6 +2130,13 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
             for (j = 0; j < task->found.count; ++j) {
                 if (target_add(result, &task->found.items[j]))
                     ++changes;
+                else if (task->hwnd == job->detail_hwnd)
+                    detail_element(&task->found.detail,
+                                   task->found.items[j].name,
+                                   &task->found.items[j].target.rc,
+                                   task->found.items[j].control_type,
+                                   L"dropped: same spot as another target",
+                                   NULL);
                 if (result->count >= UIA_MAX_TARGETS)
                     break;
             }
@@ -1894,6 +2162,14 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     if (g_job == job)
         g_job = NULL;
     LeaveCriticalSection(&g_pool_cs);
+    if (detail && fg_task >= 0) {
+        ScanTask *task = &job->tasks[fg_task];
+        if (InterlockedCompareExchange(&task->finished, 0, 0))
+            detail_take(&result->detail, &task->found.detail);
+        else
+            detail_add(&result->detail, L"scan: stopped before the active "
+                       L"window answered");
+    }
     job_release_ref(job);
     job = NULL;
 
@@ -2018,53 +2294,63 @@ static BOOL uia_build_condition(UiaEngine *engine)
 
     off->lpVtbl->Release(off);
     enabled->lpVtbl->Release(enabled);
-    if (or_cond)
+    // The types alone serve log = 2 (engine->detail_condition).
+    if (ok)
+        engine->detail_condition = or_cond;
+    else if (or_cond)
         or_cond->lpVtbl->Release(or_cond);
     return ok;
 }
 
+// detail adds what log = 2 reports: the name, and the offscreen and enabled
+// states the normal condition tests.
+static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
+                                                BOOL with_names, BOOL detail)
+{
+    static const int props[] = {
+        UIA_BoundingRectanglePropertyId,
+        UIA_ControlTypePropertyId,
+        UIA_IsInvokePatternAvailablePropertyId,
+        UIA_IsTogglePatternAvailablePropertyId,
+        UIA_IsSelectionItemPatternAvailablePropertyId,
+        UIA_IsExpandCollapsePatternAvailablePropertyId
+    };
+    IUIAutomationCacheRequest *cache = NULL;
+    BOOL ok;
+    int i;
+
+    if (FAILED(automation->lpVtbl->CreateCacheRequest(automation, &cache)) ||
+        !cache)
+        return NULL;
+    ok = TRUE;
+    for (i = 0; ok && i < (int)(sizeof(props) / sizeof(props[0])); ++i)
+        ok = SUCCEEDED(cache->lpVtbl->AddProperty(cache, props[i]));
+    if (ok && (with_names || detail))
+        ok = SUCCEEDED(cache->lpVtbl->AddProperty(cache, UIA_NamePropertyId));
+    if (ok && detail)
+        ok = SUCCEEDED(cache->lpVtbl->AddProperty(
+                 cache, UIA_IsOffscreenPropertyId)) &&
+             SUCCEEDED(cache->lpVtbl->AddProperty(
+                 cache, UIA_IsEnabledPropertyId));
+    if (ok)
+        ok = SUCCEEDED(cache->lpVtbl->put_AutomationElementMode(
+                 cache, UIA_MODE_NONE));
+    if (!ok) {
+        cache->lpVtbl->Release(cache);
+        return NULL;
+    }
+    return cache;
+}
+
 static BOOL uia_build_cache(UiaEngine *engine, BOOL with_names)
 {
-    HRESULT hr;
-
-    hr = engine->automation->lpVtbl->CreateCacheRequest(
-        engine->automation, &engine->cache);
-    if (FAILED(hr) || !engine->cache)
+    engine->cache = uia_new_cache(engine->automation, with_names, FALSE);
+    if (!engine->cache)
         return FALSE;
-
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_BoundingRectanglePropertyId);
-    if (FAILED(hr))
-        return FALSE;
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_ControlTypePropertyId);
-    if (FAILED(hr))
-        return FALSE;
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_IsInvokePatternAvailablePropertyId);
-    if (FAILED(hr))
-        return FALSE;
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_IsTogglePatternAvailablePropertyId);
-    if (FAILED(hr))
-        return FALSE;
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_IsSelectionItemPatternAvailablePropertyId);
-    if (FAILED(hr))
-        return FALSE;
-    hr = engine->cache->lpVtbl->AddProperty(
-        engine->cache, UIA_IsExpandCollapsePatternAvailablePropertyId);
-    if (FAILED(hr))
-        return FALSE;
-    if (with_names) {
-        hr = engine->cache->lpVtbl->AddProperty(
-            engine->cache, UIA_NamePropertyId);
-        if (FAILED(hr))
-            return FALSE;
-    }
-    hr = engine->cache->lpVtbl->put_AutomationElementMode(
-        engine->cache, UIA_MODE_NONE);
-    return SUCCEEDED(hr);
+    // Without it log = 2 only says that it could not add the details.
+    engine->detail_cache = uia_new_cache(engine->automation, with_names,
+                                         TRUE);
+    return TRUE;
 }
 
 static void uia_engine_cleanup(UiaEngine *engine)
@@ -2073,6 +2359,10 @@ static void uia_engine_cleanup(UiaEngine *engine)
         engine->cache->lpVtbl->Release(engine->cache);
     if (engine->condition)
         engine->condition->lpVtbl->Release(engine->condition);
+    if (engine->detail_cache)
+        engine->detail_cache->lpVtbl->Release(engine->detail_cache);
+    if (engine->detail_condition)
+        engine->detail_condition->lpVtbl->Release(engine->detail_condition);
     if (engine->automation)
         engine->automation->lpVtbl->Release(engine->automation);
     memset(engine, 0, sizeof(*engine));
@@ -2141,6 +2431,7 @@ static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
 typedef struct {
     UINT scan_id;
     HMONITOR mon;
+    BOOL detail;
 } ScanRequest;
 
 static HANDLE g_uia_thread;
@@ -2292,9 +2583,10 @@ static DWORD WINAPI uia_worker(void *arg)
                 scan.result = &result;
                 uia_scan_monitor(&engine, request.mon, worker_keep_going,
                                  &scan.scan_id, worker_on_window, &scan,
-                                 &result);
+                                 &result, request.detail);
                 if (uia_still_current(request.scan_id))
                     post_list(request.scan_id, TRUE, &result);
+                detail_flush(&result.detail);
                 free(result.items);
             }
             uia_pool_stop();
@@ -2403,13 +2695,14 @@ BOOL uia_available(void)
     return g_uia_available != 0;
 }
 
-void uia_scan(HMONITOR mon, UINT scan_id)
+void uia_scan(HMONITOR mon, UINT scan_id, BOOL detail)
 {
     if (!g_uia_thread || !g_uia_available || !g_uia_cs_ready)
         return;
     EnterCriticalSection(&g_uia_cs);
     g_uia_request.scan_id = scan_id;
     g_uia_request.mon = mon;
+    g_uia_request.detail = detail;
     LeaveCriticalSection(&g_uia_cs);
     SetEvent(g_uia_wake);
 }
@@ -2421,6 +2714,7 @@ void uia_cancel(void)
     EnterCriticalSection(&g_uia_cs);
     g_uia_request.scan_id = 0;
     g_uia_request.mon = NULL;
+    g_uia_request.detail = FALSE;
     LeaveCriticalSection(&g_uia_cs);
 }
 
