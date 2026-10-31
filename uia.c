@@ -113,6 +113,12 @@
 #ifndef UIA_HeaderItemControlTypeId
 #define UIA_HeaderItemControlTypeId 50035
 #endif
+#ifndef UIA_MenuControlTypeId
+#define UIA_MenuControlTypeId 50009
+#endif
+#ifndef UIA_WindowControlTypeId
+#define UIA_WindowControlTypeId 50032
+#endif
 
 typedef void *UIA_HWND;
 
@@ -447,6 +453,7 @@ typedef struct {
     ClickTarget target;
     int control_type;
     BOOL actionable;
+    int order;                  // index in FindAll's (tree) order
     WCHAR name[128];
 } ScanTarget;
 
@@ -638,7 +645,9 @@ static void control_type_label(int id, WCHAR *out, int cch)
         { UIA_DocumentControlTypeId, L"Document" },
         { UIA_SplitButtonControlTypeId, L"SplitButton" },
         { UIA_ScrollBarControlTypeId, L"ScrollBar" },
-        { UIA_HeaderItemControlTypeId, L"HeaderItem" }
+        { UIA_HeaderItemControlTypeId, L"HeaderItem" },
+        { UIA_MenuControlTypeId, L"Menu" },
+        { UIA_WindowControlTypeId, L"Dialog" }
     };
     int i;
 
@@ -1095,6 +1104,103 @@ static void filter_containers(const ScanTarget *cands, int count,
     free(grid.start);
 }
 
+// A dialog, menu or frame drawn over a web page. The page's elements under it
+// stay in the tree (Chromium leaves them out only under an aria-modal
+// dialog), so they got labels whose click points landed on the overlay:
+// Google's knowledge panel links under the account menu, ticket links under
+// a Zendesk menu or modal. UI Automation cannot say which of two overlapping
+// elements is on top (Chromium's own ElementFromPoint is a bounds search
+// that ignores z-index), but a dialog, an open menu or a frame is.
+typedef struct {
+    RECT rc;
+    int order;                  // its index in FindAll's (tree) order
+    int end;                    // first index after its content
+    BOOL drops;                 // a dialog or menu: what it hides entirely goes
+} Overlay;
+
+enum { COVER_NONE = 0, COVER_MOVED = 1, COVER_DROPPED = 2 };
+
+// For each candidate whose click point is on an overlay it is not part of:
+// keep the largest part of it outside the overlay as its rect (the label
+// goes there) and click point. When none is left, drop it if a dialog or
+// menu that comes after it in the page covers it (a portal over the page);
+// otherwise keep it as it is (an element on top of a frame, say a sticky
+// header, loses nothing either way). fate receives COVER_* per candidate.
+static void cover_overlays(ScanTarget *cands, int count, const Overlay *ovs,
+                           int ov_count, const RECT *zrects, int z, int *fate)
+{
+    int i, o, k;
+
+    for (i = 0; i < count; ++i) {
+        ScanTarget *c = &cands[i];
+        const RECT *rc = &c->target.rc;
+        RECT strips[4 * 8];
+        int strip_count = 0;
+        BOOL covered = FALSE, under_portal = FALSE, moved = FALSE;
+
+        fate[i] = COVER_NONE;
+        for (o = 0; o < ov_count; ++o) {
+            const Overlay *ov = &ovs[o];
+            RECT r;
+            if (!PtInRect(&ov->rc, c->target.click) ||
+                (c->order >= ov->order && c->order < ov->end))
+                continue;
+            covered = TRUE;
+            if (ov->drops && c->order < ov->order)
+                under_portal = TRUE;
+            if (strip_count > 4 * 7)
+                continue;
+            r = *rc;                            // left of the overlay
+            if (ov->rc.left < r.right) r.right = ov->rc.left;
+            if (r.right > r.left) strips[strip_count++] = r;
+            r = *rc;                            // right of it
+            if (ov->rc.right > r.left) r.left = ov->rc.right;
+            if (r.right > r.left) strips[strip_count++] = r;
+            r = *rc;                            // above it
+            if (ov->rc.top < r.bottom) r.bottom = ov->rc.top;
+            if (r.bottom > r.top) strips[strip_count++] = r;
+            r = *rc;                            // below it
+            if (ov->rc.bottom > r.top) r.top = ov->rc.bottom;
+            if (r.bottom > r.top) strips[strip_count++] = r;
+        }
+        if (!covered)
+            continue;
+
+        // Largest strip first; its click point must be off every overlay
+        // that is not the candidate's own.
+        while (!moved && strip_count > 0) {
+            int best = 0;
+            POINT pt;
+            BOOL clear = TRUE;
+            for (k = 1; k < strip_count; ++k) {
+                if (rect_area(&strips[k]) > rect_area(&strips[best]))
+                    best = k;
+            }
+            if (strips[best].right - strips[best].left >= 4 &&
+                strips[best].bottom - strips[best].top >= 4) {
+                pt = choose_click_point(zrects, z, &strips[best]);
+                if (pt.x < 0 && pt.y < 0)
+                    clear = FALSE;
+                for (o = 0; clear && o < ov_count; ++o) {
+                    if (PtInRect(&ovs[o].rc, pt) &&
+                        !(c->order >= ovs[o].order && c->order < ovs[o].end))
+                        clear = FALSE;
+                }
+                if (clear) {
+                    c->target.rc = strips[best];
+                    c->target.click = pt;
+                    moved = TRUE;
+                }
+            }
+            strips[best] = strips[--strip_count];
+        }
+        if (moved)
+            fate[i] = COVER_MOVED;
+        else if (under_portal)
+            fate[i] = COVER_DROPPED;
+    }
+}
+
 // Windows that answer UI Automation very slowly with next to nothing (games,
 // custom-drawn UIs) are skipped for a while, so the hints fall back to the
 // grid at once instead of stalling for seconds on every open. They are
@@ -1296,7 +1402,14 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     RECT scrollbars[64];
     int scrollbar_count = 0;
     RECT documents[16];
+    int doc_order[16];
     int document_count = 0;
+    Overlay popups[16];         // dialogs and menus; end not known yet
+    int popup_count = 0;
+    Overlay ovs[32];
+    int ov_count = 0;
+    RECT *raw = NULL;           // every listed element's rect, in tree order
+    int *fate = NULL;
     ScanTarget *cands = NULL;
     int cand_count = 0, cand_cap = 0;
     int kept = 0;
@@ -1342,24 +1455,36 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     if (FAILED(array->lpVtbl->get_Length(array, &length)) || length < 0)
         length = 0;
     *answered = length;
+    if (length > 0)
+        raw = (RECT *)calloc((size_t)length, sizeof(*raw));
 
     for (i = 0; i < length; ++i) {
         IUIAutomationElement *el = NULL;
         int control_type = 0;
+        RECT rc;
         if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
             continue;
         if ((!detail || !detail_left_out(el)) &&
-            SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
+            SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type)) &&
+            SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc))) {
+            if (raw)
+                raw[i] = rc;
             if (control_type == UIA_ScrollBarControlTypeId &&
-                scrollbar_count < 64 &&
-                SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(
-                    el, &scrollbars[scrollbar_count])))
-                ++scrollbar_count;
-            else if (control_type == UIA_DocumentControlTypeId &&
-                     document_count < 16 &&
-                     SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(
-                         el, &documents[document_count])))
-                ++document_count;
+                scrollbar_count < 64) {
+                scrollbars[scrollbar_count++] = rc;
+            } else if (control_type == UIA_DocumentControlTypeId &&
+                       document_count < 16) {
+                doc_order[document_count] = i;
+                documents[document_count++] = rc;
+            } else if ((control_type == UIA_WindowControlTypeId ||
+                        control_type == UIA_MenuControlTypeId) &&
+                       popup_count < 16 && rect_area(&rc) > 0) {
+                popups[popup_count].rc = rc;
+                popups[popup_count].order = i;
+                popups[popup_count].end = i + 1;
+                popups[popup_count].drops = TRUE;
+                ++popup_count;
+            }
         }
         el->lpVtbl->Release(el);
     }
@@ -1407,6 +1532,21 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 
         if (control_type == UIA_DocumentControlTypeId) {
             scan_reject(el, out, detail, &rc, control_type, L"document");
+            el->lpVtbl->Release(el);
+            continue;
+        }
+        // Fetched to find overlays. One that offers a pattern matched the
+        // condition before they were added and stays a target.
+        if ((control_type == UIA_WindowControlTypeId ||
+             control_type == UIA_MenuControlTypeId) &&
+            !cached_bool_property(el, UIA_IsInvokePatternAvailablePropertyId) &&
+            !cached_bool_property(el, UIA_IsTogglePatternAvailablePropertyId) &&
+            !cached_bool_property(
+                el, UIA_IsSelectionItemPatternAvailablePropertyId) &&
+            !cached_bool_property(
+                el, UIA_IsExpandCollapsePatternAvailablePropertyId)) {
+            scan_reject(el, out, detail, &rc, control_type,
+                        L"dialog or menu itself");
             el->lpVtbl->Release(el);
             continue;
         }
@@ -1490,6 +1630,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         target.target.rc = clip;
         target.target.click = click;
         target.control_type = control_type;
+        target.order = i;
         if (cand_count == cand_cap) {
             int cap = cand_cap ? cand_cap * 2 : 64;
             ScanTarget *tmp = (ScanTarget *)realloc(cands,
@@ -1526,22 +1667,98 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         filter_containers(cands, cand_count, zrects, z, g_scan_debug,
                           drop, new_click);
     for (i = 0; i < cand_count; ++i) {
-        if (detail)
-            detail_element(&out->detail, cands[i].name,
-                           &cands[i].target.rc, cands[i].control_type,
-                           drop && drop[i] ? L"container" : L"kept",
-                           drop && drop[i] ? NULL
-                           : (new_click ? &new_click[i]
-                                        : &cands[i].target.click));
-        if (!drop || !drop[i]) {
-            cands[kept] = cands[i];
-            if (drop && new_click)
-                cands[kept].target.click = new_click[i];
-            ++kept;
+        if (drop && drop[i]) {
+            if (detail)
+                detail_element(&out->detail, cands[i].name,
+                               &cands[i].target.rc, cands[i].control_type,
+                               L"container", NULL);
+            continue;
         }
+        cands[kept] = cands[i];
+        if (drop && new_click)
+            cands[kept].target.click = new_click[i];
+        ++kept;
     }
     free(new_click);
     free(drop);
+
+    // Overlays exist only in web content (a window with a Document): the
+    // frames (every Document but the page's own, the largest) and the
+    // dialogs and menus on the page that leave part of it free (a web app
+    // that is one big dialog covers nothing). An overlay's content is the
+    // run of elements after it in tree order that touch it.
+    if (document_count > 0 && raw) {
+        int page = 0, d, k;
+        LONG64 page_area = 0;
+        for (d = 0; d < document_count; ++d) {
+            RECT on;
+            LONG64 area = IntersectRect(&on, &documents[d], monitor)
+                              ? rect_area(&on) : 0;
+            if (area > page_area) {
+                page_area = area;
+                page = d;
+            }
+        }
+        for (d = 0; d < document_count && ov_count < 32; ++d) {
+            if (d == page || rect_area(&documents[d]) <= 0)
+                continue;
+            ovs[ov_count].rc = documents[d];
+            ovs[ov_count].order = doc_order[d];
+            ovs[ov_count].drops = FALSE;
+            ++ov_count;
+        }
+        for (k = 0; k < popup_count && ov_count < 32; ++k) {
+            RECT inter;
+            if (!IntersectRect(&inter, &popups[k].rc, &documents[page]) ||
+                rect_area(&popups[k].rc) * 10 >= page_area * 9)
+                continue;
+            ovs[ov_count++] = popups[k];
+        }
+        for (k = 0; k < ov_count; ++k) {
+            int e = ovs[k].order + 1;
+            RECT inter;
+            while (e < length && (rect_area(&raw[e]) <= 0 ||
+                                  IntersectRect(&inter, &raw[e], &ovs[k].rc)))
+                ++e;
+            ovs[k].end = e;
+        }
+    }
+    if (ov_count > 0 && kept > 0)
+        fate = (int *)calloc((size_t)kept, sizeof(*fate));
+    if (fate)
+        cover_overlays(cands, kept, ovs, ov_count, zrects, z, fate);
+
+    cand_count = kept;
+    kept = 0;
+    for (i = 0; i < cand_count; ++i) {
+        if (fate && fate[i] == COVER_DROPPED) {
+            if (g_scan_debug)
+                g_scan_debug(&cands[i].target.rc, cands[i].control_type,
+                             L"under a dialog or menu");
+            if (detail)
+                detail_element(&out->detail, cands[i].name,
+                               &cands[i].target.rc, cands[i].control_type,
+                               L"under a dialog or menu", NULL);
+            continue;
+        }
+        if (detail)
+            detail_element(&out->detail, cands[i].name, &cands[i].target.rc,
+                           cands[i].control_type,
+                           fate && fate[i] == COVER_MOVED
+                               ? L"kept, moved off an overlay" : L"kept",
+                           &cands[i].target.click);
+        cands[kept++] = cands[i];
+    }
+    if (detail)
+        for (i = 0; i < ov_count; ++i)
+            detail_add(&out->detail, L"scan:   overlay %ls %ld,%ld %ldx%ld, "
+                       L"tree %d-%d", ovs[i].drops ? L"dialog/menu" : L"frame",
+                       ovs[i].rc.left, ovs[i].rc.top,
+                       ovs[i].rc.right - ovs[i].rc.left,
+                       ovs[i].rc.bottom - ovs[i].rc.top, ovs[i].order,
+                       ovs[i].end);
+    free(fate);
+    free(raw);
     out->items = cands;
     out->count = kept;
     out->cap = cand_cap;
@@ -2222,7 +2439,9 @@ static BOOL uia_build_condition(UiaEngine *engine)
         UIA_SplitButtonControlTypeId,
         UIA_HeaderItemControlTypeId,
         UIA_ScrollBarControlTypeId,   // fetched only to drop its buttons
-        UIA_DocumentControlTypeId     // fetched only to clip page elements
+        UIA_DocumentControlTypeId,    // fetched only to clip page elements
+        UIA_MenuControlTypeId,        // fetched only to find overlays
+        UIA_WindowControlTypeId       // (a web dialog is a Window)
     };
     IUIAutomationCondition *off;
     IUIAutomationCondition *enabled;

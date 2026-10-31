@@ -128,7 +128,10 @@ the hints. Chrome, Edge and apps built on them tell UI Automation about moved
 and new elements up to half a second late, so right after vim mouse scrolled
 or clicked there the hints wait until `scan_settle` ms (default 650) have
 passed: the labels then sit where things are now, and a panel the click
-opened has its own. Hints work
+opened has its own. A menu, dialog or embedded frame drawn over a web page
+(Google's account menu, a Zendesk menu or modal) gets its own labels; page
+links partly under it get their label and click on the part that shows, and
+links entirely under a menu or dialog get none. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -347,8 +350,10 @@ when GitHub cannot be reached.
   listed with its position, size and name, and either `kept` or why it was
   left out: `offscreen (UI Automation)` or `disabled (UI Automation)` (the
   app itself hides it from UI Automation), `hidden by a window` (another
-  window is on top of it; the window lines above say which), `container`,
-  `too small` and so on. An element that is not listed at all is not
+  window is on top of it; the window lines above say which), `under a
+  dialog or menu`, `container`, `too small` and so on (`kept, moved off an
+  overlay` is a page element partly under a panel, clicked on the part that
+  shows). An element that is not listed at all is not
   exposed by the app. Set `log` back to 0 or 1 afterwards; the lines are
   many.
 - **A web page element gets no label.** With Node and Chrome installed,
