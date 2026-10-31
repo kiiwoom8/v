@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `b7871de` (2026-11-01): 100
-commits, 86 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `03cb03e` (2026-11-01): 102
+commits, 88 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -199,7 +199,7 @@ Invariants stated in `common.h` and enforced by history:
 - Real-app robustness: Explorer (`348a968`) and Teams (`729e682`, `e987c6a`).
 
 ### Phase 7: live hints, bare keys, `g g` (2026-10-30)
-`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
+`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de` `03cb03e`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
 
 - `8b0a194`: labels stay current while the overlay is open (`scan_refresh`).
 - `b474c89`: **bare keys**. Outside text fields `f h j k l u d , .` work
@@ -376,6 +376,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 84 | `d53e87d` | 11-01 | 7 | `uia_probe`: `-d` (the `log = 2` lines for the active window), `-w` (wait before each run), `-o` (output file), time per run. `ax_sim` `google.html` `mode=ogs`: aria-hidden, visibility and height 0 together, as Google hides the account menu | `log = 2` needs a key press in the running program, which an agent cannot send (injected keys are ignored). On Linux the real hiding pattern still exposes the menu |
 | 85 | `a5fb156` | 11-01 | 7 | Commit-log rows for `c2ccce6` and `d53e87d` | |
 | 86 | `b7871de` | 11-01 | 7 | In a Chromium window, a web dialog or menu on the page with at most three elements of its own on screen (`popup_onscreen`) is asked for its offscreen descendants; `rescue_pick` takes back the enabled ones mostly inside it, clipped to it, when they are at least two and outnumber the on-screen ones, not one mostly under an on-screen element, and none when together they fill its rect exactly (a menu closed by height 0). Inserted after it in tree order (`els`, `scan_layout`). With `log = 2` they are marked "offscreen per Chromium, taken back". `ax_sim`: offscreen elements flagged, the same taking back, `INPUT=` replays a saved input | Google's account menu had no labels: on Windows its 17 rows were listed at the right places with IsOffscreen TRUE, while the dialog and its Close button were on screen. Chromium's IsOffscreen is the clipped walk of its stored tree, and a clipping box inside the menu stays stale there |
+| 87 | `df9f64d` | 11-01 | 7 | Commit-log row for `b7871de` | |
+| 88 | `03cb03e` | 11-01 | 7 | `scan_split` (default 1): a non-Chromium window's root children are fetched (Full element mode), Pane, Group and Custom containers down to depth 3 split again, a TitleBar gives its children but its MenuBar, every piece is a `TreeScope_Subtree` FindAll on the helper pool (a work-item queue per job, `work_sem`); the window's last item puts the pieces back in tree order and filters once (`scan_filter`). `uia_probe -1` | Asked for the fastest hints: our code is under 1 ms of a scan, the rest the apps' UI Automation. File Explorer 203 to 112 ms, Character Map 134 to 61 ms (medians); the system menu alone was 64 to 70 ms |
 
 ## 5. Lessons learned: rules not to break
 
@@ -762,7 +764,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | With `keep_labels`, the first labels leave free codes (a quarter more, at least an alphabet's worth); up to three one-letter labels become two letters | `515eb02` | Exactly as many codes as elements |
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
 | In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
-| A classic window's parts are searched at the same time and the title bar's system menu gets no label (`scan_split = 0` restores) | this change (section 5) | One search per window |
+| A classic window's parts are searched at the same time and the title bar's system menu gets no label (`scan_split = 0` restores) | `03cb03e` | One search per window |
 | Bare keys outside text fields (`bare_keys = 0` restores) | `b474c89` | Alt always needed |
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
 | Settings next to the exe, else `%APPDATA%\vim mouse` | `e04d6a0` | Exe folder only |
