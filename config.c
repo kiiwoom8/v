@@ -583,6 +583,7 @@ void config_set_defaults(Config *c)
     c->scan_refresh = 500;
     c->keep_labels = 1;
     c->prescan = 1;
+    c->scan_settle = 650;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,6 +911,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_bool(&c->keep_labels, line, key, val);
     else if (_wcsicmp(key, L"prescan") == 0)
         apply_bool(&c->prescan, line, key, val);
+    else if (_wcsicmp(key, L"scan_settle") == 0)
+        apply_int_range(&c->scan_settle, line, key, val, 0, 2000);
     else
         warn_add(line, L"unknown key \"%ls\" in [hints]", key);
 }
@@ -1540,6 +1543,12 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; scrollable areas) as soon as Alt goes down, so the labels and the\r\n");
     appendf(buf, cch, L"; first scroll come sooner. 0 = wait for the whole key combination.\r\n");
     appendf(buf, cch, L"prescan = %d\r\n", d.prescan ? 1 : 0);
+    appendf(buf, cch, L"; Browsers (Chrome, Edge) and apps built on them report moved and new\r\n");
+    appendf(buf, cch, L"; elements up to half a second late. After this program scrolled or\r\n");
+    appendf(buf, cch, L"; clicked there, the hints wait until this many ms have passed, so labels\r\n");
+    appendf(buf, cch, L"; land where things are now and a panel the click opened gets its own\r\n");
+    appendf(buf, cch, L"; (0-2000, default 650; 0 = scan at once).\r\n");
+    appendf(buf, cch, L"scan_settle = %d\r\n", d.scan_settle);
 
     appendf(buf, cch, L"\r\n[shortcuts]\r\n%ls", SHORTCUTS_COMMENT);
     appendf(buf, cch, L"; Example:\r\n");

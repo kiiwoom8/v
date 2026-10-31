@@ -989,23 +989,37 @@ static BOOL CALLBACK find_chromium_child(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
-// Browsers and Electron apps build their tree lazily: a slow, nearly empty
-// first scan there is normal and must not get them skipped. So does Explorer
-// while a folder window it has just opened fills in. WebView2 and CEF apps
-// (the new Teams) host Chromium under a top-level window of their own class.
-static BOOL lazy_tree_window(HWND hwnd)
+// Chrome, Edge and Electron windows are Chrome_WidgetWin_*; WebView2 and CEF
+// apps (the new Teams) host Chromium under a top-level window of their own
+// class.
+BOOL uia_chromium_window(HWND hwnd)
 {
     WCHAR cls[64];
     BOOL chromium = FALSE;
 
+    hwnd = hwnd ? GetAncestor(hwnd, GA_ROOT) : NULL;
+    if (!hwnd)
+        return FALSE;
     GetClassNameW(hwnd, cls, 64);
-    if (wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0 ||
-        wcscmp(cls, L"MozillaWindowClass") == 0 ||
-        wcscmp(cls, L"CabinetWClass") == 0 ||
-        wcscmp(cls, L"ExploreWClass") == 0)
+    if (wcsncmp(cls, L"Chrome_WidgetWin_", 17) == 0)
         return TRUE;
     EnumChildWindows(hwnd, find_chromium_child, (LPARAM)&chromium);
     return chromium;
+}
+
+// Browsers and Electron apps build their tree lazily: a slow, nearly empty
+// first scan there is normal and must not get them skipped. So does Explorer
+// while a folder window it has just opened fills in.
+static BOOL lazy_tree_window(HWND hwnd)
+{
+    WCHAR cls[64];
+
+    GetClassNameW(hwnd, cls, 64);
+    if (wcscmp(cls, L"MozillaWindowClass") == 0 ||
+        wcscmp(cls, L"CabinetWClass") == 0 ||
+        wcscmp(cls, L"ExploreWClass") == 0)
+        return TRUE;
+    return uia_chromium_window(hwnd);
 }
 
 // Chrome's panels (the downloads bubble, the extensions menu, a permission

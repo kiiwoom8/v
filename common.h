@@ -159,6 +159,11 @@ typedef struct {
                                // Default 1; 0 = labels follow their elements and disappear
                                // with them.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
+    int   scan_settle;         // after this program scrolled or clicked, a scan of a Chromium
+                               // window (Chrome, Edge, Electron, WebView2) waits until this
+                               // long has passed: Chromium tells UI Automation about moved
+                               // and new elements up to 500 ms late, so an earlier scan
+                               // labels old positions (0-2000 ms, default 650; 0 = off)
 } Config;
 
 extern Config g_cfg;
@@ -234,6 +239,9 @@ void input_config_changed(void);        // g_cfg was reloaded
 // Types text into the focused window (KEYEVENTF_UNICODE; \n = Enter, \t = Tab).
 // Text shortcuts use it only with shortcut_method = type (see snippet_insert).
 void input_type_text(const WCHAR *text);
+// Milliseconds since this program last scrolled, clicked or went back or
+// forward (INFINITE if it never did). The hints wait for browsers to catch up.
+DWORD input_since_page_action(void);
 
 enum { BTN_LEFT = 0, BTN_RIGHT = 1, BTN_MIDDLE = 2 };
 void mouse_move_to(POINT pt);                          // absolute, physical px
@@ -312,6 +320,10 @@ BOOL uia_scroll_end(POINT pt, DWORD timeout_ms);
 enum { FOCUS_UNKNOWN = 0, FOCUS_TEXT = 1, FOCUS_OTHER = 2 };
 void uia_focus_changed(DWORD delay_ms);
 BOOL uia_chromium_panel(HWND hwnd);      // hwnd is one of Chrome's owned panels, not a menu
+// hwnd's top-level window shows Chromium content (Chrome, Edge, Electron,
+// WebView2, CEF), which reports moved and new elements late. Window functions
+// only (no UI Automation), so the UI thread may call it.
+BOOL uia_chromium_window(HWND hwnd);
 int  uia_focus_state(void);
 int  uia_focus_wait(DWORD max_ms);
 void uia_focus_stop(void);

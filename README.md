@@ -118,12 +118,17 @@ hints stay open the monitor is scanned again every `scan_refresh` ms (default
 screen stays put and keeps its letters (`keep_labels`, default 1): a label you
 have read never moves, changes or disappears under you, and still clicks
 where it is drawn. An element that only shifted a few pixels gets no second
-label. New elements get labels in free space, as many as fit; to relabel
-everything, press the hotkey again. With `keep_labels = 0` labels follow
+label. New elements get labels in free space, as many as fit (the first
+labels leave room for that, so a panel or menu that opens while the hints
+are up gets labels too); to relabel everything, press the hotkey again. With `keep_labels = 0` labels follow
 their elements instead and disappear when an element goes away (when labels
 run out one may grow a letter, and a label whose element went away is never
 reused). A scan that finds nothing keeps trying for up to 3 s, then closes
-the hints. Hints work
+the hints. Chrome, Edge and apps built on them tell UI Automation about moved
+and new elements up to half a second late, so right after vim mouse scrolled
+or clicked there the hints wait until `scan_settle` ms (default 650) have
+passed: the labels then sit where things are now, and a panel the click
+opened has its own. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -260,7 +265,11 @@ ones:
   disappear when the element goes away. Default 1),
   `prescan` (1 = start finding elements and scrollable areas as soon as Alt
   goes down, so labels and Alt scrolling respond sooner; 0 = wait for the
-  whole key combination)
+  whole key combination),
+  `scan_settle` (0-2000 ms, default 650: after vim mouse scrolled, clicked or
+  went back or forward in Chrome, Edge or an app built on them, the hints
+  wait until this long has passed, because those report the page's new
+  positions up to half a second late. 0 = scan at once)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
@@ -324,6 +333,12 @@ when GitHub cannot be reached.
   their accessibility tree only when first asked. vim mouse asks each window
   you switch to in the background, so this only happens in a window that was
   already active when vim mouse started; press `Esc` and open the hints again.
+- **Labels sit where things were a moment ago, or a panel that just opened
+  has none.** Chrome, Edge and apps built on them report moved and new
+  elements up to half a second late. After vim mouse's own scrolls and clicks
+  the hints wait for that (`scan_settle`); after scrolling with the mouse
+  wheel or clicking with the mouse, wait a moment before opening the hints,
+  or press the hint hotkey again to relabel.
 - **A web page element gets no label.** With Node and Chrome installed,
   `mingw32-make check` builds `tools\hint_check.exe` and
   `node tools\hint_check.mjs [url ...]` opens each page in a separate Chrome

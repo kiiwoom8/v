@@ -223,6 +223,10 @@ static BOOL s_prepared = FALSE;
 // Alt went down: the movement thread caches the scrollable areas under the
 // pointer, so a following Alt scroll finds its target at once.
 static volatile LONG s_scroll_prefetch = 0;
+// When this program last scrolled, clicked or went back or forward
+// (GetTickCount, 0 = never). Chromium reports the page that results to UI
+// Automation up to half a second later, so the hints wait (scan_settle).
+static volatile LONG s_page_acted = 0;
 
 // Text shortcut being typed while Alt is held (see shortcut_begin).
 static BOOL  s_sc_active = FALSE;
@@ -312,6 +316,18 @@ static void notify_state(void)
     post_main(WM_APP_STATE_CHANGED, 0, 0);
 }
 
+static void page_acted(void)
+{
+    DWORD now = GetTickCount();
+    InterlockedExchange(&s_page_acted, (LONG)(now ? now : 1));
+}
+
+DWORD input_since_page_action(void)
+{
+    DWORD at = (DWORD)InterlockedCompareExchange(&s_page_acted, 0, 0);
+    return at ? GetTickCount() - at : INFINITE;
+}
+
 // Absolute moves are not distorted by "Enhance pointer precision", unlike
 // relative MOUSEEVENTF_MOVE. Coordinates are physical pixels of the whole
 // virtual desktop.
@@ -335,9 +351,11 @@ static void send_absolute_move(int x, int y, int vx, int vy, int vw, int vh)
     SendInput(1, &in, sizeof(in));
 }
 
-// A click of ours may move the focus into or out of a text field.
+// A click of ours may move the focus into or out of a text field, and open,
+// close or move something on the page.
 static void focus_clicked(void)
 {
+    page_acted();
     if (g_cfg.bare_keys)
         uia_focus_changed(FOCUS_CLICK_DELAY_MS);
 }
@@ -380,6 +398,7 @@ static void click_button(int button)
 static void send_wheel(BOOL vertical, int delta)
 {
     INPUT in;
+    page_acted();
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
     in.mi.mouseData = (DWORD)delta;
@@ -395,6 +414,7 @@ static void send_wheel_jump(BOOL vertical, int delta)
     INPUT in[64];
     int i;
 
+    page_acted();
     ZeroMemory(in, sizeof(in));
     for (i = 0; i < 64; i++) {
         in[i].type = INPUT_MOUSE;
@@ -458,6 +478,7 @@ static void send_nav(BOOL forward, BOOL alt_held)
     UINT vk = forward ? VK_RIGHT : VK_LEFT;
     UINT n = 0;
 
+    page_acted();
     ZeroMemory(in, sizeof(in));
     if (!alt_held) {
         in[n].type = INPUT_KEYBOARD;
@@ -871,6 +892,7 @@ static void post_wheel(POINT pt, BOOL vertical, int delta)
         send_wheel(vertical, delta);
         return;
     }
+    page_acted();
     if (!tried) {
         tried = TRUE;
         to_logical = (ToLogicalFn)(void *)GetProcAddress(
@@ -2374,6 +2396,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
                                 else
                                     GetCursorPos(&pt);
                                 if (uia_scroll_end(pt, SCROLL_END_UIA_MS)) {
+                                    page_acted();
                                     after = InterlockedCompareExchange(
                                         &s_end_uia, END_UIA_DONE,
                                         END_UIA_ASKING);

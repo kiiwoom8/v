@@ -31,6 +31,7 @@
 #define TIMER_FLASH_ID  1
 #define TIMER_SCAN_ID   2
 #define TIMER_REFRESH_ID 3
+#define TIMER_SETTLE_ID 4
 #define REFRESH_RETRY_MS 200
 #define MAX_MONITORS    16
 #define MAX_TARGETS     2000
@@ -181,6 +182,7 @@ static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
 static void schedule_refresh(void);
 static void start_refresh_scan(void);
+static void begin_scan(void);
 static void merge_scan(ClickList *list);
 
 // ---------------------------------------------------------------------------
@@ -846,15 +848,23 @@ static int __cdecl target_cmp(const void *pa, const void *pb)
 
 // Vimium's prefix-free labelling: grow labels by prefixing each earlier hint
 // with every alphabet character, then take the n oldest unexpanded ones.
+// With keep_labels a shown label can never be lengthened, so an element that
+// appears while the hints are open (the panel a click opened, a menu that
+// slides in, a page that catches up) can only get a code nobody holds. Plan
+// the codes for a quarter more elements, and at least an alphabet's worth,
+// and leave the extra ones free for them.
 static HintLabel *build_labels(int n)
 {
     int alen = (int)wcslen(g_cfg.alphabet);
-    int cap, count, offset, i, j;
+    int want, cap, count, offset, i, j;
     HintLabel *pool, *out;
 
     if (n <= 0 || alen < 1) return NULL;
     if (alen > 60) alen = 60;
-    cap = 2 * n + 2 * alen + 16;
+    want = n;
+    if (g_cfg.keep_labels)
+        want += n / 4 > alen ? n / 4 : alen;
+    cap = 2 * want + 2 * alen + 16;
     pool = (HintLabel *)calloc((size_t)cap, sizeof(*pool));
     out = (HintLabel *)calloc((size_t)n, sizeof(*out));
     if (!pool || !out) {
@@ -866,7 +876,7 @@ static HintLabel *build_labels(int n)
     count = 1;
     offset = 0;
     pool[0].s[0] = 0;
-    while (count - offset < n || count == 1) {
+    while (count - offset < want || count == 1) {
         const WCHAR *base;
         int len;
 
@@ -1800,6 +1810,10 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             if (!g_scanning && g_refresh_on)
                 start_refresh_scan();
+        } else if (wp == TIMER_SETTLE_ID) {
+            KillTimer(hwnd, TIMER_SETTLE_ID);
+            if (g_open && g_scanning && g_mode == HINT_MODE_ELEMENTS)
+                begin_scan();
         } else if (wp == TIMER_SCAN_ID) {
             KillTimer(hwnd, TIMER_SCAN_ID);
             if (!g_scanning) return 0;
@@ -1935,6 +1949,7 @@ static void cancel_scan(void)
     if (g_hint_wnd) {
         KillTimer(g_hint_wnd, TIMER_SCAN_ID);
         KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
+        KillTimer(g_hint_wnd, TIMER_SETTLE_ID);
     }
     g_scan_wait_first = FALSE;
     g_scan_retry = FALSE;
@@ -1962,6 +1977,28 @@ static UINT scan_rest_ms(DWORD t0)
     DWORD elapsed = GetTickCount() - t0;
     UINT limit = scan_limit_ms();
     return elapsed < limit ? limit - elapsed : 1;
+}
+
+// Chromium sends UI Automation the new positions of elements that moved at
+// most every 500 ms, and elements that appeared 150 ms later (Blink's
+// ax_object_cache_impl.cc: GetLocationSerializationDelay,
+// GetDeferredEventsDelay). A scan right after our own scroll or click there
+// labels where the page used to be, or misses the panel the click opened, and
+// keep_labels then holds those labels for the whole open. So the first scan
+// waits until scan_settle has passed since that scroll or click. Returns the
+// milliseconds left to wait, 0 when the scan may start now.
+static UINT settle_wait_ms(void)
+{
+    DWORD since;
+    POINT pt;
+
+    if (g_cfg.scan_settle <= 0) return 0;
+    since = input_since_page_action();
+    if (since >= (DWORD)g_cfg.scan_settle) return 0;
+    if (!uia_chromium_window(GetForegroundWindow()) &&
+        !(GetCursorPos(&pt) && uia_chromium_window(WindowFromPoint(pt))))
+        return 0;
+    return (UINT)g_cfg.scan_settle - (UINT)since;
 }
 
 // Keeps the labels current while the overlay stays open, but only after the
@@ -2014,7 +2051,7 @@ static BOOL adopt_prescan(void)
     if (g_pre_id == 0)
         return FALSE;
     if (g_pre_id != g_scan_id || g_pre_mon != g_mon ||
-        GetTickCount() - g_pre_t0 > 2000) {
+        GetTickCount() - g_pre_t0 > 2000 || settle_wait_ms() > 0) {
         discard_prescan();
         return FALSE;
     }
@@ -2045,12 +2082,27 @@ static BOOL adopt_prescan(void)
     return TRUE;
 }
 
+// The first scan of an open (or a reload). Its timeouts count from here.
+static void begin_scan(void)
+{
+    g_scan_t0 = GetTickCount();
+    ++g_scan_id;
+    uia_scan(g_mon, g_scan_id);
+    if (g_hint_wnd)
+        SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_limit_ms(), NULL);
+}
+
 static void start_scan(BOOL repaint)
 {
+    UINT wait;
+
     discard_prescan();
     reset_input();
     free_elements();
-    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
+    if (g_hint_wnd) {
+        KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
+        KillTimer(g_hint_wnd, TIMER_SETTLE_ID);
+    }
     g_refresh_on = FALSE;
     g_scan_retry = FALSE;
     if (g_scan_list) {
@@ -2059,11 +2111,18 @@ static void start_scan(BOOL repaint)
     }
     g_scanning = TRUE;
     g_scan_wait_first = FALSE;
-    g_scan_t0 = GetTickCount();
-    ++g_scan_id;
-    uia_scan(g_mon, g_scan_id);
-    if (g_hint_wnd)
-        SetTimer(g_hint_wnd, TIMER_SCAN_ID, scan_limit_ms(), NULL);
+    // While the browser catches up, the status text shows and typed keys
+    // queue as during any scan; TIMER_SETTLE_ID starts the scan.
+    wait = g_hint_wnd ? settle_wait_ms() : 0;
+    if (wait > 0) {
+        ++g_scan_id;        // an older scan's posts no longer count
+        uia_cancel();
+        g_scan_t0 = GetTickCount();
+        app_log(L"hint: waiting %u ms for the page to settle", wait);
+        SetTimer(g_hint_wnd, TIMER_SETTLE_ID, wait, NULL);
+    } else {
+        begin_scan();
+    }
     if (repaint) {
         invalidate();
         if (g_hint_wnd) UpdateWindow(g_hint_wnd);
@@ -2556,6 +2615,10 @@ void hint_prepare(BOOL on)
         return;
 
     discard_prescan();
+    // Right after our scroll or click a browser still reports the old page:
+    // hint_open starts the scan once it has caught up (settle_wait_ms).
+    if (settle_wait_ms() > 0)
+        return;
     ++g_scan_id;
     g_pre_id = g_scan_id;
     g_pre_mon = cursor_monitor();
