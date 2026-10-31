@@ -161,6 +161,10 @@ typedef struct {
                                // Default 1; 0 = labels follow their elements and disappear
                                // with them.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
+    int   scan_split;          // 1 = search the parts of a classic window (its title bar,
+                               // list, tree, panes) at the same time, and skip the title
+                               // bar's system menu; default 1. 0 = one search per window as
+                               // before, which also labels the window icon's system menu.
     int   scan_settle;         // after this program scrolled or clicked, a scan of a Chromium
                                // window (Chrome, Edge, Electron, WebView2) waits until this
                                // long has passed: Chromium tells UI Automation about moved

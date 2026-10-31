@@ -35,7 +35,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `config.c` | 2131 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey` |
 | `input.c` | 3294 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `input_thread_proc` |
 | `hint.c` | 2834 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up, live refresh merging, monitor cycling. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_wait_ms`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay` |
-| `uia.c` | 5014 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_window_uia`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `uia.c` | 5842 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1385 | Tray icon and menu, balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -53,7 +53,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here. |
 | Input (highest priority) | `input.c` `input_thread_proc` | Installs the low-level hook (`kb_proc`), WinEvent focus hooks, raw keyboard input (hook-loss check) and the power/session window; owns the mode indicator window. |
 | Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Calls `uia_scroll_target` and `uia_scroll_end`. |
-| UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel, merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
+| UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel (a classic window's parts too: one queue of work items per scan), merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
 | UIA scroll worker | `uia.c` `scroll_worker` | Per-window cache (8 windows, LRU) of scrollable areas for Alt and bare scrolling, kept warm after a press. |
 | UIA scroll-end worker | `uia.c` `scroll_end_worker` | `Shift+g`: `ScrollPattern.SetScrollPercent` to 100 on the scrollable area at a point. Started on first use. |
 | UIA focus worker | `uia.c` `focus_worker` | Decides whether the focus is in a text field, after focus and foreground events and polls; the hook reads the cached answer. |
@@ -245,6 +245,13 @@ Invariants stated in `common.h` and enforced by history:
   nothing of its own now takes back the offscreen elements inside it
   (`rescue_offscreen`). Confirmed by replaying the laptop's scan in
   `tools/ax_sim`; the labels on screen are still to be seen.
+- Asked to make the hints as fast as possible ("even with assembly"),
+  measuring first showed that our own code takes under 1 ms of a scan: all
+  of it is the apps answering UI Automation. The scan now asks a classic
+  window's parts at the same time and leaves out the title bar's system
+  menu (`scan_split`): File Explorer about 200 to 105 ms, Character Map
+  135 to 60 ms. Chromium answers one question at a time and stays one
+  search.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -597,6 +604,41 @@ last ten are all `worktree-agent-*` into `element-hints`.
   scrolls and clicks are not covered (there is no mouse hook). Any new
   action that changes a page (a new key that scrolls, clicks or navigates)
   must call `page_acted` in `input.c`.
+- **The time is in the app, not in our code; measure before tuning.**
+  Asked to make the hints faster "even with assembly", a split of one scan
+  showed window enumeration at 0.2 ms, the filters and labels under 1 ms,
+  and the rest in the one `FindAllBuildCache` per window: Chrome on a
+  Google page 27 to 60 ms, File Explorer on `C:\Windows` about 200 ms,
+  Character Map 140 ms. No other query shape was faster (raw view, the
+  condition reordered, fewer cached properties, or fetching everything
+  and filtering here). A global "nothing changed on screen" test that
+  could have shown an earlier scan at once does not exist: DWM composes
+  every frame while anything animates, and a 1080p `BitBlt` takes 17 to
+  48 ms.
+- **Search a classic window's parts at the same time; never a browser's.**
+  File Explorer's ~200 ms were its title bar 87 to 99 ms (of that, the
+  system menu on the window icon 64 to 70 ms for its one MenuItem, through
+  UI Automation's non-client proxy), the file list 27 ms, the folder tree
+  23 ms and the command bar 12 to 25 ms, asked one after another. With
+  `scan_split` (default 1) the root's children are fetched (Full element
+  mode, `kids_cache`), Pane, Group and Custom containers down to depth 3
+  are split again, a TitleBar gives its children but its MenuBar, and every
+  piece is one `TreeScope_Subtree` FindAll, each a work item on the helper
+  pool. The window's last item puts the pieces back in tree order
+  (`scan_tree_flatten`; the filters need FindAll's order) and filters once.
+  A split container is kept by the same rule the condition applies
+  (`cached_matches_condition`, one table `g_scan_types`/`g_scan_patterns`
+  for both). Explorer 200 to about 105 ms, Character Map 135 to about
+  60 ms, the same targets but the system menu. Chromium windows and
+  Firefox are not split: Chromium answers every accessibility call on its
+  UI thread one at a time, and splitting was equal or slower. Three faults
+  of the first draft are worth knowing for any work queue here: an
+  auto-reset event woke one helper for several queued items, so the rest
+  waited out a 20 ms poll (one count per item now, `work_sem`); a job
+  handed to the helpers before its first items were queued let them find
+  nothing outstanding and leave for good, so the scan never ended (queue
+  first, then publish `g_job`); and a part UI Automation could not answer
+  must leave the rest of the window labelled (`partial`), not blank it.
 - **A full label code cannot take late elements.** Vimium-style labelling
   uses the whole code space, and `keep_labels` may not lengthen a shown
   label, so before `515eb02` an element that appeared during the open got
@@ -720,6 +762,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | With `keep_labels`, the first labels leave free codes (a quarter more, at least an alphabet's worth); up to three one-letter labels become two letters | `515eb02` | Exactly as many codes as elements |
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
 | In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
+| A classic window's parts are searched at the same time and the title bar's system menu gets no label (`scan_split = 0` restores) | this change (section 5) | One search per window |
 | Bare keys outside text fields (`bare_keys = 0` restores) | `b474c89` | Alt always needed |
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
 | Settings next to the exe, else `%APPDATA%\vim mouse` | `e04d6a0` | Exe folder only |
@@ -808,7 +851,11 @@ the watcher thread notices the file change.
 
 ### Change hint scanning or filtering
 
-`uia.c`: `scan_window_uia` (candidate tests), `scan_layout` (scroll bars,
+`uia.c`: `scan_root_item`, `scan_split_item`, `scan_titlebar_item` and
+`scan_window_finish` (how a window is split into parts on the helper pool
+and put back in tree order; `scan_can_split` says which windows),
+`scan_filter` (everything after the elements are in; `scan_window_uia` is
+the single search), `scan_layout` (scroll bars,
 Documents, dialogs and menus), `rescue_offscreen` (offscreen elements
 taken back into a dialog or menu), `filter_containers` and
 `choose_outer_click_point` (containers and click points), `cover_overlays`
@@ -816,7 +863,8 @@ taken back into a dialog or menu), `filter_containers` and
 `lazy_tree_window` (skip rules), `uia_scan_monitor` (window list and
 merging). Verify with `make probe` (`tools/uia_probe.exe -v`) and, for web
 pages, `make check` then `node tools/hint_check.mjs <url>`, which reports
-misses with the drop reason. `tools/uia_probe.exe -d` writes the
+misses with the drop reason. `tools/uia_probe.exe -1` scans with one
+search per window, to compare with the split. `tools/uia_probe.exe -d` writes the
 `log = 2` lines for the active window without a key press (`-w 5` to
 bring it to the front first). Without Windows, run `tools/ax_sim/run.sh` on a mock page (add one to
 `tools/ax_sim/pages` for a new layout, and keep `mk.py`'s main in step

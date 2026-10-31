@@ -134,7 +134,11 @@ links partly under it get their label and click on the part that shows, and
 links entirely under a menu or dialog get none. Chrome sometimes reports
 nearly everything inside an open web menu or dialog as off screen (Google's
 account menu: all its rows); when such a menu or dialog shows almost
-nothing of its own, vim mouse labels what lies inside it anyway. Hints work
+nothing of its own, vim mouse labels what lies inside it anyway. In classic
+windows (File Explorer, dialogs) the minimize, maximize and close buttons
+get labels but the window icon at the top left does not: finding its system
+menu alone took about a third of File Explorer's whole search (`Alt+Space`
+opens it; `scan_split = 0` labels it again). Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -272,6 +276,13 @@ ones:
   `prescan` (1 = start finding elements and scrollable areas as soon as Alt
   goes down, so labels and Alt scrolling respond sooner; 0 = wait for the
   whole key combination),
+  `scan_split` (1 = ask for the parts of a classic window, such as File
+  Explorer's file list, folder tree and title bar, all at the same time,
+  which finds its elements about twice as fast, and leave out the window
+  icon's system menu, which alone takes about a third of File Explorer's
+  search and which `Alt+Space` opens anyway. 0 = one search per window, system menu
+  included. Default 1. Browsers are always searched in one go: they answer
+  one question at a time),
   `scan_settle` (0-2000 ms, default 650: after vim mouse scrolled, clicked or
   went back or forward in Chrome, Edge or an app built on them, the hints
   wait until this long has passed, because those report the page's new

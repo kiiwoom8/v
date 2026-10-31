@@ -200,10 +200,11 @@ static void print_targets(const ScanResult *result)
 
 static void usage(void)
 {
-    print_line(L"usage: uia_probe [monitor|window] [-v] [-d] [-n runs] "
+    print_line(L"usage: uia_probe [monitor|window] [-v] [-d] [-1] [-n runs] "
                L"[-w seconds] [-o file]\n"
                L"  -d  also list every element of the active window and what "
                L"became of it (log = 2)\n"
+               L"  -1  one search per window, as with scan_split = 0\n"
                L"  -w  wait before each run, to bring a window to the front\n"
                L"  -o  write to file instead of the console\n");
 }
@@ -213,6 +214,7 @@ int main(int argc, char **argv)
     int scope = SCAN_MONITOR;
     int verbose = 0;
     int detail = 0;
+    int split = 1;
     int wait_s = 0;
     int runs = 1;
     int i;
@@ -228,6 +230,8 @@ int main(int argc, char **argv)
             verbose = 1;
         } else if (!strcmp(argv[i], "-d")) {
             detail = 1;
+        } else if (!strcmp(argv[i], "-1")) {
+            split = 0;
         } else if (!strcmp(argv[i], "-w") && i + 1 < argc) {
             wait_s = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "-o") && i + 1 < argc) {
@@ -248,6 +252,7 @@ int main(int argc, char **argv)
 
     set_dpi_awareness();
     g_cfg.scan_scope = scope;
+    g_cfg.scan_split = split;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (hr != S_OK && hr != S_FALSE) {

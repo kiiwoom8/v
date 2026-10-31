@@ -28,10 +28,20 @@
 
 #define UIA_TREESCOPE_DESCENDANTS 4
 #define UIA_TREESCOPE_CHILDREN 2
+#define UIA_TREESCOPE_SUBTREE 7
 #define UIA_MODE_NONE 0
+#define UIA_MODE_FULL 1
 #define UIA_SCAN_TIMEOUT_MS 1500
 #define UIA_MAX_TARGETS 2000
 #define UIA_HELPER_THREADS 8
+
+// Splitting a classic window's scan: containers this far below the root are
+// asked in parts of their own, and one with more children than this is left
+// to a single FindAll (a file list with hundreds of rows costs less that way
+// than a children call plus that many work items).
+#define SCAN_SPLIT_MAX_DEPTH 3
+#define SCAN_SPLIT_MAX_CHILDREN 16
+#define SCAN_PATH_MAX 8
 
 #ifndef UIA_BoundingRectanglePropertyId
 #define UIA_BoundingRectanglePropertyId 30001
@@ -119,6 +129,24 @@
 #ifndef UIA_WindowControlTypeId
 #define UIA_WindowControlTypeId 50032
 #endif
+// The container types the scan splits, and the title bar (its system menu is
+// a MenuBar under it). Some SDKs name these further down this file, so each
+// is guarded and so are the later definitions.
+#ifndef UIA_CustomControlTypeId
+#define UIA_CustomControlTypeId 50025
+#endif
+#ifndef UIA_GroupControlTypeId
+#define UIA_GroupControlTypeId 50026
+#endif
+#ifndef UIA_PaneControlTypeId
+#define UIA_PaneControlTypeId 50033
+#endif
+#ifndef UIA_TitleBarControlTypeId
+#define UIA_TitleBarControlTypeId 50037
+#endif
+#ifndef UIA_MenuBarControlTypeId
+#define UIA_MenuBarControlTypeId 50010
+#endif
 
 typedef void *UIA_HWND;
 
@@ -159,7 +187,8 @@ typedef struct IUIAutomationVtbl {
     void *get_ContentViewCondition;
     HRESULT (STDMETHODCALLTYPE *CreateCacheRequest)(IUIAutomation *This,
         IUIAutomationCacheRequest **cacheRequest);
-    void *CreateTrueCondition;
+    HRESULT (STDMETHODCALLTYPE *CreateTrueCondition)(IUIAutomation *This,
+        IUIAutomationCondition **newCondition);
     void *CreateFalseCondition;
     HRESULT (STDMETHODCALLTYPE *CreatePropertyCondition)(IUIAutomation *This,
         int propertyId, VARIANT value, IUIAutomationCondition **newCondition);
@@ -446,6 +475,13 @@ typedef struct {
     // can say what UI Automation itself left out.
     IUIAutomationCondition *detail_condition;
     IUIAutomationCacheRequest *detail_cache;
+    // The children call that starts a split scan. It holds the same
+    // properties as the cache in use plus IsEnabled and IsOffscreen (the
+    // local condition test needs them), and Full element mode so the
+    // children can be searched under. One per engine, next to the others.
+    IUIAutomationCacheRequest *kids_cache;
+    IUIAutomationCacheRequest *detail_kids_cache;
+    IUIAutomationCondition *true_condition;
     BOOL with_names;
 } UiaEngine;
 
@@ -1454,10 +1490,12 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
 // dropped before it ended (Alt went on to scroll, not to the hint hotkey)
 // ran while the app was busy, so it is no verdict.
 // detail (log = 2): out->detail gets a line for every element and a summary.
-static void scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
-                        int z, const RECT *monitor, ScanResult *out,
-                        UiaContinueCallback keep_going, void *keep_user,
-                        BOOL detail)
+// The app scans through the job below (which may split a window in parts);
+// this synchronous one is what tools/hint_check.c calls.
+static void __attribute__((unused))
+scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
+            int z, const RECT *monitor, ScanResult *out,
+            UiaContinueCallback keep_going, void *keep_user, BOOL detail)
 {
     DWORD pid = 0, started;
     int answered = 0;
@@ -1797,9 +1835,114 @@ static int rescue_offscreen(UiaEngine *engine, HWND hwnd,
     return found_count;
 }
 
-static void scan_window_uia(UiaEngine *engine, HWND hwnd,
-                            const RECT *zrects, int z, const RECT *monitor,
-                            ScanResult *out, int *answered, BOOL detail)
+// The element types and patterns the scan keeps. One table serves both the
+// UI Automation condition (uia_build_condition) and the cached check of a
+// split container (cached_matches_condition), so the two cannot drift apart.
+static const int g_scan_types[] = {
+    UIA_ButtonControlTypeId,
+    UIA_CheckBoxControlTypeId,
+    UIA_ComboBoxControlTypeId,
+    UIA_EditControlTypeId,
+    UIA_HyperlinkControlTypeId,
+    UIA_ListItemControlTypeId,
+    UIA_MenuItemControlTypeId,
+    UIA_RadioButtonControlTypeId,
+    UIA_TabItemControlTypeId,
+    UIA_TreeItemControlTypeId,
+    UIA_DataItemControlTypeId,
+    UIA_SplitButtonControlTypeId,
+    UIA_HeaderItemControlTypeId,
+    UIA_ScrollBarControlTypeId,   // fetched only to drop its buttons
+    UIA_DocumentControlTypeId,    // fetched only to clip page elements
+    UIA_MenuControlTypeId,        // fetched only to find overlays
+    UIA_WindowControlTypeId       // (a web dialog is a Window)
+};
+static const int g_scan_patterns[] = {
+    UIA_IsInvokePatternAvailablePropertyId,
+    UIA_IsTogglePatternAvailablePropertyId,
+    UIA_IsSelectionItemPatternAvailablePropertyId,
+    UIA_IsExpandCollapsePatternAvailablePropertyId
+};
+
+// Copies a FindAll array into an owned reference list, with empty rescued
+// rects (one per element). Returns the element count (0 when out of memory or
+// the array cannot be read); *els and *rescued are then NULL.
+static int element_array_take(IUIAutomationElementArray *array,
+                              IUIAutomationElement ***els_out,
+                              RECT **rescued_out)
+{
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int length = 0;
+    int i;
+
+    *els_out = NULL;
+    *rescued_out = NULL;
+    if (FAILED(array->lpVtbl->get_Length(array, &length)) || length < 0)
+        length = 0;
+    if (length > 0) {
+        els = (IUIAutomationElement **)calloc((size_t)length, sizeof(*els));
+        rescued = (RECT *)calloc((size_t)length, sizeof(*rescued));
+    }
+    if (!els || !rescued) {
+        free(els);
+        free(rescued);
+        return 0;
+    }
+    for (i = 0; i < length; ++i)
+        if (FAILED(array->lpVtbl->GetElement(array, i, &els[i])))
+            els[i] = NULL;
+    *els_out = els;
+    *rescued_out = rescued;
+    return length;
+}
+
+// The same condition as uia_build_condition, tested on an element whose
+// cached properties already hold the answers: its control type or one of the
+// four patterns, and (unless log = 2 uses the types alone) enabled and on
+// screen. A container split off the tree is added to the window's list only
+// when this says the FindAll would have listed it.
+static BOOL cached_matches_condition(IUIAutomationElement *el, BOOL detail)
+{
+    int control_type = 0;
+    int i;
+    BOOL type = FALSE;
+
+    if (FAILED(el->lpVtbl->get_CachedControlType(el, &control_type)))
+        return FALSE;
+    for (i = 0; i < (int)(sizeof(g_scan_types) / sizeof(g_scan_types[0]));
+         ++i) {
+        if (g_scan_types[i] == control_type) {
+            type = TRUE;
+            break;
+        }
+    }
+    if (!type) {
+        for (i = 0;
+             i < (int)(sizeof(g_scan_patterns) / sizeof(g_scan_patterns[0]));
+             ++i) {
+            if (cached_bool_property(el, g_scan_patterns[i])) {
+                type = TRUE;
+                break;
+            }
+        }
+    }
+    if (!type)
+        return FALSE;
+    if (detail)
+        return TRUE;
+    return cached_bool_property(el, UIA_IsEnabledPropertyId) &&
+           !cached_bool_property(el, UIA_IsOffscreenPropertyId);
+}
+
+// Everything scan_window_uia does with the elements a FindAll returned:
+// scroll bars, Documents, dialogs and menus, the candidate tests, container
+// filtering and overlays. It takes over els and rescued (releasing every
+// element) and fills out.
+static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
+                        int z, const RECT *monitor,
+                        IUIAutomationElement **els, RECT *rescued,
+                        int length, ScanResult *out, BOOL detail)
 {
     // Scroll bars and their arrow/page buttons are not worth a label.
     ScanLayout lay;
@@ -1807,8 +1950,6 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     const RECT *documents = lay.documents;
     Overlay ovs[32];
     int ov_count = 0;
-    IUIAutomationElement **els = NULL;  // every listed element, tree order
-    RECT *rescued = NULL;       // non-empty: taken back from offscreen
     RECT *raw = NULL;           // every listed element's rect, in tree order
     int *types = NULL;
     int *fate = NULL;
@@ -1817,58 +1958,8 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     int kept = 0;
     BOOL *drop;
     POINT *new_click;
-    IUIAutomationElement *root = NULL;
-    IUIAutomationElementArray *array = NULL;
-    IUIAutomationCondition *condition = engine->condition;
-    IUIAutomationCacheRequest *cache = engine->cache;
-    int length = 0;
-    int el_count = 0;           // entries in els (each holds a reference)
+    int el_count = length;      // entries in els (each holds a reference)
     int i;
-
-    out->items = NULL;
-    out->count = 0;
-    out->cap = 0;
-    *answered = 0;
-    if (detail) {
-        if (engine->detail_condition && engine->detail_cache) {
-            condition = engine->detail_condition;
-            cache = engine->detail_cache;
-        } else {
-            detail = FALSE;
-        }
-    }
-
-    if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
-            engine->automation, (UIA_HWND)hwnd, &root)) || !root) {
-        if (detail)
-            detail_add(&out->detail, L"scan:   no UI Automation element");
-        return;
-    }
-
-    if (FAILED(root->lpVtbl->FindAllBuildCache(
-            root, UIA_TREESCOPE_DESCENDANTS, condition,
-            cache, &array)) || !array) {
-        if (detail)
-            detail_add(&out->detail, L"scan:   FindAll failed");
-        root->lpVtbl->Release(root);
-        return;
-    }
-    root->lpVtbl->Release(root);
-
-    if (FAILED(array->lpVtbl->get_Length(array, &length)) || length < 0)
-        length = 0;
-    *answered = length;
-    if (length > 0) {
-        els = (IUIAutomationElement **)calloc((size_t)length, sizeof(*els));
-        rescued = (RECT *)calloc((size_t)length, sizeof(*rescued));
-    }
-    if (!els || !rescued)
-        length = 0;
-    for (i = 0; i < length; ++i)
-        if (FAILED(array->lpVtbl->GetElement(array, i, &els[i])))
-            els[i] = NULL;
-    el_count = length;
-    array->lpVtbl->Release(array);
 
     if (length > 0) {
         raw = (RECT *)calloc((size_t)length, sizeof(*raw));
@@ -2145,6 +2236,75 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     out->cap = cand_cap;
 }
 
+// One FindAll under an element, as the scan cache asks for it: every element
+// with the cached properties, in tree order. Returns FALSE when UI Automation
+// could not answer (the caller then falls back or drops the piece).
+static BOOL find_all_under(UiaEngine *engine, IUIAutomationElement *el,
+                           int scope, BOOL detail,
+                           IUIAutomationElement ***els_out,
+                           RECT **rescued_out, int *count_out)
+{
+    IUIAutomationCondition *condition = engine->condition;
+    IUIAutomationCacheRequest *cache = engine->cache;
+    IUIAutomationElementArray *array = NULL;
+    int count = 0;
+
+    *els_out = NULL;
+    *rescued_out = NULL;
+    *count_out = 0;
+    if (detail) {
+        if (engine->detail_condition && engine->detail_cache) {
+            condition = engine->detail_condition;
+            cache = engine->detail_cache;
+        } else {
+            detail = FALSE;
+        }
+    }
+    if (FAILED(el->lpVtbl->FindAllBuildCache(el, scope, condition, cache,
+                                             &array)) || !array)
+        return FALSE;
+    count = element_array_take(array, els_out, rescued_out);
+    array->lpVtbl->Release(array);
+    *count_out = count;
+    return TRUE;
+}
+
+// The single FindAll of the whole window (and what the split falls back to).
+static void scan_window_uia(UiaEngine *engine, HWND hwnd,
+                            const RECT *zrects, int z, const RECT *monitor,
+                            ScanResult *out, int *answered, BOOL detail)
+{
+    IUIAutomationElement *root = NULL;
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int length = 0;
+
+    out->items = NULL;
+    out->count = 0;
+    out->cap = 0;
+    *answered = 0;
+    if (detail && !(engine->detail_condition && engine->detail_cache))
+        detail = FALSE;
+
+    if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
+            engine->automation, (UIA_HWND)hwnd, &root)) || !root) {
+        if (detail)
+            detail_add(&out->detail, L"scan:   no UI Automation element");
+        return;
+    }
+    if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS, detail,
+                        &els, &rescued, &length)) {
+        if (detail)
+            detail_add(&out->detail, L"scan:   FindAll failed");
+        root->lpVtbl->Release(root);
+        return;
+    }
+    root->lpVtbl->Release(root);
+    *answered = length;
+    scan_filter(engine, hwnd, zrects, z, monitor, els, rescued, length, out,
+                detail);
+}
+
 typedef struct {
     RECT monitor;
     WinInfo *items;
@@ -2297,17 +2457,72 @@ static void report_skip(UiaWindowCallback cb, void *cb_user,
     cb(cb_user, &event);
 }
 
-typedef struct {
+// One piece of a split window scan: either a part (one FindAll under an
+// element) or a container whose children are split further. Nodes hang off
+// their parent in tree order, so the window's last item can walk them into
+// the tree-ordered element list the filters expect.
+#define SN_PART 0
+#define SN_CONTAINER 1
+
+typedef struct ScanNode ScanNode;
+struct ScanNode {
+    int kind;                   // SN_PART: a FindAll result; SN_CONTAINER
+    int depth;                  // levels below the window root (root = 0)
+    ScanNode **kids;
+    int kid_count;
+    int kid_cap;
+    IUIAutomationElement **els; // SN_PART: its FindAll result, tree order
+    RECT *rescued;
+    int count;
+    IUIAutomationElement *self; // SN_CONTAINER: own element, when it matched
+};
+
+// What a work item does: start a window, split a container, split a title
+// bar, or run one FindAll. Each is a separate item on the helper pool so the
+// trees, lists and title bars of a window are asked at the same time.
+#define WK_ROOT 0
+#define WK_SPLIT 1
+#define WK_TITLEBAR 2
+#define WK_PART 3
+
+typedef struct ScanTask ScanTask;
+typedef struct ScanJob ScanJob;
+
+typedef struct ScanItem {
+    struct ScanItem *next;
+    ScanTask *win;
+    ScanNode *node;
+    IUIAutomationElement *el;   // searched under; NULL once run
+    int kind;                   // WK_*
+    int depth;
+    int scope;                  // UIA_TREESCOPE_* for WK_PART
+} ScanItem;
+
+struct ScanTask {
     HWND hwnd;
+    DWORD pid;
     int z;
     int win_index;              // caller-only; index into the enumerated WinInfo
+    BOOL detail;                // this is the active window's log = 2 scan
     volatile LONG finished;     // set by the scanning thread before signaling
     LONG merged;                // caller-only
     DWORD elapsed_ms;
+    DWORD started;              // the root item's start
     ScanResult found;
-} ScanTask;
+    LONG answered;              // elements across all parts
+    volatile LONG pending;      // work items not finished yet
+    ScanNode *tree;             // root node (SN_CONTAINER, depth 0)
+    BOOL skipped;               // known slow: not scanned at all
+    BOOL cancelled;             // the job was cancelled: result unused
+    // A piece UI Automation could not answer (an element gone meanwhile):
+    // the rest is still labelled, but it is no verdict on slowness.
+    BOOL partial;
+    BOOL split;                 // the parallel split produced the pieces
+    BOOL skipped_menu;          // a title bar's system menu was dropped
+    volatile LONG parts;        // work items this window was split into
+};
 
-typedef struct {
+struct ScanJob {
     UiaEngine *engine;
     RECT *zrects;
     int zcount;
@@ -2318,10 +2533,15 @@ typedef struct {
     HWND detail_hwnd;           // log = 2: the active window, else NULL
     ScanTask *tasks;
     int task_count;
-    volatile LONG next;
+    ScanItem *queue;            // protected by g_pool_cs; LIFO
+    volatile LONG outstanding;  // items queued or running
     volatile LONG refs;
     HANDLE done_event;          // auto-reset, signaled by every finished task
-} ScanJob;
+    // One count per queued item, so every item queued at once wakes its own
+    // helper (an auto-reset event woke one; the rest sat out the 20 ms poll).
+    // The last item done releases one per helper so the waiting ones leave.
+    HANDLE work_sem;
+};
 
 static HANDLE g_helper_threads[UIA_HELPER_THREADS];
 static int g_helper_count;
@@ -2330,6 +2550,126 @@ static HANDLE g_pool_quit;
 static ScanJob *g_job;
 static CRITICAL_SECTION g_pool_cs;
 static BOOL g_pool_cs_ready;
+
+// A node and (when parent is not NULL) the place it takes in the parent's
+// tree-ordered child list. Only the item that owns a node appends children
+// to it, so the list itself needs no lock.
+static ScanNode *scan_node_new(ScanNode *parent, int kind, int depth)
+{
+    ScanNode *node = (ScanNode *)calloc(1, sizeof(*node));
+
+    if (!node)
+        return NULL;
+    node->kind = kind;
+    node->depth = depth;
+    if (parent) {
+        if (parent->kid_count == parent->kid_cap) {
+            int cap = parent->kid_cap ? parent->kid_cap * 2 : 8;
+            ScanNode **kids = (ScanNode **)realloc(
+                parent->kids, (size_t)cap * sizeof(*kids));
+            if (!kids) {
+                free(node);
+                return NULL;
+            }
+            parent->kids = kids;
+            parent->kid_cap = cap;
+        }
+        parent->kids[parent->kid_count++] = node;
+    }
+    return node;
+}
+
+// Releases everything a node still owns. After scan_tree_copy the element
+// references belong to the flat list, so they are NULL there and this only
+// frees the nodes.
+static void scan_node_free(ScanNode *node)
+{
+    int i;
+
+    if (!node)
+        return;
+    for (i = 0; i < node->kid_count; ++i)
+        scan_node_free(node->kids[i]);
+    free(node->kids);
+    for (i = 0; i < node->count; ++i)
+        if (node->els && node->els[i])
+            node->els[i]->lpVtbl->Release(node->els[i]);
+    free(node->els);
+    free(node->rescued);
+    if (node->self)
+        node->self->lpVtbl->Release(node->self);
+    free(node);
+}
+
+static int scan_tree_count(const ScanNode *node)
+{
+    int total = node->kind == SN_PART ? node->count : (node->self ? 1 : 0);
+    int i;
+
+    for (i = 0; i < node->kid_count; ++i)
+        total += scan_tree_count(node->kids[i]);
+    return total;
+}
+
+// Moves the references of every node into one tree-ordered list. A part's
+// elements come in tree order; a container's own element comes before its
+// children, exactly as the single FindAll listed it.
+static void scan_tree_copy(ScanNode *node, IUIAutomationElement **els,
+                           RECT *rescued, int *at)
+{
+    int i;
+
+    if (node->kind == SN_PART) {
+        for (i = 0; i < node->count; ++i) {
+            els[*at] = node->els[i];
+            rescued[*at] = node->rescued[i];
+            node->els[i] = NULL;
+            ++*at;
+        }
+        node->count = 0;
+    } else if (node->self) {
+        els[*at] = node->self;
+        SetRectEmpty(&rescued[*at]);
+        node->self = NULL;
+        ++*at;
+    }
+    for (i = 0; i < node->kid_count; ++i)
+        scan_tree_copy(node->kids[i], els, rescued, at);
+}
+
+// The window's elements in tree order. Takes over the node tree.
+static int scan_tree_flatten(ScanTask *win, IUIAutomationElement ***els_out,
+                             RECT **rescued_out)
+{
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int total;
+    int at = 0;
+
+    *els_out = NULL;
+    *rescued_out = NULL;
+    if (!win->tree)
+        return 0;
+    total = scan_tree_count(win->tree);
+    if (total > 0) {
+        els = (IUIAutomationElement **)calloc((size_t)total, sizeof(*els));
+        rescued = (RECT *)calloc((size_t)total, sizeof(*rescued));
+    }
+    if (!els || !rescued) {
+        free(els);
+        free(rescued);
+        scan_node_free(win->tree);
+        win->tree = NULL;
+        return 0;
+    }
+    scan_tree_copy(win->tree, els, rescued, &at);
+    scan_node_free(win->tree);
+    win->tree = NULL;
+    *els_out = els;
+    *rescued_out = rescued;
+    return total;
+}
+
 
 // Whoever drops the last reference frees the whole job, including the result
 // arrays, the done event and the zrects. A helper finishing after the caller
@@ -2344,11 +2684,21 @@ static void job_release_ref(ScanJob *job)
         for (i = 0; i < job->task_count; ++i) {
             free(job->tasks[i].found.items);
             free(job->tasks[i].found.detail.text);
+            scan_node_free(job->tasks[i].tree);
         }
         free(job->tasks);
     }
+    while (job->queue) {
+        ScanItem *item = job->queue;
+        job->queue = item->next;
+        if (item->el)
+            item->el->lpVtbl->Release(item->el);
+        free(item);
+    }
     if (job->done_event)
         CloseHandle(job->done_event);
+    if (job->work_sem)
+        CloseHandle(job->work_sem);
     free(job->zrects);
     free(job);
 }
@@ -2359,11 +2709,458 @@ static BOOL pool_is_stopping(void)
            WaitForSingleObject(g_pool_quit, 0) == WAIT_OBJECT_0;
 }
 
+static BOOL job_is_cancelled(ScanJob *job)
+{
+    return pool_is_stopping() ||
+           (job->keep_going && !job->keep_going(job->keep_user));
+}
+
+// May this window's scan be split? Not where the parallel search would only
+// queue behind itself: Chromium answers every accessibility call on its UI
+// thread one at a time (Firefox the same), so splitting there was equal or
+// slower. The single FindAll also runs without helper threads, when the
+// setting is off, and when the engine lacks the children cache.
+static BOOL scan_can_split(UiaEngine *engine, HWND hwnd)
+{
+    WCHAR cls[64];
+
+    if (!g_cfg.scan_split || g_helper_count == 0 || !engine->kids_cache ||
+        !engine->true_condition)
+        return FALSE;
+    if (uia_chromium_window(hwnd))
+        return FALSE;
+    GetClassNameW(hwnd, cls, 64);
+    if (wcscmp(cls, L"MozillaWindowClass") == 0)
+        return FALSE;
+    return TRUE;
+}
+
+// Queues a work item on the running job. The item owns el's reference until
+// it runs. It counts against the job (helpers waiting on a momentarily empty
+// queue may not leave) and against its window (its last item builds the
+// window's element list and filters it).
+static void scan_queue_push(ScanJob *job, ScanItem *item)
+{
+    EnterCriticalSection(&g_pool_cs);
+    item->next = job->queue;
+    job->queue = item;
+    InterlockedIncrement(&job->outstanding);
+    InterlockedIncrement(&item->win->pending);
+    if (item->kind != WK_ROOT)
+        InterlockedIncrement(&item->win->parts);
+    LeaveCriticalSection(&g_pool_cs);
+    ReleaseSemaphore(job->work_sem, 1, NULL);
+}
+
+// The finish runs on whichever helper (or the scan worker, without helpers)
+// ran the window's last item. One window at a time, so its detail text and
+// its element tree need no lock.
+static void scan_window_finish(ScanJob *job, ScanTask *win, BOOL cancelled);
+
+// An item is done: count it off its window and the job, and let the window's
+// last one build and filter its element list. cancelled marks a dropped item,
+// so the window is neither filtered nor judged slow.
+static void scan_item_done(ScanJob *job, ScanItem *item, BOOL cancelled)
+{
+    ScanTask *win = item->win;
+
+    if (cancelled)
+        win->cancelled = TRUE;
+    free(item);
+    if (InterlockedDecrement(&win->pending) == 0)
+        scan_window_finish(job, win, win->cancelled);
+    if (InterlockedDecrement(&job->outstanding) == 0)
+        ReleaseSemaphore(job->work_sem, UIA_HELPER_THREADS, NULL);
+}
+
+// An item that will not run: release its element, but still count it done, or
+// the window and the job would wait for it forever.
+static void scan_item_drop(ScanJob *job, ScanItem *item)
+{
+    if (item->el) {
+        item->el->lpVtbl->Release(item->el);
+        item->el = NULL;
+    }
+    scan_item_done(job, item, TRUE);
+}
+
+// The children cache matching the log level in use.
+static IUIAutomationCacheRequest *kids_cache_for(UiaEngine *engine,
+                                                 BOOL detail)
+{
+    if (detail && engine->detail_kids_cache)
+        return engine->detail_kids_cache;
+    return engine->kids_cache;
+}
+
+// The root's (or a container's) children, with the split cache: Full element
+// mode so they can be searched under, and the local condition's properties.
+static BOOL find_children(UiaEngine *engine, IUIAutomationElement *el,
+                          BOOL detail, IUIAutomationElement ***els_out,
+                          int *count_out)
+{
+    IUIAutomationElementArray *array = NULL;
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int count = 0;
+
+    *els_out = NULL;
+    *count_out = 0;
+    if (FAILED(el->lpVtbl->FindAllBuildCache(
+            el, UIA_TREESCOPE_CHILDREN, engine->true_condition,
+            kids_cache_for(engine, detail), &array)) || !array)
+        return FALSE;
+    count = element_array_take(array, &els, &rescued);
+    array->lpVtbl->Release(array);
+    free(rescued);
+    *els_out = els;
+    *count_out = count;
+    return TRUE;
+}
+
+static BOOL is_split_container(int control_type)
+{
+    return control_type == UIA_PaneControlTypeId ||
+           control_type == UIA_GroupControlTypeId ||
+           control_type == UIA_CustomControlTypeId;
+}
+
+static void scan_item_run(ScanJob *job, ScanItem *item);
+
+// A child of the root or of a split container. A title bar is searched for
+// its children and loses its system menu (the MenuBar on the window icon,
+// one label that Alt+Space opens anyway and that UI Automation's non-client
+// proxy answers in 60 ms or more); a container near the root splits again;
+// everything else is one subtree FindAll. Takes el over.
+static void scan_dispatch_child(ScanJob *job, ScanTask *win, ScanNode *parent,
+                                int depth, IUIAutomationElement *el)
+{
+    ScanNode *node;
+    ScanItem *item;
+    int control_type = 0;
+
+    if (!el)
+        return;
+    if (FAILED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
+        el->lpVtbl->Release(el);
+        win->partial = TRUE;
+        return;
+    }
+
+    node = scan_node_new(parent, SN_CONTAINER, depth);
+    item = node ? (ScanItem *)calloc(1, sizeof(*item)) : NULL;
+    if (!node || !item) {
+        free(item);
+        el->lpVtbl->Release(el);
+        win->partial = TRUE;
+        return;
+    }
+    item->win = win;
+    item->node = node;
+    item->el = el;
+    item->depth = depth;
+    if (control_type == UIA_TitleBarControlTypeId) {
+        item->kind = WK_TITLEBAR;
+    } else if (is_split_container(control_type) &&
+               depth < SCAN_SPLIT_MAX_DEPTH) {
+        item->kind = WK_SPLIT;
+    } else {
+        node->kind = SN_PART;
+        item->kind = WK_PART;
+        item->scope = UIA_TREESCOPE_SUBTREE;
+    }
+    scan_queue_push(job, item);
+}
+
+// The window root: one children call, then a work item per child. When the
+// split is not allowed (or the children call fails) this is the single
+// FindAll the scan has always made.
+static void scan_root_item(ScanJob *job, ScanItem *item)
+{
+    ScanTask *win = item->win;
+    UiaEngine *engine = job->engine;
+    IUIAutomationElement *root = NULL;
+    IUIAutomationElement **kids = NULL;
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int count = 0;
+    int length = 0;
+    int i;
+
+    if (slow_check(win->hwnd, win->pid, FALSE)) {
+        win->skipped = TRUE;
+        if (win->detail)
+            detail_add(&win->found.detail, L"scan: active window %p skipped: "
+                       L"answered slowly before", (void *)win->hwnd);
+        return;
+    }
+    win->started = GetTickCount();
+    if (!win->tree)
+        return;
+    if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
+            engine->automation, (UIA_HWND)win->hwnd, &root)) || !root) {
+        if (win->detail)
+            detail_add(&win->found.detail, L"scan:   no UI Automation "
+                       L"element");
+        return;
+    }
+
+    if (!scan_can_split(engine, win->hwnd) ||
+        !find_children(engine, root, win->detail, &kids, &count)) {
+        free(kids);
+        kids = NULL;
+        count = 0;
+        if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS,
+                            win->detail, &els, &rescued, &length)) {
+            if (win->detail)
+                detail_add(&win->found.detail, L"scan:   FindAll failed");
+        } else {
+            win->tree->kind = SN_PART;
+            win->tree->els = els;
+            win->tree->rescued = rescued;
+            win->tree->count = length;
+            win->answered = length;
+        }
+        root->lpVtbl->Release(root);
+        return;
+    }
+
+    win->split = TRUE;
+    // In order, so the tree the filters see keeps FindAll's order.
+    for (i = 0; i < count; ++i)
+        scan_dispatch_child(job, win, win->tree, 1, kids[i]);
+    free(kids);
+    root->lpVtbl->Release(root);
+}
+
+// A container near the root: its children decide. More than a handful goes
+// back to one FindAll (a file list with hundreds of rows is cheaper that
+// way); otherwise the container itself is kept when it matches the condition
+// and each child is handled by the same rules. Takes el over.
+static void scan_split_item(ScanJob *job, ScanItem *item,
+                            IUIAutomationElement *el)
+{
+    ScanTask *win = item->win;
+    UiaEngine *engine = job->engine;
+    ScanNode *node = item->node;
+    IUIAutomationElement **kids = NULL;
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int count = 0;
+    int length = 0;
+    int i;
+
+    if (!find_children(engine, el, win->detail, &kids, &count)) {
+        free(kids);
+        if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
+                           &els, &rescued, &length)) {
+            node->kind = SN_PART;
+            node->els = els;
+            node->rescued = rescued;
+            node->count = length;
+            InterlockedExchangeAdd(&win->answered, length);
+        } else {
+            win->partial = TRUE;
+        }
+        el->lpVtbl->Release(el);
+        return;
+    }
+
+    if (count > SCAN_SPLIT_MAX_CHILDREN) {
+        if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
+                           &els, &rescued, &length)) {
+            node->kind = SN_PART;
+            node->els = els;
+            node->rescued = rescued;
+            node->count = length;
+            InterlockedExchangeAdd(&win->answered, length);
+        } else {
+            win->partial = TRUE;
+        }
+        for (i = 0; i < count; ++i)
+            if (kids[i])
+                kids[i]->lpVtbl->Release(kids[i]);
+        free(kids);
+        el->lpVtbl->Release(el);
+        return;
+    }
+
+    // The container itself was listed only when the condition matches; tree
+    // order puts it before its children, as the single FindAll did.
+    if (cached_matches_condition(el, win->detail)) {
+        node->self = el;
+        InterlockedIncrement(&win->answered);
+    } else {
+        el->lpVtbl->Release(el);
+    }
+    for (i = 0; i < count; ++i)
+        scan_dispatch_child(job, win, node, item->depth + 1, kids[i]);
+    free(kids);
+}
+
+// A title bar: children only. Its own element is never a target, and its
+// system menu (a MenuBar) is dropped; Minimize, Maximize, Close and the rest
+// still get labels. Takes el over.
+static void scan_titlebar_item(ScanJob *job, ScanItem *item,
+                               IUIAutomationElement *el)
+{
+    ScanTask *win = item->win;
+    UiaEngine *engine = job->engine;
+    ScanNode *node = item->node;
+    IUIAutomationElement **kids = NULL;
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int count = 0;
+    int length = 0;
+    int i;
+
+    if (!find_children(engine, el, win->detail, &kids, &count)) {
+        free(kids);
+        if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
+                           &els, &rescued, &length)) {
+            node->kind = SN_PART;
+            node->els = els;
+            node->rescued = rescued;
+            node->count = length;
+            InterlockedExchangeAdd(&win->answered, length);
+        } else {
+            win->partial = TRUE;
+        }
+        el->lpVtbl->Release(el);
+        return;
+    }
+    for (i = 0; i < count; ++i) {
+        ScanNode *kid_node;
+        ScanItem *kid_item;
+        int control_type = 0;
+
+        if (!kids[i])
+            continue;
+        if (FAILED(kids[i]->lpVtbl->get_CachedControlType(
+                kids[i], &control_type))) {
+            kids[i]->lpVtbl->Release(kids[i]);
+            continue;
+        }
+        if (control_type == UIA_MenuBarControlTypeId) {
+            kids[i]->lpVtbl->Release(kids[i]);
+            win->skipped_menu = TRUE;
+            continue;
+        }
+        // Every other title bar child is one subtree FindAll (Minimize,
+        // Maximize, Close, the application icon's button).
+        kid_node = scan_node_new(node, SN_PART, item->depth + 1);
+        kid_item = kid_node ? (ScanItem *)calloc(1, sizeof(*kid_item))
+                            : NULL;
+        if (!kid_item) {
+            kids[i]->lpVtbl->Release(kids[i]);
+            win->partial = TRUE;
+            continue;
+        }
+        kid_item->win = win;
+        kid_item->node = kid_node;
+        kid_item->el = kids[i];
+        kid_item->kind = WK_PART;
+        kid_item->scope = UIA_TREESCOPE_SUBTREE;
+        scan_queue_push(job, kid_item);
+    }
+    free(kids);
+    el->lpVtbl->Release(el);
+}
+
+static void scan_item_run(ScanJob *job, ScanItem *item)
+{
+    UiaEngine *engine = job->engine;
+    ScanNode *node = item->node;
+    IUIAutomationElement *el = item->el;
+
+    item->el = NULL;
+    switch (item->kind) {
+    case WK_ROOT:
+        scan_root_item(job, item);
+        break;
+    case WK_SPLIT:
+        scan_split_item(job, item, el);
+        el = NULL;
+        break;
+    case WK_TITLEBAR:
+        scan_titlebar_item(job, item, el);
+        el = NULL;
+        break;
+    default: {
+        IUIAutomationElement **els = NULL;
+        RECT *rescued = NULL;
+        int count = 0;
+        if (find_all_under(engine, el, item->scope, item->win->detail, &els,
+                           &rescued, &count)) {
+            node->els = els;
+            node->rescued = rescued;
+            node->count = count;
+            InterlockedExchangeAdd(&item->win->answered, count);
+        } else {
+            item->win->partial = TRUE;
+        }
+        el->lpVtbl->Release(el);
+        el = NULL;
+        break;
+    }
+    }
+    scan_item_done(job, item, FALSE);
+}
+
+// The window's elements are in; filter them in tree order and mark the
+// window finished. A cancelled window never filters, and neither it nor a
+// partial one judges the window slow (HISTORY section 5).
+static void scan_window_finish(ScanJob *job, ScanTask *win, BOOL cancelled)
+{
+    UiaEngine *engine = job->engine;
+    IUIAutomationElement **els = NULL;
+    RECT *rescued = NULL;
+    int length;
+
+    length = scan_tree_flatten(win, &els, &rescued);
+    if (cancelled)
+        win->cancelled = TRUE;
+    if (!win->cancelled && !win->skipped) {
+        scan_filter(engine, win->hwnd, job->zrects, win->z, &job->monitor,
+                    els, rescued, length, &win->found, win->detail);
+    } else {
+        int i;
+        for (i = 0; i < length; ++i)
+            if (els[i])
+                els[i]->lpVtbl->Release(els[i]);
+        free(els);
+        free(rescued);
+    }
+
+    if (!win->skipped) {
+        win->elapsed_ms = win->started ? GetTickCount() - win->started : 0;
+        if (win->detail) {
+            detail_add(&win->found.detail, L"scan: active window %p: UI "
+                       L"Automation listed %ld in %ld part%ls, %d kept, %lu "
+                       L"ms%ls", (void *)win->hwnd, win->answered,
+                       win->split && win->parts > 0 ? win->parts : 1,
+                       win->split && win->parts > 1 ? L"s" : L"",
+                       win->found.count,
+                       (unsigned long)win->elapsed_ms,
+                       win->skipped_menu
+                           ? L"; title bar system menu skipped" : L"");
+        }
+        // A cancelled scan (Alt went on to scroll, a new scan started) must
+        // not judge the window slow: only a scan that ran to its end may.
+        if (!win->cancelled && !win->partial &&
+            win->elapsed_ms > SLOW_SCAN_MS &&
+            win->answered <= SLOW_SCAN_TARGETS &&
+            (!job->keep_going || job->keep_going(job->keep_user)))
+            slow_check(win->hwnd, win->pid, TRUE);
+    }
+    InterlockedExchange(&win->finished, 1);
+    SetEvent(job->done_event);
+}
+
 static DWORD WINAPI uia_helper(void *arg)
 {
     HRESULT hr;
     BOOL com_ready;
-    HANDLE waits[2];
     (void)arg;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -2371,6 +3168,7 @@ static DWORD WINAPI uia_helper(void *arg)
 
     for (;;) {
         ScanJob *job;
+        HANDLE waits[2];
         DWORD wait;
 
         waits[0] = g_pool_quit;
@@ -2387,32 +3185,30 @@ static DWORD WINAPI uia_helper(void *arg)
         if (!job)
             continue;
 
+        // Take items until the job has none queued or running. The queue can
+        // be empty for a moment while an item still adds work, so wait and
+        // look again instead of leaving.
         for (;;) {
-            LONG index;
-            ScanTask *task;
-            DWORD started;
+            ScanItem *item;
 
             if (pool_is_stopping())
                 break;
-            if (job->keep_going && !job->keep_going(job->keep_user))
-                break;
-            index = InterlockedIncrement(&job->next) - 1;
-            if (index >= job->task_count)
-                break;
-            task = &job->tasks[index];
-            if (pool_is_stopping() ||
-                (job->keep_going && !job->keep_going(job->keep_user))) {
-                InterlockedExchange(&task->finished, 1);
-                SetEvent(job->done_event);
+            EnterCriticalSection(&g_pool_cs);
+            item = job->queue;
+            if (item)
+                job->queue = item->next;
+            LeaveCriticalSection(&g_pool_cs);
+            if (!item) {
+                if (InterlockedCompareExchange(&job->outstanding, 0, 0) == 0)
+                    break;
+                WaitForSingleObject(job->work_sem, 20);
                 continue;
             }
-            started = GetTickCount();
-            scan_window(job->engine, task->hwnd, job->zrects, task->z,
-                        &job->monitor, &task->found, job->keep_going,
-                        job->keep_user, task->hwnd == job->detail_hwnd);
-            task->elapsed_ms = GetTickCount() - started;
-            InterlockedExchange(&task->finished, 1);
-            SetEvent(job->done_event);
+            if (job_is_cancelled(job)) {
+                scan_item_drop(job, item);
+                continue;
+            }
+            scan_item_run(job, item);
         }
         job_release_ref(job);
     }
@@ -2647,7 +3443,8 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     job->task_count = task_count;
     job->detail_hwnd = (detail && fg_task >= 0) ? fg_root : NULL;
     job->done_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-    if (!job->done_event)
+    job->work_sem = CreateSemaphoreW(NULL, 0, 0x7fffffff, NULL);
+    if (!job->done_event || !job->work_sem)
         goto done;
     if (task_count > 0) {
         job->tasks = (ScanTask *)calloc((size_t)task_count,
@@ -2657,11 +3454,35 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
         for (k = 0; k < order_count; ++k) {
             int ti = task_of_win[order[k]];
             if (ti >= 0) {
-                job->tasks[ti].hwnd = ctx.items[order[k]].hwnd;
-                job->tasks[ti].z = ctx.items[order[k]].z;
-                job->tasks[ti].win_index = order[k];
+                ScanTask *task = &job->tasks[ti];
+                task->hwnd = ctx.items[order[k]].hwnd;
+                task->z = ctx.items[order[k]].z;
+                task->win_index = order[k];
+                task->detail = (task->hwnd == job->detail_hwnd);
+                GetWindowThreadProcessId(task->hwnd, &task->pid);
+                task->tree = scan_node_new(NULL, SN_CONTAINER, 0);
             }
         }
+    }
+
+    // Queue one root item per window, last first so the foreground window's
+    // (task 0) is taken first, as before. All of them before the helpers see
+    // the job: a helper that found it with nothing outstanding would leave it
+    // for good, and with every helper gone the scan would never end.
+    for (k = task_count - 1; k >= 0; --k) {
+        ScanTask *task = &job->tasks[k];
+        ScanItem *item = (ScanItem *)calloc(1, sizeof(*item));
+
+        if (!item) {
+            // No item to run: the window still has to finish and report.
+            task->skipped = TRUE;
+            task->finished = 1;
+            continue;
+        }
+        item->win = task;
+        item->node = task->tree;
+        item->kind = WK_ROOT;
+        scan_queue_push(job, item);
     }
 
     EnterCriticalSection(&g_pool_cs);
@@ -2678,7 +3499,8 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     }
 
     // Merge in completion order. Tasks that finished together are merged in
-    // task order, so the foreground window (task 0) still goes first.
+    // task order, so the foreground window (task 0) still goes first. Without
+    // helper threads this runs the work items itself, one at a time.
     for (;;) {
         int ti;
 
@@ -2690,20 +3512,22 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
             break;
 
         if (g_helper_count == 0) {
-            LONG index;
+            ScanItem *item;
 
-            if (job->next >= job->task_count)
-                break;
-            index = InterlockedIncrement(&job->next) - 1;
-            if (index < job->task_count) {
-                ScanTask *task = &job->tasks[index];
-                DWORD started = GetTickCount();
-                scan_window(job->engine, task->hwnd, job->zrects, task->z,
-                            &job->monitor, &task->found, job->keep_going,
-                            job->keep_user, task->hwnd == job->detail_hwnd);
-                task->elapsed_ms = GetTickCount() - started;
-                InterlockedExchange(&task->finished, 1);
+            EnterCriticalSection(&g_pool_cs);
+            item = job->queue;
+            if (item)
+                job->queue = item->next;
+            LeaveCriticalSection(&g_pool_cs);
+            if (!item) {
+                if (InterlockedCompareExchange(&job->outstanding, 0, 0) == 0)
+                    break;
+                continue;
             }
+            if (job_is_cancelled(job))
+                scan_item_drop(job, item);
+            else
+                scan_item_run(job, item);
         } else {
             WaitForSingleObject(job->done_event, 20);
         }
@@ -2805,25 +3629,6 @@ static IUIAutomationCondition *property_condition(IUIAutomation *automation,
 
 static BOOL uia_build_condition(UiaEngine *engine)
 {
-    static const int types[] = {
-        UIA_ButtonControlTypeId,
-        UIA_CheckBoxControlTypeId,
-        UIA_ComboBoxControlTypeId,
-        UIA_EditControlTypeId,
-        UIA_HyperlinkControlTypeId,
-        UIA_ListItemControlTypeId,
-        UIA_MenuItemControlTypeId,
-        UIA_RadioButtonControlTypeId,
-        UIA_TabItemControlTypeId,
-        UIA_TreeItemControlTypeId,
-        UIA_DataItemControlTypeId,
-        UIA_SplitButtonControlTypeId,
-        UIA_HeaderItemControlTypeId,
-        UIA_ScrollBarControlTypeId,   // fetched only to drop its buttons
-        UIA_DocumentControlTypeId,    // fetched only to clip page elements
-        UIA_MenuControlTypeId,        // fetched only to find overlays
-        UIA_WindowControlTypeId       // (a web dialog is a Window)
-    };
     IUIAutomationCondition *off;
     IUIAutomationCondition *enabled;
     IUIAutomationCondition *items[32];
@@ -2846,9 +3651,11 @@ static BOOL uia_build_condition(UiaEngine *engine)
         return FALSE;
     }
 
-    for (i = 0; i < (int)(sizeof(types) / sizeof(types[0])); ++i) {
+    for (i = 0; i < (int)(sizeof(g_scan_types) / sizeof(g_scan_types[0]));
+         ++i) {
         IUIAutomationCondition *c = property_condition(
-            engine->automation, UIA_ControlTypePropertyId, VT_I4, types[i]);
+            engine->automation, UIA_ControlTypePropertyId, VT_I4,
+            g_scan_types[i]);
         if (!c) {
             ok = FALSE;
             break;
@@ -2856,15 +3663,11 @@ static BOOL uia_build_condition(UiaEngine *engine)
         items[count++] = c;
     }
     if (ok) {
-        static const int patterns[] = {
-            UIA_IsInvokePatternAvailablePropertyId,
-            UIA_IsTogglePatternAvailablePropertyId,
-            UIA_IsSelectionItemPatternAvailablePropertyId,
-            UIA_IsExpandCollapsePatternAvailablePropertyId
-        };
-        for (i = 0; i < (int)(sizeof(patterns) / sizeof(patterns[0])); ++i) {
+        for (i = 0;
+             i < (int)(sizeof(g_scan_patterns) / sizeof(g_scan_patterns[0]));
+             ++i) {
             IUIAutomationCondition *c = property_condition(
-                engine->automation, patterns[i], VT_BOOL, TRUE);
+                engine->automation, g_scan_patterns[i], VT_BOOL, TRUE);
             if (!c) {
                 ok = FALSE;
                 break;
@@ -2903,9 +3706,13 @@ static BOOL uia_build_condition(UiaEngine *engine)
 }
 
 // detail adds what log = 2 reports: the name, and the offscreen and enabled
-// states the normal condition tests.
+// states the normal condition tests. kids makes the children call of a split
+// scan: the same properties, always with IsEnabled and IsOffscreen (the local
+// condition test reads them), and Full element mode so the elements found can
+// be searched under.
 static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
-                                                BOOL with_names, BOOL detail)
+                                                BOOL with_names, BOOL detail,
+                                                BOOL kids)
 {
     static const int props[] = {
         UIA_BoundingRectanglePropertyId,
@@ -2927,14 +3734,14 @@ static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
         ok = SUCCEEDED(cache->lpVtbl->AddProperty(cache, props[i]));
     if (ok && (with_names || detail))
         ok = SUCCEEDED(cache->lpVtbl->AddProperty(cache, UIA_NamePropertyId));
-    if (ok && detail)
+    if (ok && (detail || kids))
         ok = SUCCEEDED(cache->lpVtbl->AddProperty(
                  cache, UIA_IsOffscreenPropertyId)) &&
              SUCCEEDED(cache->lpVtbl->AddProperty(
                  cache, UIA_IsEnabledPropertyId));
     if (ok)
         ok = SUCCEEDED(cache->lpVtbl->put_AutomationElementMode(
-                 cache, UIA_MODE_NONE));
+                 cache, kids ? UIA_MODE_FULL : UIA_MODE_NONE));
     if (!ok) {
         cache->lpVtbl->Release(cache);
         return NULL;
@@ -2944,19 +3751,40 @@ static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
 
 static BOOL uia_build_cache(UiaEngine *engine, BOOL with_names)
 {
-    engine->cache = uia_new_cache(engine->automation, with_names, FALSE);
+    engine->cache = uia_new_cache(engine->automation, with_names, FALSE,
+                                  FALSE);
     if (!engine->cache)
         return FALSE;
     // Without it log = 2 only says that it could not add the details.
     engine->detail_cache = uia_new_cache(engine->automation, with_names,
-                                         TRUE);
+                                         TRUE, FALSE);
+    engine->kids_cache = uia_new_cache(engine->automation, with_names, FALSE,
+                                       TRUE);
+    engine->detail_kids_cache = uia_new_cache(engine->automation, with_names,
+                                              TRUE, TRUE);
+    // A split without the children cache falls back to the single FindAll.
     return TRUE;
+}
+
+// The condition for "everything" (the root's children call). Kept per engine
+// so a scan does not create one per window.
+static BOOL uia_build_true_condition(UiaEngine *engine)
+{
+    return !FAILED(engine->automation->lpVtbl->CreateTrueCondition(
+               engine->automation, &engine->true_condition)) &&
+           engine->true_condition != NULL;
 }
 
 static void uia_engine_cleanup(UiaEngine *engine)
 {
     if (engine->cache)
         engine->cache->lpVtbl->Release(engine->cache);
+    if (engine->kids_cache)
+        engine->kids_cache->lpVtbl->Release(engine->kids_cache);
+    if (engine->detail_kids_cache)
+        engine->detail_kids_cache->lpVtbl->Release(engine->detail_kids_cache);
+    if (engine->true_condition)
+        engine->true_condition->lpVtbl->Release(engine->true_condition);
     if (engine->condition)
         engine->condition->lpVtbl->Release(engine->condition);
     if (engine->detail_cache)
@@ -3011,7 +3839,8 @@ static BOOL uia_engine_create(UiaEngine *engine, BOOL with_names)
         automation2->lpVtbl->base.Release((IUIAutomation *)automation2);
     }
 
-    if (!uia_build_condition(engine) || !uia_build_cache(engine, with_names)) {
+    if (!uia_build_condition(engine) || !uia_build_cache(engine, with_names) ||
+        !uia_build_true_condition(engine)) {
         uia_engine_cleanup(engine);
         return FALSE;
     }
@@ -3331,7 +4160,6 @@ void uia_cancel(void)
 #ifndef UIA_ScrollVerticallyScrollablePropertyId
 #define UIA_ScrollVerticallyScrollablePropertyId 30058
 #endif
-#define UIA_TREESCOPE_SUBTREE 7
 #define SCROLL_MIN_SIZE 16
 #define SCROLL_CACHE_ROOTS 8
 #define SCROLL_STALE_MS 10000   // older than this: refresh and wait
