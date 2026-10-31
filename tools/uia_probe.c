@@ -8,13 +8,15 @@
 #include <io.h>
 #include <fcntl.h>
 
+static FILE *g_out;     // stdout, or the file given with -o
+
 static void print_wide(const WCHAR *text)
 {
     char utf8[16384];
     int n = WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8, sizeof(utf8),
                                 NULL, NULL);
     if (n > 1)
-        fwrite(utf8, 1, (size_t)(n - 1), stdout);
+        fwrite(utf8, 1, (size_t)(n - 1), g_out ? g_out : stdout);
 }
 
 static void print_line(const WCHAR *fmt, ...)
@@ -198,13 +200,20 @@ static void print_targets(const ScanResult *result)
 
 static void usage(void)
 {
-    print_line(L"usage: uia_probe [monitor|window] [-v] [-n runs]\n");
+    print_line(L"usage: uia_probe [monitor|window] [-v] [-d] [-n runs] "
+               L"[-w seconds] [-o file]\n"
+               L"  -d  also list every element of the active window and what "
+               L"became of it (log = 2)\n"
+               L"  -w  wait before each run, to bring a window to the front\n"
+               L"  -o  write to file instead of the console\n");
 }
 
 int main(int argc, char **argv)
 {
     int scope = SCAN_MONITOR;
     int verbose = 0;
+    int detail = 0;
+    int wait_s = 0;
     int runs = 1;
     int i;
     int run;
@@ -217,6 +226,16 @@ int main(int argc, char **argv)
             scope = SCAN_WINDOW;
         } else if (!strcmp(argv[i], "-v")) {
             verbose = 1;
+        } else if (!strcmp(argv[i], "-d")) {
+            detail = 1;
+        } else if (!strcmp(argv[i], "-w") && i + 1 < argc) {
+            wait_s = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "-o") && i + 1 < argc) {
+            g_out = fopen(argv[++i], "wb");
+            if (!g_out) {
+                fprintf(stderr, "cannot write %s\n", argv[i]);
+                return 1;
+            }
         } else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
             runs = atoi(argv[++i]);
             if (runs < 1)
@@ -268,19 +287,26 @@ int main(int argc, char **argv)
             ProbeReport report;
             DWORD started;
             DWORD elapsed;
+            SYSTEMTIME now;
 
+            if (wait_s > 0)
+                Sleep((DWORD)wait_s * 1000);
             memset(&result, 0, sizeof(result));
             memset(&report, 0, sizeof(report));
-            print_line(L"run %d:\n", run + 1);
+            GetLocalTime(&now);
+            print_line(L"run %d at %02u:%02u:%02u:\n", run + 1, now.wHour,
+                       now.wMinute, now.wSecond);
             started = GetTickCount();
             uia_scan_monitor(&engine, mon, NULL, NULL, probe_on_window,
-                             &report, &result, FALSE);
+                             &report, &result, detail ? TRUE : FALSE);
             elapsed = GetTickCount() - started;
             print_line(L"total: %d targets, %lu ms wall, %d windows (%d scanned)\n",
                        result.count, elapsed, report.windows, report.scanned);
             if (verbose)
                 print_targets(&result);
+            detail_flush(&result.detail);
             free(result.items);
+            fflush(g_out ? g_out : stdout);
         }
 
         uia_pool_stop();
@@ -288,5 +314,7 @@ int main(int argc, char **argv)
     }
 
     CoUninitialize();
+    if (g_out)
+        fclose(g_out);
     return 0;
 }

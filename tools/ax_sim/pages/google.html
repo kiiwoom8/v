@@ -26,7 +26,7 @@ main{display:flex;gap:60px;padding:20px 0 0 180px}
 </div></main>
 <script>
 const q = new URLSearchParams(location.search);
-const mode = q.get('mode') || 'display';     // display | visibility | offscreen | create | height0
+const mode = q.get('mode') || 'display';     // display | visibility | offscreen | create | height0 | ogs
 const anim = q.get('anim') === '1';
 const role = q.get('role') === '1';
 const src = (q.get('xs') === '1' ? 'http://127.0.0.1:8002' : '') + '/account.html';
@@ -38,10 +38,13 @@ function hide(){
   if (mode==='visibility') pop.style.visibility='hidden';
   if (mode==='offscreen') { pop.style.right='auto'; pop.style.left='-10000px'; }
   if (mode==='height0') pop.style.height='0px';
+  // Google's own: aria-hidden, visibility and height together (2026-11-01)
+  if (mode==='ogs') { pop.setAttribute('aria-hidden','true'); pop.style.visibility='hidden'; pop.style.height='0px'; }
   if (anim) { pop.style.opacity='0'; pop.style.transform='scale(0.8)'; }
 }
 function show(){
   if (mode==='create' && !pop.firstChild) makeFrame();
+  if (mode==='ogs') pop.setAttribute('aria-hidden','false');
   pop.style.display=''; pop.style.visibility=''; pop.style.left=''; pop.style.right='8px'; pop.style.height='460px';
   if (anim) { requestAnimationFrame(()=>{ pop.style.opacity='1'; pop.style.transform='scale(1)'; }); }
 }
