@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `d53e87d` (2026-11-01): 98
-commits, 84 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `b7871de` (2026-11-01): 100
+commits, 86 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -35,7 +35,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `config.c` | 2131 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey` |
 | `input.c` | 3294 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `input_thread_proc` |
 | `hint.c` | 2834 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up, live refresh merging, monitor cycling. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_wait_ms`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay` |
-| `uia.c` | 4633 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_window_uia`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `uia.c` | 5014 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_window_uia`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1385 | Tray icon and menu, balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -43,7 +43,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `vim.rc`, `vim.manifest`, `vim.ico` | | Resources: icon, manifest (Common Controls v6, per-monitor DPI, supported OS), version info. `vim.ico` is generated by `tools/make_icon.c` and committed. | |
 | `tools/uia_probe.c` | 320 | Console tool: lists what the scan finds on the monitor under the cursor (`-v` for every target, `-d` for every element of the active window with what became of it, as `log = 2`; `-n` runs, `-w` seconds before each, `-o` file). Read-only. `make probe`. | |
 | `tools/hint_check.c`, `tools/hint_check.mjs` | 1941, 804 | Compares Chrome's DOM clickables (over CDP) with the real scan and reports misses with the drop reason. `make check`, then `node tools/hint_check.mjs [url ...]`. | `g_scan_debug` hook in `uia.c` |
-| `tools/ax_sim/` | 292 | Linux check of the element filters: Chromium's real tree for a mock page (headful, AT-SPI) run through `uia.c`'s own `filter_containers`, `cover_overlays` and `target_add`. `tools/ax_sim/run.sh <page> [steps]`, `OLD=<rev>` diffs against an older `uia.c`. | `run.sh`, `mk.py`, `pages/` |
+| `tools/ax_sim/` | 336 | Linux check of the element filters: Chromium's real tree for a mock page (headful, AT-SPI) run through `uia.c`'s own `filter_containers`, `cover_overlays`, `rescue_pick` and `target_add`. `tools/ax_sim/run.sh <page> [steps]`, `OLD=<rev>` diffs against an older `uia.c`, `INPUT=<file>` replays a saved input (one written from a Windows scan: `pages/google_menu_win.txt`). | `run.sh`, `mk.py`, `pages/` |
 | `tools/make_icon.c` | 512 | Draws `vim.ico` (large sizes stored as PNG). `make icon`. | |
 
 ### Threads and how modules talk
@@ -199,7 +199,7 @@ Invariants stated in `common.h` and enforced by history:
 - Real-app robustness: Explorer (`348a968`) and Teams (`729e682`, `e987c6a`).
 
 ### Phase 7: live hints, bare keys, `g g` (2026-10-30)
-`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
+`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
 
 - `8b0a194`: labels stay current while the overlay is open (`scan_refresh`).
 - `b474c89`: **bare keys**. Outside text fields `f h j k l u d , .` work
@@ -238,6 +238,13 @@ Invariants stated in `common.h` and enforced by history:
   key press in the program, so an agent linked to the user's PC can scan
   a menu while it is open. The real account menu's markup, read through
   Claude in Chrome, went into `google.html` `mode=ogs`.
+- `b7871de`: that scan, on the user's laptop, found the cause. Chromium
+  lists the menu's rows at the right places but calls them all offscreen
+  (a stale clip inside its copy of the page), so the scan's condition left
+  them out. In a Chromium window, a web dialog or menu that shows almost
+  nothing of its own now takes back the offscreen elements inside it
+  (`rescue_offscreen`). Confirmed by replaying the laptop's scan in
+  `tools/ax_sim`; the labels on screen are still to be seen.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -360,6 +367,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 82 | `a7a6d9f` | 10-31 | 7 | `tools/ax_sim`: Chromium's real tree (headful, AT-SPI) through `uia.c`'s own filters, on Linux | The filters could only be tried on Windows; this found 17d27bc's fault and confirmed 443b135 |
 | 83 | `c2ccce6` | 10-31 | 7 | Commit-log rows for `dd1e12f`, `17d27bc` and `a7a6d9f` | |
 | 84 | `d53e87d` | 11-01 | 7 | `uia_probe`: `-d` (the `log = 2` lines for the active window), `-w` (wait before each run), `-o` (output file), time per run. `ax_sim` `google.html` `mode=ogs`: aria-hidden, visibility and height 0 together, as Google hides the account menu | `log = 2` needs a key press in the running program, which an agent cannot send (injected keys are ignored). On Linux the real hiding pattern still exposes the menu |
+| 85 | `a5fb156` | 11-01 | 7 | Commit-log rows for `c2ccce6` and `d53e87d` | |
+| 86 | `b7871de` | 11-01 | 7 | In a Chromium window, a web dialog or menu on the page with at most three elements of its own on screen (`popup_onscreen`) is asked for its offscreen descendants; `rescue_pick` takes back the enabled ones mostly inside it, clipped to it, when they are at least two and outnumber the on-screen ones, not one mostly under an on-screen element, and none when together they fill its rect exactly (a menu closed by height 0). Inserted after it in tree order (`els`, `scan_layout`). With `log = 2` they are marked "offscreen per Chromium, taken back". `ax_sim`: offscreen elements flagged, the same taking back, `INPUT=` replays a saved input | Google's account menu had no labels: on Windows its 17 rows were listed at the right places with IsOffscreen TRUE, while the dialog and its Close button were on screen. Chromium's IsOffscreen is the clipped walk of its stored tree, and a clipping box inside the menu stays stale there |
 
 ## 5. Lessons learned: rules not to break
 
@@ -553,6 +562,26 @@ last ten are all `worktree-agent-*` into `element-hints`.
   following elements gave a label a new letter or a new place between the
   user reading it and typing it.
 
+- **Chromium's IsOffscreen can be wrong where its rects are right.**
+  `IsOffscreen` is `BrowserAccessibility::RelativeToAbsoluteBounds` with
+  clipping: the walk up the stored tree intersects with every box that
+  clips its children (`AXTree::RelativeToTreeBoundsInternal`), and the
+  element is offscreen when one of them leaves nothing.
+  `BoundingRectangle` is the same walk unclipped. So a clipping box whose
+  stored size is stale hides everything inside it from the scan's
+  condition while every rect looks right. Google's account menu
+  (2026-11-01, `b7871de`): the dialog and its Close button on screen, all
+  17 rows of its scrolling list offscreen. UI Automation has no clipped
+  rect to check against, so `rescue_offscreen` infers it: a visible dialog
+  or menu shows most of what lies inside it. It asks only when a dialog or
+  menu shows at most three elements of its own, so pages without one pay
+  nothing. The cost: a part of a dialog that is really clipped away (a
+  section collapsed to height 0 and kept in the tree, rows under a sticky
+  header) gets labels when the dialog shows almost nothing else. A menu
+  closed by height 0 whose items fill its rect exactly is recognised and
+  left out. Chromium also gives a box of no size the union of its
+  children's bounds and never calls it offscreen (the start of
+  `RelativeToTreeBoundsInternal`).
 - **Chromium's tree lags the screen.** Blink sends moved elements'
   positions to the browser process at most every 500 ms unless the focused
   element moved, and new elements 150 ms after they appear
@@ -690,6 +719,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | After our own scroll or click in a Chromium window, the first scan waits `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
 | With `keep_labels`, the first labels leave free codes (a quarter more, at least an alphabet's worth); up to three one-letter labels become two letters | `515eb02` | Exactly as many codes as elements |
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
+| In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
 | Bare keys outside text fields (`bare_keys = 0` restores) | `b474c89` | Alt always needed |
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
 | Settings next to the exe, else `%APPDATA%\vim mouse` | `e04d6a0` | Exe folder only |
@@ -722,31 +752,29 @@ last ten are all `worktree-agent-*` into `element-hints`.
   dialogs, `IsBlockedByAriaModalDialog`).
 - **Google's account menu and Zendesk overlays without labels.** After
   `515eb02` the user reported the account menu (from a Google results page)
-  still unlabelled, and not a timing problem. `443b135` stops dropping
-  panel rows as containers of the links behind them, and `17d27bc` stops
-  labels under a panel from clicking it. Both were reproduced and fixed in
-  `tools/ax_sim` on mock pages, not on Google or Zendesk themselves (their
-  hosts are not reachable from the agent's container). The account menu
-  was exposed correctly by Chromium in every way of hiding and showing it
-  that was tried. If labels are still missing on Windows, the `log = 2`
-  lines for the menu say which case it is.
-  The real menu (read 2026-11-01): a cross-origin frame (`name="account"`,
-  `role="presentation"`, 424x899 at a 1920 px wide viewport) that Google
-  loads ahead of time inside an absolutely placed box (`z-index` 991,
-  overflow hidden) with `aria-hidden="true"`, `visibility: hidden` and
-  height 0. The avatar click sets `aria-hidden="false"`, visibility and
-  the height. `google.html` `mode=ogs` does the same; `ax_sim` labels
-  every row there, so the cause is on the Windows side or in the frame's
-  own content (cross-origin, unreadable from the page). Next step: with
-  the menu open and Chrome in front, run
-  `tools/uia_probe.exe monitor -d -o out.txt` on Windows and read the
-  menu's lines.
-  Not listed at all: Chromium does not expose it. `offscreen (UI
-  Automation)` or `zero area`: Chromium's geometry for it is wrong (a
-  transform it never re-sends is one suspect). `hidden by a window`: a
-  window on top, named in the window lines. Something else: a filter here.
-  Also ask whether "profile" meant Chrome's own profile button: its menu
-  is a separate owned popup, which the window lines show.
+  still unlabelled, and not a timing problem. `443b135` (panel rows dropped
+  as containers) and `17d27bc` (labels under a panel clicking it) fixed
+  real faults found on mock pages, but not this one. On 2026-11-01 an
+  agent linked to the user's laptop ran `uia_probe -d` with the menu open
+  (the user switched to the tab; the agent cannot click in Chrome) and
+  found the cause: UI Automation lists the "Account and settings" dialog
+  and its Close button on screen, and the 17 rows of its scrolling list at
+  the right places but offscreen (section 5). `b7871de` takes them back.
+  It is confirmed by replaying that scan in `tools/ax_sim`
+  (`pages/google_menu_win.txt`), not yet by seeing the labels on the menu
+  on Windows: open the menu, press `f`, and expect labels on its rows
+  (`log = 2` says "offscreen per Chromium, taken back"). Zendesk was not
+  seen again; if its overlays still have no labels, the `log = 2` lines
+  for one say whether it is the same case (rows offscreen inside a dialog
+  or menu that shows a few elements of its own, or more than three).
+  The menu's markup (read through Claude in Chrome): a cross-origin frame
+  (`name="account"`, `role="presentation"`, 424x899) that Google loads
+  ahead of time in an absolutely placed box with `aria-hidden="true"`,
+  `visibility: hidden` and height 0; the avatar click sets
+  `aria-hidden="false"`, visibility and the height. `google.html`
+  `mode=ogs` (and `late=` for a later height) does the same, but Chromium
+  on Linux keeps its clip right there, so the stale box is not reproduced
+  on Linux.
 - **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet.
 
 ## 8. How to change things efficiently
@@ -780,7 +808,9 @@ the watcher thread notices the file change.
 
 ### Change hint scanning or filtering
 
-`uia.c`: `scan_window_uia` (candidate tests), `filter_containers` and
+`uia.c`: `scan_window_uia` (candidate tests), `scan_layout` (scroll bars,
+Documents, dialogs and menus), `rescue_offscreen` (offscreen elements
+taken back into a dialog or menu), `filter_containers` and
 `choose_outer_click_point` (containers and click points), `cover_overlays`
 (elements under a web dialog, menu or frame), `slow_check` and
 `lazy_tree_window` (skip rules), `uia_scan_monitor` (window list and
@@ -790,7 +820,8 @@ misses with the drop reason. `tools/uia_probe.exe -d` writes the
 `log = 2` lines for the active window without a key press (`-w 5` to
 bring it to the front first). Without Windows, run `tools/ax_sim/run.sh` on a mock page (add one to
 `tools/ax_sim/pages` for a new layout, and keep `mk.py`'s main in step
-with `scan_window_uia`). For a window or panel without labels on Windows,
+with `scan_window_uia`; `INPUT=<file>` replays a scan written down from
+Windows, offscreen flags included). For a window or panel without labels on Windows,
 `log = 2` lists every element of the active window with the reason. Overlay timing lives in `hint.c` (`start_scan`,
 `begin_scan`, `settle_wait_ms`, `adopt_prescan`, `finalize_scan`,
 `scan_limit_ms`, `SCAN_HARD_LIMIT_MS`).
