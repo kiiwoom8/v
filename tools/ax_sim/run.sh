@@ -30,12 +30,23 @@ if [ -z "$AX_PYTHON" ]; then
 fi
 export AX_PYTHON=${AX_PYTHON:-python3}
 
-# Xvfb, a D-Bus session and the AT-SPI bus, once.
-if [ ! -f "$WORK/env.sh" ] || ! (. "$WORK/env.sh"; xdpyinfo -display :99 >/dev/null 2>&1 || [ -e /tmp/.X11-unix/X99 ]); then
-    Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 &
+# Xvfb, a D-Bus session and the AT-SPI bus, once (detached, so they outlive
+# this shell; a stale socket file alone does not count).
+if ! pgrep -x Xvfb >/dev/null; then
+    rm -f /tmp/.X11-unix/X99 /tmp/.X99-lock
+    setsid Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 < /dev/null &
     sleep 0.5
-    eval "$(dbus-launch --sh-syntax)"
-    DISPLAY=:99 /usr/libexec/at-spi-bus-launcher --launch-immediately >/dev/null 2>&1 &
+    rm -f "$WORK/env.sh"
+fi
+if [ -f "$WORK/env.sh" ] && ! (. "$WORK/env.sh"; dbus-send --session --print-reply \
+        --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus.ListNames >/dev/null 2>&1); then
+    rm -f "$WORK/env.sh"
+fi
+if [ ! -f "$WORK/env.sh" ]; then
+    eval "$(setsid dbus-launch --sh-syntax < /dev/null)"
+    DISPLAY=:99 setsid /usr/libexec/at-spi-bus-launcher --launch-immediately \
+        >/dev/null 2>&1 < /dev/null &
     sleep 1
     cat > "$WORK/env.sh" <<EOT
 export DISPLAY=:99
@@ -59,7 +70,8 @@ if [[ "$1" == zendesk* ]] && [ ! -f "$WORK/www/zendesk.js" ]; then
 fi
 for port in 8001 8002; do
     curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$port/" ||
-        (cd "$WORK/www" && python3 -m http.server $port --bind 127.0.0.1 >/dev/null 2>&1 &)
+        (cd "$WORK/www" && setsid python3 -m http.server $port --bind 127.0.0.1 \
+            >/dev/null 2>&1 < /dev/null &)
 done
 sleep 0.3
 

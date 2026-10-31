@@ -11,7 +11,7 @@ const dump = (extra) => execSync(`${py} ${__dirname}/dump.py ${extra || ''}`).to
   const url = process.argv[2];
   const steps = process.argv[3] ? JSON.parse(process.argv[3]) : [];
   const browser = await chromium.launch({ headless: false,
-    args: ['--force-renderer-accessibility', '--window-position=0,0',
+    args: [...(process.env.AX_ARGS ? process.env.AX_ARGS.split(' ') : []), '--force-renderer-accessibility', '--window-position=0,0',
            '--window-size=1400,900', '--site-per-process'] });
   const page = await browser.newPage({ viewport: null });
   await page.goto(url);
