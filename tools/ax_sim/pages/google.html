@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><title>google mock</title>
+<style>
+body{margin:0;font:14px Arial}
+header{position:relative;height:64px;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid #ddd}
+header input{width:600px;height:40px;margin-left:120px}
+.icons{margin-left:auto;display:flex;gap:12px}
+.icons a{display:inline-block;width:32px;height:32px;border-radius:16px;background:#ccc}
+main{display:flex;gap:60px;padding:20px 0 0 180px}
+.results{width:650px}
+.results a{display:block;font-size:20px;margin:22px 0}
+.kp{width:420px}
+.kp a{display:block;margin:10px 0}
+#pop{position:absolute;right:8px;top:62px;width:410px;height:460px;z-index:1000;border-radius:28px;overflow:hidden;box-shadow:0 4px 8px rgba(0,0,0,.3)}
+#pop iframe{border:0;width:100%;height:100%}
+.anim{transition:opacity .2s, transform .2s}
+</style></head><body>
+<header><b>Google</b><input aria-label="Search" value="google.conm">
+ <div class="icons"><a href="#s" aria-label="Settings"></a><a href="#apps" aria-label="Google apps" role="button"></a>
+ <a id="avatar" href="#acct" role="button" aria-label="Google Account: Someone" aria-expanded="false"></a></div>
+ <div id="pop"></div>
+</header>
+<main><div class="results">
+<a href="#r1">Google</a><a href="#r2">Google Search - Wikipedia</a><a href="#r3">Google Account</a><a href="#r4">Google Maps</a><a href="#r5">Gmail</a><a href="#r6">Google Images</a>
+</div><div class="kp"><b>Google</b>
+<a href="#k1">google.com</a><a href="#k2">Wikipedia</a><a href="#k3">Customer service: 1 800 419 0157</a><a href="#k4">Founders: Larry Page, Sergey Brin</a><a href="#k5">CEO: Sundar Pichai</a><a href="#k6">Parent organization: Alphabet Inc.</a><a href="#k7">Headquarters: Mountain View, CA</a><a href="#k8">Subsidiaries: YouTube, Fitbit</a>
+</div></main>
+<script>
+const q = new URLSearchParams(location.search);
+const mode = q.get('mode') || 'display';     // display | visibility | offscreen | create | height0
+const anim = q.get('anim') === '1';
+const role = q.get('role') === '1';
+const src = (q.get('xs') === '1' ? 'http://127.0.0.1:8002' : '') + '/account.html';
+const pop = document.getElementById('pop');
+if (anim) pop.classList.add('anim');
+function makeFrame(){ const f = document.createElement('iframe'); if (role) f.setAttribute('role','presentation'); f.name='account'; f.src=src; pop.appendChild(f); return f; }
+function hide(){
+  if (mode==='display') pop.style.display='none';
+  if (mode==='visibility') pop.style.visibility='hidden';
+  if (mode==='offscreen') { pop.style.right='auto'; pop.style.left='-10000px'; }
+  if (mode==='height0') pop.style.height='0px';
+  if (anim) { pop.style.opacity='0'; pop.style.transform='scale(0.8)'; }
+}
+function show(){
+  if (mode==='create' && !pop.firstChild) makeFrame();
+  pop.style.display=''; pop.style.visibility=''; pop.style.left=''; pop.style.right='8px'; pop.style.height='460px';
+  if (anim) { requestAnimationFrame(()=>{ pop.style.opacity='1'; pop.style.transform='scale(1)'; }); }
+}
+if (mode!=='create') makeFrame();
+hide();
+document.getElementById('avatar').addEventListener('click', e => { e.preventDefault();
+  const open = pop.dataset.open === '1';
+  if (open) { hide(); pop.dataset.open='0'; } else { show(); pop.dataset.open='1'; }
+  e.currentTarget.setAttribute('aria-expanded', String(!open)); });
+</script></body></html>

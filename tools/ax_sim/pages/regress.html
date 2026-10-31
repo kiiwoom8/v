@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8"><title>regress</title><style>
+body{margin:0;font:14px Arial}
+header{position:fixed;top:0;left:0;right:0;height:56px;background:#fff;border-bottom:1px solid #ccc;display:flex;gap:20px;align-items:center;padding:0 20px;z-index:10}
+nav{position:fixed;top:57px;left:0;width:200px;bottom:0;background:#f4f4f4}
+nav a{display:block;padding:10px}
+main{margin:70px 0 0 220px}
+.card{display:inline-block;width:300px;height:250px;margin:10px;background:#eee;position:relative;vertical-align:top}
+.card .t{position:absolute;left:10px;bottom:40px;width:240px}
+.card .m{position:absolute;right:10px;bottom:40px}
+ul a{display:block;padding:8px}
+</style></head><body>
+<header><a href="#home">Home</a><button>Notifications</button><button>Profile</button><input aria-label="Search"></header>
+<nav role="menu"><a role="menuitem" href="#n1">Inbox</a><a role="menuitem" href="#n2">Starred</a><a role="menuitem" href="#n3">Sent</a></nav>
+<main>
+<div>
+ <div class="card" role="link" tabindex="0" aria-label="Video one"><a class="t" href="#v1">Video one title</a><button class="m">More</button></div>
+ <div class="card" role="link" tabindex="0" aria-label="Video two"><a class="t" href="#v2">Video two title</a><button class="m">More</button></div>
+</div>
+<ul><li><a href="#l1">List link one</a></li><li><a href="#l2">List link two</a></li><li>Text <a href="#l3">inline link</a> more text and more text</li></ul>
+<iframe src="http://127.0.0.1:8002/embed.html" style="width:500px;height:200px;border:0"></iframe>
+<p style="height:600px"><a href="#bottom">Bottom link</a></p>
+</main></body></html>
