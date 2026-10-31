@@ -1,7 +1,10 @@
 # conv.py - turns dump.py output into the simulation input: one line per
-# element in tree order, "<UIA control type> <actionable> <x> <y> <w> <h> <name>".
-# Offscreen elements are left out, as the scan's condition does. List and tree
-# items count as not actionable (no pattern), as a plain li or td does.
+# element in tree order,
+# "<UIA control type> <actionable> <offscreen> <x> <y> <w> <h> <name>".
+# Offscreen elements are flagged 1; the scan leaves them out unless they are
+# taken back into a web dialog or menu (rescue_pick). List and tree items
+# count as not actionable (no pattern), as a plain li or td does. A first
+# line "#monitor <w> <h>" sets the monitor (default 1600x1000, run.sh's Xvfb).
 import sys, re
 
 M = {'push button': (50000, 1), 'link': (50005, 1), 'list item': (50007, 0),
@@ -15,6 +18,6 @@ for line in sys.stdin:
     m = re.match(r'\s*(.+?) "(.*)" (-?\d+),(-?\d+) (\d+)x(\d+) (OFFSCREEN )?', line)
     if not m: continue
     role, name, x, y, w, h, off = m.groups()
-    if role not in M or off: continue      # offscreen ones the UIA condition leaves out
+    if role not in M: continue
     t, a = M[role]
-    print(t, a, x, y, w, h, (name or role)[:36] or '-')
+    print(t, a, 1 if off else 0, x, y, w, h, (name or role)[:36] or '-')

@@ -1201,6 +1201,121 @@ static void cover_overlays(ScanTarget *cands, int count, const Overlay *ovs,
     }
 }
 
+// Chromium can call nearly everything inside an open web dialog or menu
+// offscreen. Its IsOffscreen walks its stored copy of the page, clipping by
+// every box that clips its children, and a box inside the menu (the list
+// that scrolls) can keep a stale, empty size there after the menu opens.
+// BoundingRectangle is unclipped and still right. Google's account menu on
+// a results page did this on Windows (2026-11-01): the "Account and
+// settings" dialog and its Close button were on screen, all 17 rows of its
+// scrolling list offscreen. A visible dialog shows most of what lies inside
+// it, so when the offscreen elements inside one outnumber its on-screen
+// ones, Chromium's clip is wrong and they are taken back
+// (rescue_offscreen in scan_window_uia).
+#define RESCUE_ONSCREEN_MAX 3   // more on screen: Chromium's clip is fine
+
+// rescue_rect: the part of an element inside the dialog or menu, when that
+// is at least half of it (rows scrolled past its edge stay out).
+static BOOL rescue_rect(const RECT *rc, const RECT *popup, RECT *out)
+{
+    LONG64 a = rect_area(rc);
+
+    if (a <= 0 || !IntersectRect(out, rc, popup))
+        return FALSE;
+    return rect_area(out) * 2 >= a;
+}
+
+// An on-screen element of the dialog or menu itself: in its run, mostly
+// inside it, smaller than half of it (not a wrapper), and not a Document,
+// dialog or menu.
+static BOOL popup_own(const RECT *raw, const int *types, int e,
+                      const RECT *popup)
+{
+    RECT in;
+
+    return rect_area(&raw[e]) > 0 &&
+           rect_area(&raw[e]) * 2 < rect_area(popup) &&
+           types[e] != UIA_DocumentControlTypeId &&
+           types[e] != UIA_WindowControlTypeId &&
+           types[e] != UIA_MenuControlTypeId &&
+           rescue_rect(&raw[e], popup, &in);
+}
+
+// How many on-screen elements the dialog or menu at index p has (popup_own):
+// in the run after it in tree order whose rects touch it, as an overlay's
+// content (raw: on-screen rects, zero for an element left out; types:
+// control types). *end gets the first index after the run.
+static int popup_onscreen(const RECT *raw, const int *types, int count,
+                          int p, const RECT *popup, int *end)
+{
+    int n = 0;
+    int e;
+
+    for (e = p + 1; e < count; ++e) {
+        RECT inter;
+        if (rect_area(&raw[e]) <= 0)
+            continue;
+        if (!IntersectRect(&inter, &raw[e], popup))
+            break;
+        if (popup_own(raw, types, e, popup))
+            ++n;
+    }
+    *end = e;
+    return n;
+}
+
+// Of n offscreen elements inside the dialog or menu at index p (off[]: their
+// rescue_rect), marks in take[] the ones to take back and returns how many.
+// None unless they outnumber its own on-screen elements (popup_onscreen, its
+// run ends at end), and at least two. Not one mostly under an own on-screen
+// element (hidden behind it, or the same thing listed twice). None when they
+// and the own ones fill the popup's rect exactly: Chromium gives a box of no
+// size its children's bounds, which is what a menu closed by height 0 looks
+// like.
+static int rescue_pick(const RECT *raw, const int *types, int p, int end,
+                       const RECT *popup, int onscreen, const RECT *off,
+                       int n, BOOL *take)
+{
+    RECT all;
+    int picked = 0;
+    int i, e;
+
+    for (i = 0; i < n; ++i)
+        take[i] = FALSE;
+    if (onscreen > RESCUE_ONSCREEN_MAX)
+        return 0;
+    SetRectEmpty(&all);
+    for (i = 0; i < n; ++i) {
+        take[i] = TRUE;
+        for (e = p + 1; e < end && take[i]; ++e) {
+            RECT inter;
+            if (!popup_own(raw, types, e, popup))
+                continue;
+            if (IntersectRect(&inter, &off[i], &raw[e]) &&
+                rect_area(&inter) * 2 >= rect_area(&off[i]))
+                take[i] = FALSE;
+        }
+        if (take[i]) {
+            UnionRect(&all, &all, &off[i]);
+            ++picked;
+        }
+    }
+    if (picked < 2 || picked <= onscreen) {
+        for (i = 0; i < n; ++i)
+            take[i] = FALSE;
+        return 0;
+    }
+    for (e = p + 1; e < end; ++e)
+        if (popup_own(raw, types, e, popup))
+            UnionRect(&all, &all, &raw[e]);
+    if (EqualRect(&all, popup)) {
+        for (i = 0; i < n; ++i)
+            take[i] = FALSE;
+        return 0;
+    }
+    return picked;
+}
+
 // Windows that answer UI Automation very slowly with next to nothing (games,
 // custom-drawn UIs) are skipped for a while, so the hints fall back to the
 // grid at once instead of stalling for seconds on every open. They are
@@ -1394,21 +1509,308 @@ static const WCHAR *detail_left_out(IUIAutomationElement *el)
     return NULL;
 }
 
+
+// What shapes the rest of a window's scan: its scroll bars, Documents and
+// web dialogs and menus.
+typedef struct {
+    RECT scrollbars[64];
+    int scrollbar_count;
+    RECT documents[16];
+    int doc_order[16];
+    int document_count;
+    Overlay popups[16];         // dialogs and menus; end not known yet
+    int popup_count;
+} ScanLayout;
+
+// Fills lay, and raw and types for every element in tree order: raw is zero
+// for one that log = 2 lists but the normal condition leaves out, and a
+// rescued element (rescued[i] not empty) has its rescued rect.
+static void scan_layout(IUIAutomationElement **els, const RECT *rescued,
+                        int count, BOOL detail, ScanLayout *lay, RECT *raw,
+                        int *types)
+{
+    int i;
+
+    memset(lay, 0, sizeof(*lay));
+    for (i = 0; i < count; ++i) {
+        IUIAutomationElement *el = els[i];
+        int control_type = 0;
+        RECT rc;
+
+        SetRectEmpty(&raw[i]);
+        types[i] = 0;
+        if (!el ||
+            FAILED(el->lpVtbl->get_CachedControlType(el, &control_type)))
+            continue;
+        types[i] = control_type;
+        if (rect_area(&rescued[i]) > 0) {
+            raw[i] = rescued[i];
+            continue;
+        }
+        if ((detail && detail_left_out(el)) ||
+            FAILED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc)))
+            continue;
+        raw[i] = rc;
+        if (control_type == UIA_ScrollBarControlTypeId &&
+            lay->scrollbar_count < 64) {
+            lay->scrollbars[lay->scrollbar_count++] = rc;
+        } else if (control_type == UIA_DocumentControlTypeId &&
+                   lay->document_count < 16) {
+            lay->doc_order[lay->document_count] = i;
+            lay->documents[lay->document_count++] = rc;
+        } else if ((control_type == UIA_WindowControlTypeId ||
+                    control_type == UIA_MenuControlTypeId) &&
+                   lay->popup_count < 16 && rect_area(&rc) > 0) {
+            Overlay *pop = &lay->popups[lay->popup_count++];
+            pop->rc = rc;
+            pop->order = i;
+            pop->end = i + 1;
+            pop->drops = TRUE;
+        }
+    }
+
+    // A frame's Document is unclipped too and can reach past its page.
+    // FindAll lists elements in tree order, so an earlier Document it
+    // overlaps is the page around it.
+    for (i = 1; i < lay->document_count; ++i) {
+        int d;
+        for (d = 0; d < i; ++d) {
+            RECT inter;
+            if (IntersectRect(&inter, &lay->documents[i], &lay->documents[d]))
+                lay->documents[i] = inter;
+        }
+    }
+}
+
+// The page: the Document with most of itself on the monitor (-1: none).
+static int page_document(const ScanLayout *lay, const RECT *monitor,
+                         LONG64 *page_area)
+{
+    int page = -1, d;
+
+    *page_area = 0;
+    for (d = 0; d < lay->document_count; ++d) {
+        RECT on;
+        LONG64 area = IntersectRect(&on, &lay->documents[d], monitor)
+                          ? rect_area(&on) : 0;
+        if (area > *page_area) {
+            *page_area = area;
+            page = d;
+        }
+    }
+    return page;
+}
+
+// A dialog or menu that is an overlay on the page: on it, and leaving part
+// of it free (a web app that is one big dialog covers nothing).
+static BOOL popup_on_page(const RECT *popup, const RECT *page_rc,
+                          LONG64 page_area)
+{
+    RECT inter;
+
+    return IntersectRect(&inter, popup, page_rc) &&
+           rect_area(popup) * 10 < page_area * 9;
+}
+
+typedef struct {
+    int after;                  // index of its dialog or menu
+    IUIAutomationElement *el;   // NULL: already in els (log = 2) at index
+    int index;
+    RECT rc;
+} Rescued;
+
+#define RESCUE_MAX 256
+
+// An offscreen element worth taking back into a dialog or menu: enabled,
+// clickable (not a Document, dialog, menu or scroll bar) and mostly inside.
+static BOOL rescue_candidate(IUIAutomationElement *el, int control_type,
+                             const RECT *popup, RECT *clip)
+{
+    RECT rc;
+
+    return control_type != UIA_DocumentControlTypeId &&
+           control_type != UIA_WindowControlTypeId &&
+           control_type != UIA_MenuControlTypeId &&
+           control_type != UIA_ScrollBarControlTypeId &&
+           cached_bool_property(el, UIA_IsOffscreenPropertyId) &&
+           cached_bool_property(el, UIA_IsEnabledPropertyId) &&
+           SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc)) &&
+           rescue_rect(&rc, popup, clip);
+}
+
+// Chromium only (see popup_onscreen): a dialog or menu on the page with few
+// elements on screen gets back its offscreen ones that rescue_pick takes,
+// clipped to it. With log = 2 they are already in els (left out as
+// offscreen) and are marked in rescued; otherwise they are asked for under
+// the dialog or menu alone and inserted right after it, in tree order, so
+// *els, *rescued and *count may be replaced. Returns how many came back.
+static int rescue_offscreen(UiaEngine *engine, HWND hwnd,
+                            IUIAutomationElement ***els_io,
+                            RECT **rescued_io, int *count_io,
+                            const ScanLayout *lay, const RECT *raw,
+                            const int *types, const RECT *monitor,
+                            BOOL detail, ScanResult *out)
+{
+    IUIAutomationElement **els = *els_io;
+    RECT *rescued = *rescued_io;
+    int count = *count_io;
+    Rescued *found = NULL;      // taken, in tree order
+    int found_count = 0;
+    int inserted = 0;
+    Rescued *cand = NULL;       // one popup's offscreen elements
+    RECT *off = NULL;
+    BOOL *take = NULL;
+    int taken_until = -1;
+    LONG64 page_area;
+    int page;
+    int k;
+
+    if (lay->popup_count == 0 || lay->document_count == 0 ||
+        !uia_chromium_window(hwnd))
+        return 0;
+    page = page_document(lay, monitor, &page_area);
+    if (page < 0)
+        return 0;
+
+    for (k = 0; k < lay->popup_count && found_count < RESCUE_MAX; ++k) {
+        const Overlay *pop = &lay->popups[k];
+        int end, onscreen, n = 0, picked, e;
+
+        // One inside a dialog or menu already taken came with it.
+        if (pop->order < taken_until ||
+            !popup_on_page(&pop->rc, &lay->documents[page], page_area))
+            continue;
+        onscreen = popup_onscreen(raw, types, count, pop->order, &pop->rc,
+                                  &end);
+        if (onscreen > RESCUE_ONSCREEN_MAX)
+            continue;
+        if (!cand) {
+            cand = (Rescued *)malloc(RESCUE_MAX * sizeof(*cand));
+            off = (RECT *)malloc(RESCUE_MAX * sizeof(*off));
+            take = (BOOL *)malloc(RESCUE_MAX * sizeof(*take));
+            found = (Rescued *)malloc(RESCUE_MAX * sizeof(*found));
+            if (!cand || !off || !take || !found)
+                break;
+        }
+
+        if (detail) {
+            for (e = pop->order + 1; e < end && n < RESCUE_MAX; ++e) {
+                RECT clip;
+                if (rect_area(&raw[e]) > 0 || !els[e] ||
+                    !rescue_candidate(els[e], types[e], &pop->rc, &clip))
+                    continue;
+                cand[n].after = pop->order;
+                cand[n].el = NULL;
+                cand[n].index = e;
+                cand[n].rc = clip;
+                off[n++] = clip;
+            }
+        } else {
+            IUIAutomationElementArray *sub = NULL;
+            int sub_length = 0;
+            if (!els[pop->order] ||
+                FAILED(els[pop->order]->lpVtbl->FindAllBuildCache(
+                    els[pop->order], UIA_TREESCOPE_DESCENDANTS,
+                    engine->detail_condition, engine->detail_cache, &sub)) ||
+                !sub)
+                continue;
+            if (FAILED(sub->lpVtbl->get_Length(sub, &sub_length)))
+                sub_length = 0;
+            for (e = 0; e < sub_length && n < RESCUE_MAX; ++e) {
+                IUIAutomationElement *el = NULL;
+                int control_type = 0;
+                RECT clip;
+                if (FAILED(sub->lpVtbl->GetElement(sub, e, &el)) || !el)
+                    continue;
+                if (FAILED(el->lpVtbl->get_CachedControlType(
+                        el, &control_type)) ||
+                    !rescue_candidate(el, control_type, &pop->rc, &clip)) {
+                    el->lpVtbl->Release(el);
+                    continue;
+                }
+                cand[n].after = pop->order;
+                cand[n].el = el;
+                cand[n].index = -1;
+                cand[n].rc = clip;
+                off[n++] = clip;
+            }
+            sub->lpVtbl->Release(sub);
+        }
+
+        picked = rescue_pick(raw, types, pop->order, end, &pop->rc, onscreen,
+                             off, n, take);
+        for (e = 0; e < n; ++e) {
+            if (take[e] && found_count < RESCUE_MAX) {
+                found[found_count++] = cand[e];
+                if (cand[e].el)
+                    ++inserted;
+            } else if (cand[e].el) {
+                cand[e].el->lpVtbl->Release(cand[e].el);
+            }
+        }
+        if (picked > 0)
+            taken_until = end;
+    }
+
+    if (detail) {
+        for (k = 0; k < found_count; ++k) {
+            int e = found[k].index;
+            rescued[e] = found[k].rc;
+            scan_reject(els[e], out, TRUE, &found[k].rc, types[e],
+                        L"offscreen per Chromium, taken back into its "
+                        L"dialog or menu");
+        }
+    } else if (inserted > 0) {
+        int total = count + inserted;
+        IUIAutomationElement **new_els =
+            (IUIAutomationElement **)calloc((size_t)total, sizeof(*new_els));
+        RECT *new_rescued =
+            (RECT *)calloc((size_t)total, sizeof(*new_rescued));
+        if (new_els && new_rescued) {
+            int i, f = 0, j = 0;
+            for (i = 0; i < count; ++i) {
+                new_els[j] = els[i];
+                new_rescued[j++] = rescued[i];
+                while (f < found_count && found[f].after == i) {
+                    new_els[j] = found[f].el;
+                    new_rescued[j++] = found[f].rc;
+                    ++f;
+                }
+            }
+            free(els);
+            free(rescued);
+            *els_io = new_els;
+            *rescued_io = new_rescued;
+            *count_io = total;
+        } else {
+            free(new_els);
+            free(new_rescued);
+            for (k = 0; k < found_count; ++k)
+                found[k].el->lpVtbl->Release(found[k].el);
+            found_count = 0;
+        }
+    }
+    free(cand);
+    free(off);
+    free(take);
+    free(found);
+    return found_count;
+}
+
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
                             ScanResult *out, int *answered, BOOL detail)
 {
     // Scroll bars and their arrow/page buttons are not worth a label.
-    RECT scrollbars[64];
-    int scrollbar_count = 0;
-    RECT documents[16];
-    int doc_order[16];
-    int document_count = 0;
-    Overlay popups[16];         // dialogs and menus; end not known yet
-    int popup_count = 0;
+    ScanLayout lay;
+    const RECT *scrollbars = lay.scrollbars;
+    const RECT *documents = lay.documents;
     Overlay ovs[32];
     int ov_count = 0;
+    IUIAutomationElement **els = NULL;  // every listed element, tree order
+    RECT *rescued = NULL;       // non-empty: taken back from offscreen
     RECT *raw = NULL;           // every listed element's rect, in tree order
+    int *types = NULL;
     int *fate = NULL;
     ScanTarget *cands = NULL;
     int cand_count = 0, cand_cap = 0;
@@ -1420,6 +1822,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     IUIAutomationCondition *condition = engine->condition;
     IUIAutomationCacheRequest *cache = engine->cache;
     int length = 0;
+    int el_count = 0;           // entries in els (each holds a reference)
     int i;
 
     out->items = NULL;
@@ -1455,54 +1858,46 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     if (FAILED(array->lpVtbl->get_Length(array, &length)) || length < 0)
         length = 0;
     *answered = length;
-    if (length > 0)
+    if (length > 0) {
+        els = (IUIAutomationElement **)calloc((size_t)length, sizeof(*els));
+        rescued = (RECT *)calloc((size_t)length, sizeof(*rescued));
+    }
+    if (!els || !rescued)
+        length = 0;
+    for (i = 0; i < length; ++i)
+        if (FAILED(array->lpVtbl->GetElement(array, i, &els[i])))
+            els[i] = NULL;
+    el_count = length;
+    array->lpVtbl->Release(array);
+
+    if (length > 0) {
         raw = (RECT *)calloc((size_t)length, sizeof(*raw));
-
-    for (i = 0; i < length; ++i) {
-        IUIAutomationElement *el = NULL;
-        int control_type = 0;
-        RECT rc;
-        if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
-            continue;
-        if ((!detail || !detail_left_out(el)) &&
-            SUCCEEDED(el->lpVtbl->get_CachedControlType(el, &control_type)) &&
-            SUCCEEDED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc))) {
-            if (raw)
-                raw[i] = rc;
-            if (control_type == UIA_ScrollBarControlTypeId &&
-                scrollbar_count < 64) {
-                scrollbars[scrollbar_count++] = rc;
-            } else if (control_type == UIA_DocumentControlTypeId &&
-                       document_count < 16) {
-                doc_order[document_count] = i;
-                documents[document_count++] = rc;
-            } else if ((control_type == UIA_WindowControlTypeId ||
-                        control_type == UIA_MenuControlTypeId) &&
-                       popup_count < 16 && rect_area(&rc) > 0) {
-                popups[popup_count].rc = rc;
-                popups[popup_count].order = i;
-                popups[popup_count].end = i + 1;
-                popups[popup_count].drops = TRUE;
-                ++popup_count;
-            }
-        }
-        el->lpVtbl->Release(el);
+        types = (int *)calloc((size_t)length, sizeof(*types));
     }
-
-    // A frame's Document is unclipped too and can reach past its page.
-    // FindAll lists elements in tree order, so an earlier Document it
-    // overlaps is the page around it.
-    for (i = 1; i < document_count; ++i) {
-        int d;
-        for (d = 0; d < i; ++d) {
-            RECT inter;
-            if (IntersectRect(&inter, &documents[i], &documents[d]))
-                documents[i] = inter;
-        }
+    if (!raw || !types)
+        length = 0;
+    scan_layout(els, rescued, length, detail, &lay, raw, types);
+    if (length > 0 &&
+        rescue_offscreen(engine, hwnd, &els, &rescued, &el_count, &lay, raw,
+                         types, monitor, detail, out) > 0) {
+        RECT *raw2;
+        int *types2;
+        length = el_count;
+        raw2 = (RECT *)realloc(raw, (size_t)length * sizeof(*raw));
+        types2 = (int *)realloc(types, (size_t)length * sizeof(*types));
+        if (raw2)
+            raw = raw2;
+        if (types2)
+            types = types2;
+        if (raw2 && types2)
+            scan_layout(els, rescued, length, detail, &lay, raw, types);
+        else
+            length = 0;     // out of memory: nothing labelled this time
     }
 
     for (i = 0; i < length; ++i) {
-        IUIAutomationElement *el = NULL;
+        IUIAutomationElement *el = els[i];
+        BOOL taken = rect_area(&rescued[i]) > 0;
         RECT rc;
         RECT clip;
         POINT click;
@@ -1512,27 +1907,25 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         LONG64 clip_area;
         LONG64 monitor_area;
 
-        if (FAILED(array->lpVtbl->GetElement(array, i, &el)) || !el)
-            continue;
+        if (!el)
+            continue;           // els holds the reference, released below
 
         if (FAILED(el->lpVtbl->get_CachedBoundingRectangle(el, &rc)) ||
-            FAILED(el->lpVtbl->get_CachedControlType(el, &control_type))) {
-            el->lpVtbl->Release(el);
+            FAILED(el->lpVtbl->get_CachedControlType(el, &control_type)))
             continue;
-        }
+        if (taken)
+            rc = rescued[i];
 
-        if (detail) {
+        if (detail && !taken) {
             const WCHAR *left_out = detail_left_out(el);
             if (left_out) {
                 scan_reject(el, out, TRUE, &rc, control_type, left_out);
-                el->lpVtbl->Release(el);
                 continue;
             }
         }
 
         if (control_type == UIA_DocumentControlTypeId) {
             scan_reject(el, out, detail, &rc, control_type, L"document");
-            el->lpVtbl->Release(el);
             continue;
         }
         // Fetched to find overlays. One that offers a pattern matched the
@@ -1547,25 +1940,21 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                 el, UIA_IsExpandCollapsePatternAvailablePropertyId)) {
             scan_reject(el, out, detail, &rc, control_type,
                         L"dialog or menu itself");
-            el->lpVtbl->Release(el);
             continue;
         }
 
         orig_area = rect_area(&rc);
         if (orig_area <= 0) {
             scan_reject(el, out, detail, &rc, control_type, L"zero area");
-            el->lpVtbl->Release(el);
             continue;
         }
         if (control_type == UIA_ScrollBarControlTypeId ||
-            inside_any(scrollbars, scrollbar_count, &rc)) {
+            inside_any(scrollbars, lay.scrollbar_count, &rc)) {
             scan_reject(el, out, detail, &rc, control_type, L"scrollbar");
-            el->lpVtbl->Release(el);
             continue;
         }
         if (!IntersectRect(&clip, &rc, monitor)) {
             scan_reject(el, out, detail, &rc, control_type, L"off monitor");
-            el->lpVtbl->Release(el);
             continue;
         }
 
@@ -1574,7 +1963,6 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         if (clip_area * 2 < orig_area) {
             scan_reject(el, out, detail, &clip, control_type,
                         L"mostly off monitor");
-            el->lpVtbl->Release(el);
             continue;
         }
 
@@ -1584,7 +1972,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
             const RECT *best_doc = NULL;
             LONG64 best_area = 0;
             int d;
-            for (d = 0; d < document_count; ++d) {
+            for (d = 0; d < lay.document_count; ++d) {
                 RECT doc_mon;
                 RECT inter;
                 LONG64 area;
@@ -1604,12 +1992,10 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         clip_area = rect_area(&clip);
         if (clip.right - clip.left < 4 || clip.bottom - clip.top < 4) {
             scan_reject(el, out, detail, &clip, control_type, L"too small");
-            el->lpVtbl->Release(el);
             continue;
         }
         if (monitor_area > 0 && clip_area * 100 > monitor_area * 40) {
             scan_reject(el, out, detail, &clip, control_type, L"too large");
-            el->lpVtbl->Release(el);
             continue;
         }
 
@@ -1617,7 +2003,6 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         if (click.x < 0 && click.y < 0) {
             scan_reject(el, out, detail, &clip, control_type,
                         L"hidden by a window");
-            el->lpVtbl->Release(el);
             continue;
         }
 
@@ -1625,7 +2010,6 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         target.name[0] = 0;
         if (engine->with_names || detail)
             cached_name(el, target.name, 128);
-        el->lpVtbl->Release(el);
 
         target.target.rc = clip;
         target.target.click = click;
@@ -1642,7 +2026,12 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         }
         cands[cand_count++] = target;
     }
-    array->lpVtbl->Release(array);
+    for (i = 0; i < el_count; ++i)
+        if (els[i])
+            els[i]->lpVtbl->Release(els[i]);
+    free(els);
+    free(rescued);
+    free(types);
 
     // An element holding the click points of smaller targets is a container
     // (toolbar strip, row group), not something to click. A plain row or cell
@@ -1687,32 +2076,24 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     // dialogs and menus on the page that leave part of it free (a web app
     // that is one big dialog covers nothing). An overlay's content is the
     // run of elements after it in tree order that touch it.
-    if (document_count > 0 && raw) {
-        int page = 0, d, k;
-        LONG64 page_area = 0;
-        for (d = 0; d < document_count; ++d) {
-            RECT on;
-            LONG64 area = IntersectRect(&on, &documents[d], monitor)
-                              ? rect_area(&on) : 0;
-            if (area > page_area) {
-                page_area = area;
-                page = d;
-            }
-        }
-        for (d = 0; d < document_count && ov_count < 32; ++d) {
+    if (lay.document_count > 0 && raw) {
+        int page, d, k;
+        LONG64 page_area;
+        page = page_document(&lay, monitor, &page_area);
+        if (page < 0)
+            page = 0;
+        for (d = 0; d < lay.document_count && ov_count < 32; ++d) {
             if (d == page || rect_area(&documents[d]) <= 0)
                 continue;
             ovs[ov_count].rc = documents[d];
-            ovs[ov_count].order = doc_order[d];
+            ovs[ov_count].order = lay.doc_order[d];
             ovs[ov_count].drops = FALSE;
             ++ov_count;
         }
-        for (k = 0; k < popup_count && ov_count < 32; ++k) {
-            RECT inter;
-            if (!IntersectRect(&inter, &popups[k].rc, &documents[page]) ||
-                rect_area(&popups[k].rc) * 10 >= page_area * 9)
+        for (k = 0; k < lay.popup_count && ov_count < 32; ++k) {
+            if (!popup_on_page(&lay.popups[k].rc, &documents[page], page_area))
                 continue;
-            ovs[ov_count++] = popups[k];
+            ovs[ov_count++] = lay.popups[k];
         }
         for (k = 0; k < ov_count; ++k) {
             int e = ovs[k].order + 1;

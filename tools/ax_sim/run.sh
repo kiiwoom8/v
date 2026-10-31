@@ -10,6 +10,10 @@
 #
 #   tools/ax_sim/run.sh google.html?xs=1 '[{"click":"#avatar"},{"wait":1500}]'
 #   OLD=fac3443 tools/ax_sim/run.sh zendesk.html '[{"click":"#views"},{"wait":1200}]'
+#   INPUT=tools/ax_sim/pages/google_menu_win.txt OLD=HEAD tools/ax_sim/run.sh
+#
+# INPUT=<file> skips Chromium and replays a saved simulation input (conv.py's
+# format), such as one written down from a Windows log = 2 scan.
 #
 # A bare page name is served from tools/ax_sim/pages on http://localhost:8001;
 # the same files on http://127.0.0.1:8002 make a cross-site iframe
@@ -22,6 +26,9 @@ ROOT=$(cd "$HERE/../.." && pwd)
 WORK=${AX_WORK:-${TMPDIR:-/tmp}/ax_sim}
 mkdir -p "$WORK"
 
+if [ -n "$INPUT" ]; then
+    cp "$INPUT" "$WORK/input.txt"
+else
 # Python with the gi module (it is built for the system's own Python).
 if [ -z "$AX_PYTHON" ]; then
     for p in python3 /usr/bin/python3 python3.12 python3.11; do
@@ -67,6 +74,7 @@ URL=$1
 [[ "$URL" == *://* ]] || URL="http://localhost:8001/$URL"
 NODE_PATH=${NODE_PATH:-$(npm root -g)} node "$HERE/run.cjs" "$URL" "${2:-[]}" > "$WORK/tree.txt"
 python3 "$HERE/conv.py" < "$WORK/tree.txt" > "$WORK/input.txt"
+fi
 
 sim() {  # sim <uia.c> <name>: builds and runs the simulation of that uia.c
     python3 "$HERE/mk.py" "$1" "$WORK/$2.c"

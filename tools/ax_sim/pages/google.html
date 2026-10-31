@@ -45,7 +45,11 @@ function hide(){
 function show(){
   if (mode==='create' && !pop.firstChild) makeFrame();
   if (mode==='ogs') pop.setAttribute('aria-hidden','false');
-  pop.style.display=''; pop.style.visibility=''; pop.style.left=''; pop.style.right='8px'; pop.style.height='460px';
+  pop.style.display=''; pop.style.visibility=''; pop.style.left=''; pop.style.right='8px';
+  // late=ms: the height comes that much later, as Google's does once the
+  // frame has said how tall it is
+  const late = Number(q.get('late') || 0);
+  if (late) setTimeout(() => { pop.style.height='460px'; }, late); else pop.style.height='460px';
   if (anim) { requestAnimationFrame(()=>{ pop.style.opacity='1'; pop.style.transform='scale(1)'; }); }
 }
 if (mode!=='create') makeFrame();

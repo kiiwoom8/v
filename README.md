@@ -131,7 +131,10 @@ passed: the labels then sit where things are now, and a panel the click
 opened has its own. A menu, dialog or embedded frame drawn over a web page
 (Google's account menu, a Zendesk menu or modal) gets its own labels; page
 links partly under it get their label and click on the part that shows, and
-links entirely under a menu or dialog get none. Hints work
+links entirely under a menu or dialog get none. Chrome sometimes reports
+nearly everything inside an open web menu or dialog as off screen (Google's
+account menu: all its rows); when such a menu or dialog shows almost
+nothing of its own, vim mouse labels what lies inside it anyway. Hints work
 on open menus and flyouts too: while a menu is open vim mouse holds back the
 hotkey's Alt, so the menu stays open.
 
@@ -333,7 +336,9 @@ when GitHub cannot be reached.
   remote desktops, custom-drawn apps), so the hints close again. Set
   `hint_mode = grid` to open the grid there instead.
   `mingw32-make probe` builds `tools\uia_probe.exe`, which lists what the scan
-  finds on the monitor under the cursor (`-v` for every element).
+  finds on the monitor under the cursor (`-v` for every element; `-d` for
+  the `log = 2` lines below without pressing the hotkey, `-w 5` to wait
+  5 s first, `-o file` to write to a file).
 - **Few labels the first time in Chrome, Edge or an Electron app.** These build
   their accessibility tree only when first asked. vim mouse asks each window
   you switch to in the background, so this only happens in a window that was
@@ -349,7 +354,9 @@ when GitHub cannot be reached.
   the lines starting with `scan:`. Each element of the active window is
   listed with its position, size and name, and either `kept` or why it was
   left out: `offscreen (UI Automation)` or `disabled (UI Automation)` (the
-  app itself hides it from UI Automation), `hidden by a window` (another
+  app itself hides it from UI Automation; `offscreen per Chromium, taken
+  back into its dialog or menu` means vim mouse labels it anyway, see
+  above), `hidden by a window` (another
   window is on top of it; the window lines above say which), `under a
   dialog or menu`, `container`, `too small` and so on (`kept, moved off an
   overlay` is a page element partly under a panel, clicked on the part that
