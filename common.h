@@ -150,6 +150,9 @@ typedef struct {
     COLORREF label_border;     // default #7A5C00
     COLORREF match_fg;         // already-typed chars, default #9C7A10
     int   hint_mode;           // HINT_MODE_*: what the hotkey opens first, default elements
+    UINT  key_grid;            // ;  while the hints are open, switches between the element
+                               // labels and the grid (0 = off); the hotkey again reloads
+                               // what it opened
     int   scan_scope;          // SCAN_MONITOR: every visible window on the monitor (default)
                                // SCAN_WINDOW: only the foreground window and the taskbar
     int   scan_timeout;        // how long to wait for every window's elements before

@@ -47,6 +47,9 @@
 #define TIMER_SCAN_ID   2
 #define TIMER_REFRESH_ID 3
 #define TIMER_SETTLE_ID 4
+#define TIMER_ACT_ID    5
+#define ACT_POLL_MS     10
+#define ACT_WAIT_MAX_MS 3000
 #define REFRESH_RETRY_MS 200
 #define MAX_MONITORS    16
 #define MAX_TARGETS     2000
@@ -241,6 +244,14 @@ static int       g_mon_count;
 static RECT      g_last_show;
 static BOOL      g_last_show_valid;
 
+// A click typed with Shift or Ctrl held (right, double or middle click),
+// waiting for those keys to come up before it is sent (see click_when_free).
+static BOOL      g_act_pending;
+static POINT     g_act_pt;
+static int       g_act_button;
+static int       g_act_count;
+static DWORD     g_act_t0;
+
 static void finalize_scan(void);
 static void reset_input(void);
 static void handle_key(UINT vk, UINT mods);
@@ -252,6 +263,10 @@ static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
 static void schedule_refresh(void);
 static void start_refresh_scan(void);
+static void enter_grid_mode(void);
+static void start_element_mode(void);
+static BOOL mods_held(void);
+static void act_flush(void);
 static void begin_scan(void);
 static void merge_scan(ClickList *list);
 static BOOL scan_ready(const ClickList *list);
@@ -1407,6 +1422,24 @@ static BOOL element_status_overlaps(RECT br)
     return FALSE;
 }
 
+// The modifier that picks the click kind has to be known before the label is
+// typed: most labels are one letter, so it is shown while nothing is typed.
+#define STATUS_KINDS L"Shift: right " DOT L" Ctrl: double " DOT \
+                     L" Ctrl+Shift: middle " DOT L" Alt: move only"
+
+// " · <key>: grid" or " · <key>: labels", or nothing without a grid key.
+static void status_grid_key(WCHAR *buf, const WCHAR *what)
+{
+    WCHAR gk[32];
+
+    if (g_cfg.key_grid == 0) return;
+    format_key(g_cfg.key_grid, gk, 32);
+    lstrcatW(buf, L" " DOT L" ");
+    lstrcatW(buf, gk);
+    lstrcatW(buf, L": ");
+    lstrcatW(buf, what);
+}
+
 static void build_status(WCHAR *buf, int cch)
 {
     BOOL drop = input_left_button_held();
@@ -1421,19 +1454,25 @@ static void build_status(WCHAR *buf, int cch)
         if (g_scanning) {
             lstrcatW(buf, L"Finding clickable elements " DOT L" ");
             lstrcatW(buf, hk);
-            lstrcatW(buf, L" again: reload " DOT L" Esc cancel");
+            lstrcatW(buf, L" again: reload");
+            status_grid_key(buf, L"grid");
+            lstrcatW(buf, L" " DOT L" Esc cancel");
             return;
         }
         if (drop) lstrcatW(buf, L"Drop target: ");
         if (g_prefix_len == 0) {
-            lstrcatW(buf, L"Type a label " DOT L" ");
+            lstrcatW(buf, L"Type a label");
+            if (!drop) lstrcatW(buf, L" " DOT L" " STATUS_KINDS);
+            lstrcatW(buf, L" " DOT L" ");
             lstrcatW(buf, hk);
-            lstrcatW(buf, L" again: reload " DOT L" Esc cancel");
+            lstrcatW(buf, L" again: reload");
+            status_grid_key(buf, L"grid");
+            lstrcatW(buf, L" " DOT L" Esc cancel");
         } else {
             lstrcatW(buf, g_prefix);
             lstrcatW(buf, L"_ " DOT L" Backspace undo");
             if (!drop)
-                lstrcatW(buf, L" " DOT L" Shift: right " DOT L" Ctrl: double");
+                lstrcatW(buf, L" " DOT L" " STATUS_KINDS);
         }
         return;
     }
@@ -1441,8 +1480,9 @@ static void build_status(WCHAR *buf, int cch)
     if (drop) lstrcatW(buf, L"Drop target: ");
 
     if (g_state == 0) {
-        lstrcatW(buf, L"Type a label " DOT L" Esc cancel "
-                      DOT L" Tab next screen");
+        lstrcatW(buf, L"Type a label");
+        if (uia_available()) status_grid_key(buf, L"labels");
+        lstrcatW(buf, L" " DOT L" Esc cancel " DOT L" Tab next screen");
     } else if (g_state == 1) {
         wsprintfW(tmp, L"%c_", (WCHAR)g_cfg.alphabet[g_row]);
         lstrcatW(buf, tmp);
@@ -1457,7 +1497,8 @@ static void build_status(WCHAR *buf, int cch)
         } else {
             lstrcatW(buf, L" " DOT L" subgrid key: click there "
                           DOT L" Enter: centre " DOT L" Space: move only "
-                          DOT L" Shift: right " DOT L" Ctrl: double");
+                          DOT L" Shift: right " DOT L" Ctrl: double "
+                          DOT L" Ctrl+Shift: middle");
         }
     }
 }
@@ -1891,6 +1932,12 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (wp == TIMER_SETTLE_ID) {
             KillTimer(hwnd, TIMER_SETTLE_ID);
             settle_step(FALSE);
+        } else if (wp == TIMER_ACT_ID) {
+            if (!g_act_pending)
+                KillTimer(hwnd, TIMER_ACT_ID);
+            else if (!mods_held() ||
+                     GetTickCount() - g_act_t0 >= ACT_WAIT_MAX_MS)
+                act_flush();
         } else if (wp == TIMER_SCAN_ID) {
             KillTimer(hwnd, TIMER_SCAN_ID);
             if (!g_scanning) return 0;
@@ -1992,21 +2039,78 @@ static void flash_invalid(void)
     }
 }
 
+static BOOL mods_held(void)
+{
+    return (GetAsyncKeyState(VK_SHIFT) & 0x8000) ||
+           (GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
+           (GetAsyncKeyState(VK_MENU) & 0x8000);
+}
+
+static void act_flush(void)
+{
+    if (!g_act_pending) return;
+    g_act_pending = FALSE;
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_ACT_ID);
+    mouse_click_at(g_act_pt, g_act_button, g_act_count);
+}
+
+// Sends the click once Shift, Ctrl and Alt are up. The user is still holding
+// the modifier that chose the click kind when the label completes, and apps
+// read the modifier state when the click arrives: with Ctrl down, Explorer
+// toggles the selection instead of opening and a browser opens the link in a
+// new tab (twice, for a double click); with Shift down, Explorer's right
+// click shows its extended menu. The overlay's own window polls every 10 ms
+// and gives up waiting after 3 s (a stuck key must not lose the click).
+static void click_when_free(POINT pt, int button, int count)
+{
+    if (!g_hint_wnd || !mods_held()) {
+        mouse_click_at(pt, button, count);
+        return;
+    }
+    g_act_pending = TRUE;
+    g_act_pt = pt;
+    g_act_button = button;
+    g_act_count = count;
+    g_act_t0 = GetTickCount();
+    SetTimer(g_hint_wnd, TIMER_ACT_ID, ACT_POLL_MS, NULL);
+}
+
 static void act_at(POINT pt, UINT mods)
 {
     // The overlay and capture must be gone before any synthetic input.
     hint_close();
 
-    if (input_left_button_held()) {
+    // A drop target, or Alt + label: move the pointer there and no more (to
+    // hover something, or to scroll that area with the Alt keys next).
+    if (input_left_button_held() || (mods & KMOD_ALT)) {
         mouse_move_to(pt);
         return;
     }
-    if (mods & KMOD_SHIFT)
-        mouse_click_at(pt, BTN_RIGHT, 1);
+    if ((mods & (KMOD_CTRL | KMOD_SHIFT)) == (KMOD_CTRL | KMOD_SHIFT))
+        click_when_free(pt, BTN_MIDDLE, 1);
+    else if (mods & KMOD_SHIFT)
+        click_when_free(pt, BTN_RIGHT, 1);
     else if (mods & KMOD_CTRL)
-        mouse_click_at(pt, BTN_LEFT, 2);
+        click_when_free(pt, BTN_LEFT, 2);
     else
         mouse_click_at(pt, BTN_LEFT, 1);
+}
+
+static BOOL is_grid_key(UINT vk)
+{
+    return g_cfg.key_grid != 0 && vk == g_cfg.key_grid;
+}
+
+// The grid key: the grid instead of the labels (an app whose elements got
+// none), or the labels back. The hotkey again still reloads what it opened.
+static void toggle_view(void)
+{
+    if (g_mode == HINT_MODE_ELEMENTS)
+        enter_grid_mode();
+    else if (uia_available())
+        start_element_mode();
+    else
+        flash_invalid();
 }
 
 static void reset_input(void)
@@ -2659,6 +2763,10 @@ static void element_key(UINT vk, UINT mods)
         cycle_monitor(mods);
         return;
     }
+    if (is_grid_key(vk)) {
+        toggle_view();
+        return;
+    }
     if (vk == VK_BACK) {
         if (g_prefix_len > 0) {
             --g_prefix_len;
@@ -2869,6 +2977,7 @@ void hint_shutdown(void)
     cancel_scan();
     free_elements();
     reset_input();
+    g_act_pending = FALSE;
     g_open = FALSE;
     destroy_resources();
     free_back_buffer();
@@ -3045,6 +3154,10 @@ static void grid_key(UINT vk, UINT mods)
         cycle_monitor(mods);
         return;
     }
+    if (is_grid_key(vk)) {
+        toggle_view();
+        return;
+    }
     if (vk == VK_BACK) {
         if (g_state == 2) {
             g_state = 1;
@@ -3136,6 +3249,11 @@ void hint_on_key(UINT vk, UINT mods)
         if (vk == VK_ESCAPE) {
             cancel_scan();
             hint_close();
+            return;
+        }
+        // The grid at once, not after a scan that may be finding nothing.
+        if (is_grid_key(vk)) {
+            toggle_view();
             return;
         }
         if (g_queue_count < MAX_QUEUED_KEYS) {

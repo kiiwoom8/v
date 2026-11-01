@@ -1523,6 +1523,9 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
         s_owner[vk] = OWN_SWALLOW;
         if (vk == VK_ESCAPE)
             flag_set(&s_capture, FALSE);
+        // The hints used this Alt (Alt + label moves the pointer only), so
+        // its release must not be replayed as a tap once they have closed.
+        s_alt_consumed = TRUE;
         post_main(WM_APP_HINT_KEY, vk, mods);
         return TRUE;
     }
@@ -1579,6 +1582,10 @@ static BOOL handle_down(UINT vk)
         // the UI thread never processes the close.
         if (vk == VK_ESCAPE)
             flag_set(&s_capture, FALSE);
+        // An Alt the app has seen (the right Alt, or no Alt hotkey to
+        // withhold for): the mask keeps its release from opening a menu bar.
+        if (mods & (KMOD_ALT | KMOD_WIN))
+            send_mask_key();
         post_main(WM_APP_HINT_KEY, vk, mods);
         return TRUE;
     }

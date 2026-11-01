@@ -875,21 +875,26 @@ static void build_help_rows(void)
     help_add_header(L"Hint mode");
     help_add_row(L"type the label", L"Click the element showing it");
     help_add_row(L"Shift / Ctrl + label", L"Right click / double click");
+    help_add_row(L"Ctrl+Shift + label", L"Middle click");
+    help_add_row(L"Alt + label", L"Move the pointer there, no click");
+    if (g_cfg.key_grid)
+        help_add_key(g_cfg.key_grid, L"Grid instead of labels, and back");
+    help_add_row(L"Tab / Shift+Tab", L"Next / previous monitor");
     format_hotkey(&g_cfg.hint_hotkey, mode, 64);
     _snwprintf(buf, 127, L"%s again", mode);
     buf[127] = L'\0';
     help_add_row(buf, L"Rescan (Esc closes)");
 
-    // The grid opens only with hint_mode = grid.
-    if (g_cfg.hint_mode != HINT_MODE_GRID)
+    // The grid opens with hint_mode = grid or the grid key.
+    if (g_cfg.hint_mode != HINT_MODE_GRID && !g_cfg.key_grid)
         return;
     help_add_header(L"Grid");
     help_add_row(L"row letter, column letter", L"Pick a grid cell");
     help_add_row(L"subgrid key", L"Pick a point inside the cell");
     help_add_row(L"Enter", L"Click the cell centre");
     help_add_row(L"Space", L"Move the cursor only");
-    help_add_row(L"Shift + final key", L"Right click");
-    help_add_row(L"Ctrl + final key", L"Double click");
+    help_add_row(L"Shift / Ctrl + final key", L"Right click / double click");
+    help_add_row(L"Ctrl+Shift + final key", L"Middle click");
     help_add_row(L"Backspace", L"Undo one step");
     help_add_row(L"Tab / Shift+Tab", L"Next / previous monitor");
     help_add_row(L"Esc", L"Cancel");

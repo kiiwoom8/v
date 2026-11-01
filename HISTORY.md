@@ -34,7 +34,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `main.c` | 566 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2164 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey` |
 | `input.c` | 3518 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted`, `input_thread_proc` |
-| `hint.c` | 3214 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up, live refresh merging, monitor cycling. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_begin`, `settle_step`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay` |
+| `hint.c` | 3214 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up, live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_begin`, `settle_step`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
 | `uia.c` | 6001 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1389 | Tray icon and menu, balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
@@ -261,6 +261,14 @@ Invariants stated in `common.h` and enforced by history:
   physical scrolls, and a browser's labels no longer wait for the other
   windows (`browser_first`). `capslock_off` keeps the CapsLock state off
   from the input thread, where the hook cannot see the key.
+- Asked to make the program more convenient, the hint overlay got what
+  the Alt keys and the status bar could not offer before: `;` switches
+  between the labels and the grid while the hints are open (an app whose
+  element got no label no longer needs `hint_mode = grid` in `vim.ini`),
+  `Alt` + label moves the pointer without clicking, `Ctrl+Shift` + label
+  middle-clicks (a link into a new browser tab), and a right, double or
+  middle click waits for Shift and Ctrl to come up, since apps read the
+  modifier state when the click arrives.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -467,6 +475,21 @@ last ten are all `worktree-agent-*` into `element-hints`.
   an administrator window: 0.5 to 8 s, reset on a foreground change), and
   leaves it alone while paused or suspended. The hook ignores the injected
   tap like every injected key.
+- **A synthetic click inherits the modifiers the user is still holding.**
+  The hints' `Shift` + label and `Ctrl` + label fire on the label's key
+  down, while the modifier is still physically down, and apps read
+  `GetKeyState` when the click arrives: Explorer toggled the selection
+  instead of opening on the double click, a browser opened the Ctrl-clicked
+  link in a new tab (twice), and Shift + right click showed Explorer's
+  extended menu. `click_when_free` in `hint.c` keeps the click until Shift,
+  Ctrl and Alt are up (a 10 ms timer on the hidden overlay window, 3 s at
+  most so a stuck key cannot lose the click). Only the plain click goes at
+  once. Any new modifier-chosen click goes through it; never inject a
+  modifier release to get there (the rule above). The hook already reports
+  a withheld Alt in `mods`, which is how `Alt` + label (move only) arrives;
+  a key typed into the hints marks that Alt consumed (`alt_resolve`), or
+  its release would be replayed as a tap into the app once the hints
+  closed, and a seen Alt or Win gets the mask key like a hotkey.
 - **Queued keys must go through the same handler as live keys.** `80970eb`:
   keys typed during a scan are replayed through `hint_on_key`, so the ones
   after a Tab wait for the new monitor's scan.
@@ -724,6 +747,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
   nothing outstanding and leave for good, so the scan never ended (queue
   first, then publish `g_job`); and a part UI Automation could not answer
   must leave the rest of the window labelled (`partial`), not blank it.
+- **The grid key is read before the label letters, even during the scan.**
+  `is_grid_key` is tested in `hint_on_key` ahead of the key queue, so `;`
+  opens the grid at once in an app whose scan is finding nothing (the keys
+  typed before it are dropped with the scan). A label character set as
+  `key_grid` could never be typed, so `config.c` `check_grid_key` warns
+  after the whole file is read (the alphabet may come later in the file).
+  The hotkey again still reloads what the hotkey opened (`g_start_mode`),
+  not the view the user switched to.
 - **A full label code cannot take late elements.** Vimium-style labelling
   uses the whole code space, and `keep_labels` may not lengthen a shown
   label, so before `515eb02` an element that appeared during the open got
@@ -851,6 +882,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
 | In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
 | A classic window's parts are searched at the same time and the title bar's system menu gets no label (`scan_split = 0` restores) | `03cb03e` | One search per window |
+| `;` switches between the element labels and the grid while the hints are open (`key_grid = none` restores) | 2026-11-02 | The grid only with `hint_mode = grid` |
+| A right, double or middle hint click is sent once Shift and Ctrl are up; `Alt` + label moves only; `Ctrl+Shift` + label middle-clicks | 2026-11-02 | Clicks sent with the modifier still down (Ctrl+click semantics in the app) |
 | Bare keys outside text fields (`bare_keys = 0` restores) | `b474c89` | Alt always needed |
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
 | Settings next to the exe, else `%APPDATA%\vim mouse` | `e04d6a0` | Exe folder only |
@@ -934,7 +967,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
 6. `README.md`: the Keys tables, Settings, and Troubleshooting if it takes a
    letter away from apps.
 
-`6622ce0` is the reference example: it touched all of these.
+`6622ce0` is the reference example: it touched all of these. A key of the
+hint overlay (`key_grid`) lives in `[hints]` instead: `process_hints`, the
+`[hints]` part of `build_default_ini`, `hint.c` `element_key` / `grid_key` /
+`hint_on_key` and `build_status`, and the "Hint mode" rows of the help.
 
 ### Add a setting
 
@@ -1031,7 +1067,7 @@ Version: `version.h` only (numbers and both strings). Icon: edit
 - Every new behaviour gets a setting to turn it off (`prescan`,
   `smooth_scroll`, `bare_keys`, `alt_nav`, `alt_scroll_auto`, `scan_refresh`,
   `keep_labels`, `scan_settle = 0`, `scroll_end_tap_ms = 0`,
-  `shortcut_method = type`).
+  `shortcut_method = type`, `key_grid = none`).
 - README, help window, default `vim.ini` and the `common.h` comments change
   in the same commit as the behaviour.
 - Comments explain *why* (often with the app that forced the rule); match

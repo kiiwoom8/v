@@ -579,6 +579,7 @@ void config_set_defaults(Config *c)
     c->label_border = RGB(0x7A, 0x5C, 0x00);
     c->match_fg = RGB(0x9C, 0x7A, 0x10);
     c->hint_mode = HINT_MODE_ELEMENTS;
+    parse_key(L";", &c->key_grid);
     c->scan_scope = SCAN_MONITOR;
     c->scan_timeout = 400;
     c->scan_refresh = 500;
@@ -905,7 +906,9 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         else
             warn_add(line, L"bad value \"%ls\" for \"hint_mode\" "
                      L"(use elements or grid)", val);
-    } else if (_wcsicmp(key, L"scan_scope") == 0) {
+    } else if (_wcsicmp(key, L"key_grid") == 0)
+        apply_key(&c->key_grid, line, key, val);
+    else if (_wcsicmp(key, L"scan_scope") == 0) {
         if (_wcsicmp(val, L"monitor") == 0)
             c->scan_scope = SCAN_MONITOR;
         else if (_wcsicmp(val, L"window") == 0)
@@ -1545,6 +1548,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; labels) or grid. Another hotkey press reloads it.\r\n");
     appendf(buf, cch, L"hint_mode = %ls\r\n",
             d.hint_mode == HINT_MODE_GRID ? L"grid" : L"elements");
+    appendf(buf, cch, L"; While the hints are open, this key switches between the element\r\n");
+    appendf(buf, cch, L"; labels and the grid (for an app whose elements get no labels).\r\n");
+    appendf(buf, cch, L"; none = off.\r\n");
+    format_key(d.key_grid, key, (int)(sizeof(key) / sizeof(key[0])));
+    appendf(buf, cch, L"key_grid = %ls\r\n", key);
     appendf(buf, cch, L"; Element scan scope: monitor (every visible window) or window\r\n");
     appendf(buf, cch, L"; (only the active window and the taskbar).\r\n");
     appendf(buf, cch, L"scan_scope = %ls\r\n",
@@ -1960,6 +1968,31 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
 // ---------------------------------------------------------------------------
 // Load
 
+// The grid key is handled before the label letters, so a label character set
+// as key_grid could never be typed: say so, once the whole file is in.
+static void check_grid_key(const Config *c)
+{
+    WCHAR ch;
+    const WCHAR *p;
+
+    if (c->key_grid == 0)
+        return;
+    ch = lower_ascii((WCHAR)(MapVirtualKeyW(c->key_grid, MAPVK_VK_TO_CHAR) &
+                             0xFFFF));
+    if (ch == 0)
+        return;
+    for (p = c->alphabet; *p; p++)
+        if (lower_ascii(*p) == ch)
+            break;
+    if (*p == 0 && ch != L'/')
+        for (p = c->subgrid_keys; *p; p++)
+            if (lower_ascii(*p) == ch)
+                break;
+    if (*p)
+        warn_add(0, L"key_grid \"%lc\" is also a label character: it switches "
+                 L"the view, so that label cannot be typed", ch);
+}
+
 BOOL config_load(Config *c, BOOL *created)
 {
     const WCHAR *path;
@@ -2017,6 +2050,7 @@ BOOL config_load(Config *c, BOOL *created)
         p = e;
     }
     free(text);
+    check_grid_key(c);
     sc_commit();
     return TRUE;
 }

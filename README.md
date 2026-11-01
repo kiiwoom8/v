@@ -3,8 +3,8 @@
 vim mouse is a tiny Windows tray program that lets you drive the mouse pointer
 entirely from the keyboard. Tap CapsLock for mouse mode and move with `hjkl`,
 or press Alt+F to open click hints: labels appear on the clickable elements of
-the screen and one or two keypresses move the pointer and click one (or, with
-`hint_mode = grid`, a labelled grid that can click anywhere). It runs
+the screen and one or two keypresses move the pointer and click one (or press
+`;` for a labelled grid that can click anywhere). It runs
 in the background with no console window, is configured by a plain-text
 `vim.ini` next to the executable (or in `%APPDATA%\vim mouse` when that folder
 is read-only), and reloads that file as soon as you save it.
@@ -159,20 +159,29 @@ hotkey's Alt, so the menu stays open.
 | label | Click the element showing that label |
 | `Shift` + label | Right click instead of left click |
 | `Ctrl` + label | Double click |
+| `Ctrl+Shift` + label | Middle click (a link opens in a new browser tab) |
+| `Alt` + label | Move the pointer there without clicking (hover something, or scroll that area with `Alt+j` / `Alt+k` next) |
 | `Enter` / `Space` | Act on / move to the only matching element |
 | `Backspace` | Undo one typed character |
+| `;` | Switch to the [grid](#grid), for an element that got no label; `;` again returns to the labels (`key_grid`) |
 | `Tab` / `Shift+Tab` | Move to the next / previous monitor and rescan |
 | hotkey again | Rescan the monitor now (labels also update by themselves) |
 | `Esc` | Cancel |
 
+A right, double or middle click is sent once Shift and Ctrl are released, so
+the app sees a plain click (with Ctrl still down, Explorer would only toggle
+the selection and a browser would open the link in a new tab).
+
 If an app does not expose UI Automation (some games, remote desktops,
 custom-drawn apps) the scan finds nothing and the hints close again; the grid
-never opens by itself.
+never opens by itself, but `;` opens it while the hints are up, even while
+they are still searching.
 
 #### Grid
 
 With `hint_mode = grid` the hotkey opens the grid instead of the element
-labels. The grid labels every cell of the monitor. Each cell has a two-letter label:
+labels; `;` (`key_grid`) switches to it from the labels at any time, and back.
+The grid labels every cell of the monitor. Each cell has a two-letter label:
 **row letter + column letter**, like spreadsheet coordinates, so column letters
 line up vertically.
 
@@ -185,7 +194,10 @@ line up vertically.
 | `Space` | Move the cursor to the cell centre and close (no click) |
 | `Shift` + final key | Right click instead of left click |
 | `Ctrl` + final key | Double click |
+| `Ctrl+Shift` + final key | Middle click |
+| `Alt` + final key | Move the cursor only |
 | `Backspace` | Undo one step |
+| `;` | Back to the element labels |
 | `Tab` / `Shift+Tab` | Move the overlay to the next / previous monitor |
 | `Esc` | Cancel |
 
@@ -278,6 +290,8 @@ ones:
   `scroll_end_tap_ms` (two `g` taps within this many ms scroll to the top,
   0-1000, default 300; 0 = `g g` and `Shift+g` off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
+  `key_grid` (the key that switches between the element labels and the grid
+  while the hints are open, default `;`; `none` = off),
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for every window's elements before showing the ones
   found so far. The active window's elements are always waited for, up to
@@ -366,8 +380,9 @@ when GitHub cannot be reached.
 - **Hints on an open menu.** They work: while a menu or flyout is open vim
   mouse holds back the hotkey's Alt, so the menu stays open.
 - **An app shows no labels.** It does not expose UI Automation (some games,
-  remote desktops, custom-drawn apps), so the hints close again. Set
-  `hint_mode = grid` to open the grid there instead.
+  remote desktops, custom-drawn apps), so the hints close again. Press `;`
+  while they are open to use the grid there, or set `hint_mode = grid` to
+  open the grid first.
   `mingw32-make probe` builds `tools\uia_probe.exe`, which lists what the scan
   finds on the monitor under the cursor (`-v` for every element; `-d` for
   the `log = 2` lines below without pressing the hotkey, `-w 5` to wait
