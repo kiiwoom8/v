@@ -92,6 +92,10 @@ typedef struct {
     Hotkey pause_hotkey;       // default unbound
     Hotkey lock_hotkey;        // default Ctrl+Alt+L; locks / unlocks the keyboard
     UINT   mouse_mode_key;     // default VK_CAPITAL; tap toggles, hold = momentary
+    int    capslock_off;       // 1 = the CapsLock state is kept off while the program runs
+                               // (not while paused): turned off at start and whenever it
+                               // comes on (Shift+CapsLock, an admin window, the lock
+                               // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    log;                // 1 = also write log lines to vim.log; 2 = also what each
                                // hint open's scan made of every element of the active

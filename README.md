@@ -37,13 +37,18 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
-| `Shift+CapsLock` | Real CapsLock (passes through) |
+| `Shift+CapsLock` | Nothing: the CapsLock state stays off (with `capslock_off = 0`, the real CapsLock) |
 | `Ctrl+Alt+Q` | Quit |
 | `Ctrl+Alt+L` | Lock the keyboard: every key is ignored until `Ctrl+Alt+L` is pressed again |
 | pause hotkey (unbound by default) | Pause / resume everything |
 
 CapsLock no longer changes the CapsLock state, so no more accidental
-UPPERCASE text. Hotkeys are configurable in `vim.ini`.
+UPPERCASE text. While vim mouse runs the CapsLock state is kept off
+(`capslock_off = 1`, the default): if it is on when vim mouse starts, or
+comes on where vim mouse cannot see the key (a window running as
+administrator, the lock screen, while paused), vim mouse turns it off again
+within a quarter of a second (once you are back in a normal window, or no
+longer paused). Hotkeys are configurable in `vim.ini`.
 
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
@@ -246,6 +251,9 @@ created on first run documents every option with a comment. The most useful
 ones:
 
 - `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `lock_hotkey`, `mouse_mode_key`
+- `capslock_off` (1 = keep the CapsLock state off while vim mouse runs, not
+  while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
+  off)
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
@@ -397,8 +405,11 @@ when GitHub cannot be reached.
   mouse (`f h j k l u d g` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either
   (see above).
-- **I need the real CapsLock.** vim mouse intercepts CapsLock; use
-  `Shift+CapsLock` when you really want the CapsLock state.
+- **I need the real CapsLock.** vim mouse keeps the CapsLock state off. Set
+  `capslock_off = 0`, then `Shift+CapsLock` turns the real CapsLock on and
+  off. If Windows is set to turn Caps Lock off with the Shift key (Settings,
+  Time & language, Typing, Advanced keyboard settings, Input language hot
+  keys), vim mouse cannot turn it off; `vim.log` says so with `log = 1`.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
   (it writes a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
 - **Something is wrong.** Set `log = 1` in `vim.ini` and read `vim.log` in the

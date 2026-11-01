@@ -436,6 +436,24 @@ last ten are all `worktree-agent-*` into `element-hints`.
   release. The same rule holds for scroll streams: "a release after that
   stops at once" (`3615694`).
 - **Act on CapsLock press, not release** (`0bb6577`).
+- **Keep the CapsLock state off from the input thread, not only the hook.**
+  `capslock_off` (default 1): the hook swallows every CapsLock press it
+  sees (the mouse-mode key, and with it Shift, Ctrl or Alt + CapsLock, which
+  used to pass through as the real CapsLock). The state still comes on
+  where the hook is blind: a window running as administrator gets keys a
+  normal process's hook never sees, the lock screen, a paused program, or
+  CapsLock already on at start. So a timer on the power window
+  (`CAPS_CHECK_MS`, 250 ms) and a post from the hook on every CapsLock or
+  modifier key-up (`caps_check_soon`) run `caps_check`, which taps
+  CapsLock off with `SendInput`. Rules it follows: it reads `GetKeyState`
+  (a thread that receives no keyboard input gets the current toggle state:
+  Windows resyncs it on the call), never taps while a modifier is held
+  (`caps_mods_held`; the key just released may still read as down), never
+  injects Shift (with Windows set to turn Caps Lock off by Shift, it logs
+  and gives up), backs off when a tap leaves it on (Windows drops input to
+  an administrator window: 0.5 to 8 s, reset on a foreground change), and
+  leaves it alone while paused or suspended. The hook ignores the injected
+  tap like every injected key.
 - **Queued keys must go through the same handler as live keys.** `80970eb`:
   keys typed during a scan are replayed through `hint_on_key`, so the ones
   after a Tab wait for the new monitor's scan.
@@ -751,7 +769,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 |---|---|---|
 | `Alt+F` opens hints | `8f5d19c` | `Shift+F` |
 | Hotkeys are matched in the low-level hook | `fe00e2b`, `0ebf562` | `RegisterHotKey` in `vim.c` |
-| CapsLock tap toggles mouse mode, hold is momentary; `Shift+CapsLock` is the real CapsLock | phase 1, `0bb6577` | CapsLock *state* meant mouse mode |
+| CapsLock tap toggles mouse mode, hold is momentary | phase 1, `0bb6577` | CapsLock *state* meant mouse mode |
+| The CapsLock state stays off while vim mouse runs; `Shift+CapsLock` does nothing (`capslock_off = 0` restores it as the real CapsLock) | `capslock_off` | `Shift+CapsLock` was the real CapsLock, and the state stayed on after an administrator window or the lock screen until turned off by hand |
 | Hints label UIA elements; the grid opens only with `hint_mode = grid` | `64a5805`, `e51fecb` | Grid only (phase 0 and 1); grid as automatic fallback (`64a5805` to `1e8677d`) |
 | A scan that finds nothing retries up to 3 s, then closes the hints | `8b0a194`, `e51fecb` | Opening the grid |
 | Hotkey again rescans (and forgets slow-window skips) | `1e8677d`, `729e682` | Opening the grid |

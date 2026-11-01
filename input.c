@@ -73,9 +73,20 @@ BOOL WINAPI WTSUnRegisterSessionNotification(HWND hWnd);
 UINT WINAPI timeBeginPeriod(UINT uPeriod);
 UINT WINAPI timeEndPeriod(UINT uPeriod);
 
+#ifndef KLF_SHIFTLOCK
+#define KLF_SHIFTLOCK 0x00010000
+#endif
+
 #define POWER_CLASS L"VimMouseInputPower"
 #define IND_CLASS   L"VimMouseInputIndicator"
 #define IND_TIMER   1
+// capslock_off: the power window checks the CapsLock state this often, and
+// the hook asks for a check at once when CapsLock or a modifier comes up.
+#define CAPS_TIMER       2
+#define CAPS_CHECK_MS    250
+// A tap that left CapsLock on (an administrator window has the focus, so
+// Windows dropped it) is retried after 0.5 s, then 1, 2, 4 and 8 s.
+#define CAPS_RETRY_MS    500
 
 #define IND_KEY_COLOR RGB(255, 0, 255)
 #define IND_BLUE      RGB(0x2D, 0x7F, 0xF9)
@@ -88,6 +99,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_CONFIG      (WM_APP + 22)
 #define WM_INPUT_IND_UPDATE  (WM_APP + 24)
 #define WM_INPUT_SET_LOCKED  (WM_APP + 25)
+#define WM_INPUT_CAPS_CHECK  (WM_APP + 26)  // to s_power_wnd; wParam = key just released
 
 #define MOVE_LEFT  0x01
 #define MOVE_DOWN  0x02
@@ -256,6 +268,14 @@ static LONG  s_kb_calls_seen = 0;
 static int   s_hook_misses = 0;
 static DWORD s_hook_replace_tick = 0;
 static BOOL  s_raw_kb_on = FALSE;
+// capslock_off, input thread only: our last tap that turned CapsLock off
+// (0 = none since it was last seen off), how many taps left it on, the
+// foreground window then, and whether the timer runs.
+static DWORD s_caps_fix_tick = 0;
+static int   s_caps_fix_fails = 0;
+static HWND  s_caps_fix_fg = NULL;
+static BOOL  s_caps_timer_on = FALSE;
+static BOOL  s_caps_shiftlock_logged = FALSE;
 
 #ifdef INPUT_TEST
 static BOOL s_test_mods_on = FALSE;
@@ -1568,6 +1588,14 @@ static BOOL handle_down(UINT vk)
         caps_key_down();
         return TRUE;
     }
+    // capslock_off: a CapsLock press that is not the mouse-mode key (with
+    // Shift, Ctrl or Alt, or with another mouse_mode_key) would turn the
+    // CapsLock state on; it does nothing instead. caps_check catches the
+    // presses this hook never sees.
+    if (vk == VK_CAPITAL && g_cfg.capslock_off) {
+        s_owner[vk] = OWN_SWALLOW;
+        return TRUE;
+    }
     if (flag_get(&s_mouse_mode)) {
         if (mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN)) {
             s_owner[vk] = OWN_PASS;
@@ -1651,6 +1679,157 @@ static BOOL handle_up(UINT vk)
     }
 }
 
+// ---------------------------------------------------------------------------
+// capslock_off: keep the CapsLock state off.
+//
+// The hook swallows CapsLock presses (mouse mode, and every other one in
+// handle_down), yet the state still comes on: a window running as
+// administrator and the lock screen get keys this hook never sees, it may be
+// on when the program starts, and CapsLock passes through while paused. The
+// input thread reads the state and taps CapsLock back off with SendInput.
+// GetKeyState is current here: Windows resyncs the key state of a thread that
+// receives no keyboard input when it asks. The tap is injected, so the hook
+// lets it through untouched.
+
+static BOOL caps_watch_key(UINT vk)
+{
+    switch (vk) {
+    case VK_CAPITAL:
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+    case VK_MENU: case VK_LMENU: case VK_RMENU:
+    case VK_LWIN: case VK_RWIN:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+// From the hook (a post, never a wait): check right after this key comes up
+// instead of at the next tick.
+static void caps_check_soon(UINT vk)
+{
+    if (g_cfg.capslock_off && s_power_wnd)
+        PostMessageW(s_power_wnd, WM_INPUT_CAPS_CHECK, (WPARAM)vk, 0);
+}
+
+// Windows' "To turn off Caps Lock: press the SHIFT key" setting. The CapsLock
+// key cannot turn it off then, and we never inject Shift.
+static BOOL caps_shift_lock(void)
+{
+    HKEY key;
+    DWORD value = 0, size = sizeof(value), type = 0;
+    BOOL on = FALSE;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Keyboard Layout", 0,
+                      KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return FALSE;
+    if (RegQueryValueExW(key, L"Attributes", NULL, &type, (BYTE *)&value,
+                         &size) == ERROR_SUCCESS && type == REG_DWORD)
+        on = (value & KLF_SHIFTLOCK) != 0;
+    RegCloseKey(key);
+    return on;
+}
+
+// A modifier held now would turn the tap into Shift, Ctrl or Alt + CapsLock,
+// which some IMEs act on; wait for it to come up (the next check is at most
+// CAPS_CHECK_MS away). The key whose release asked for this check can still
+// read as down: Windows updates it after the hook returns.
+static BOOL caps_mods_held(UINT released)
+{
+    static const UINT keys[] = {
+        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU,
+        VK_LWIN, VK_RWIN, VK_CAPITAL
+    };
+    int i;
+
+    for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++) {
+        if (keys[i] == released)
+            continue;
+        if (GetAsyncKeyState((int)keys[i]) & 0x8000)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static void caps_send_tap(void)
+{
+    INPUT in[2];
+
+    ZeroMemory(in, sizeof(in));
+    in[0].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = VK_CAPITAL;
+    in[0].ki.wScan = (WORD)MapVirtualKeyW(VK_CAPITAL, MAPVK_VK_TO_VSC);
+    in[1] = in[0];
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    if (SendInput(2, in, sizeof(INPUT)) != 2)
+        app_log(L"input: turning CapsLock off failed (%lu)", GetLastError());
+}
+
+// Input thread only (the power window's timer and WM_INPUT_CAPS_CHECK).
+static void caps_check(UINT released)
+{
+    DWORD now;
+    HWND fg;
+
+    // Paused means hands off; suspended (no hook) is the lock screen, where
+    // a tap cannot reach and the state is checked again after unlocking.
+    if (!g_cfg.capslock_off || flag_get(&s_paused) || !s_hook)
+        return;
+    if (!(GetKeyState(VK_CAPITAL) & 1)) {
+        s_caps_fix_tick = 0;
+        s_caps_fix_fails = 0;
+        return;
+    }
+    if (caps_mods_held(released))
+        return;
+    now = GetTickCount();
+    fg = GetForegroundWindow();
+    if (fg != s_caps_fix_fg) {
+        // Another window may take the tap an administrator window dropped.
+        s_caps_fix_fg = fg;
+        s_caps_fix_tick = 0;
+        s_caps_fix_fails = 0;
+    }
+    if (s_caps_fix_tick != 0) {
+        // Still on after a tap: Windows dropped it (an administrator window
+        // has the focus). Try again less and less often.
+        int shift = s_caps_fix_fails < 4 ? s_caps_fix_fails : 4;
+        if (now - s_caps_fix_tick < ((DWORD)CAPS_RETRY_MS << shift))
+            return;
+        if (s_caps_fix_fails < 4)
+            ++s_caps_fix_fails;
+    }
+    if (caps_shift_lock()) {
+        if (!s_caps_shiftlock_logged) {
+            s_caps_shiftlock_logged = TRUE;
+            app_log(L"input: CapsLock is on, but Windows turns it off with "
+                    L"Shift here, so capslock_off cannot");
+        }
+        s_caps_fix_tick = now ? now : 1;
+        return;
+    }
+    if (s_caps_fix_tick == 0)
+        app_log(L"input: CapsLock was on; turning it off (capslock_off)");
+    caps_send_tap();
+    s_caps_fix_tick = now ? now : 1;
+}
+
+// Input thread: the check timer runs while capslock_off is on.
+static void caps_timer_update(void)
+{
+    BOOL want = g_cfg.capslock_off && s_power_wnd != NULL;
+
+    if (want && !s_caps_timer_on) {
+        s_caps_timer_on =
+            SetTimer(s_power_wnd, CAPS_TIMER, CAPS_CHECK_MS, NULL) != 0;
+        caps_check(0);
+    } else if (!want && s_caps_timer_on) {
+        KillTimer(s_power_wnd, CAPS_TIMER);
+        s_caps_timer_on = FALSE;
+    }
+}
+
 static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
 {
     int owner;
@@ -1659,6 +1838,8 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
         return FALSE;
     if (flags & LLKHF_INJECTED)
         return FALSE;
+    if (!down && caps_watch_key(vk))
+        caps_check_soon(vk);
     if (flag_get(&s_locked)) {
         BOOL repeat = down && s_down[vk] != 0;
         if (!down && !s_down[vk])
@@ -2956,6 +3137,15 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     case WM_INPUT:
         raw_input_check((HRAWINPUT)lp);
         break;
+    case WM_TIMER:
+        if (wp == CAPS_TIMER) {
+            caps_check(0);
+            return 0;
+        }
+        break;
+    case WM_INPUT_CAPS_CHECK:
+        caps_check((UINT)wp);
+        return 0;
     case WM_DESTROY:
         WTSUnRegisterSessionNotification(hwnd);
         return 0;
@@ -3013,6 +3203,10 @@ static void cleanup_input(void)
         }
     }
     stop_movement_thread();
+    if (s_caps_timer_on) {
+        KillTimer(s_power_wnd, CAPS_TIMER);
+        s_caps_timer_on = FALSE;
+    }
     if (s_ind_timer_on) {
         KillTimer(s_ind_wnd, IND_TIMER);
         s_ind_timer_on = FALSE;
@@ -3081,6 +3275,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
         return 1;
     }
     focus_hooks_update();
+    caps_timer_update();
 
     while ((result = GetMessageW(&msg, NULL, 0, 0)) > 0) {
         if (msg.hwnd == NULL) {
@@ -3101,6 +3296,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
             }
             if (msg.message == WM_INPUT_CONFIG) {
                 focus_hooks_update();
+                caps_timer_update();
                 indicator_update();
                 continue;
             }

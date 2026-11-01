@@ -788,9 +788,13 @@ static void build_help_rows(void)
     _snwprintf(buf, 127, L"%s tap / hold", mode);
     buf[127] = L'\0';
     help_add_row(buf, L"Mouse mode on/off; hold for momentary");
-    _snwprintf(buf, 127, L"Shift + %s", mode);
-    buf[127] = L'\0';
-    help_add_row(buf, L"Real CapsLock (passes through)");
+    if (g_cfg.capslock_off) {
+        help_add_row(L"CapsLock state", L"Kept off while vim mouse runs");
+    } else {
+        _snwprintf(buf, 127, L"Shift + %s", mode);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Real CapsLock (passes through)");
+    }
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.lock_hotkey.vk)
         help_add_hotkey(&g_cfg.lock_hotkey,

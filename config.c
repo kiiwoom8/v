@@ -529,6 +529,7 @@ void config_set_defaults(Config *c)
     c->pause_hotkey.mods = 0;
     parse_hotkey(L"Ctrl+Alt+L", &c->lock_hotkey);
     c->mouse_mode_key = VK_CAPITAL;
+    c->capslock_off = 1;
     c->indicator = INDICATOR_CURSOR;
     c->log = 0;
 
@@ -769,6 +770,8 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_hotkey(&c->lock_hotkey, line, key, val);
     else if (_wcsicmp(key, L"mouse_mode_key") == 0)
         apply_key(&c->mouse_mode_key, line, key, val);
+    else if (_wcsicmp(key, L"capslock_off") == 0)
+        apply_bool(&c->capslock_off, line, key, val);
     else if (_wcsicmp(key, L"indicator") == 0) {
         if (_wcsicmp(val, L"cursor") == 0)
             c->indicator = INDICATOR_CURSOR;
@@ -1401,6 +1404,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; The key that toggles mouse mode: tap toggles, hold for momentary.\r\n");
     format_key(d.mouse_mode_key, key, (int)(sizeof(key) / sizeof(key[0])));
     appendf(buf, cch, L"mouse_mode_key = %ls\r\n", key);
+    appendf(buf, cch, L"; 1 = keep the CapsLock state off while vim mouse runs (not while\r\n");
+    appendf(buf, cch, L"; paused): it is turned off at start and whenever it comes on, from\r\n");
+    appendf(buf, cch, L"; Shift+CapsLock, an administrator window or the lock screen.\r\n");
+    appendf(buf, cch, L"; 0 = Shift+CapsLock turns the real CapsLock on and off.\r\n");
+    appendf(buf, cch, L"capslock_off = %d\r\n", d.capslock_off ? 1 : 0);
     appendf(buf, cch, L"; Where the MOUSE/DRAG indicator is shown: cursor, corner or off.\r\n");
     switch (d.indicator) {
     case INDICATOR_CORNER:
