@@ -656,22 +656,35 @@ last ten are all `worktree-agent-*` into `element-hints`.
   out-of-context WinEvent) for every scroller whose offset changed; ignored
   nodes fire nothing, but Blink keeps scroll containers unignored. So the
   settle wait (`settle_begin`, `settle_step` in `hint.c`, `uia_flush` on the
-  scan worker) flushes and listens: after our scroll it flushes from 150 ms
-  on (Chrome animates a wheel scroll for at most 200 ms, `kInverseDelta` 6
-  to 12 frames), after a click from 300 ms on (what it opened slides in).
-  A flush answered by a scroll report means the page moved since the last
-  one: flush again; one with no report within 60 ms means the tree is
-  current. A report from 230 ms after our scroll on proves it by itself.
-  After our own scroll with no report at all (the flush did not reach the
-  page, or it did not move), it waits out `scan_settle` as before. The same
-  wait starts after a scroll the window reported itself (the mouse wheel,
-  a touchpad, keys, the page's script), capped at 300 ms, which covers
-  physical scrolls for the first time. The flush point must be on top in
-  that window (`uia_page_point`: our action's point, then the centre of
-  its `Chrome_RenderWidgetHostHWND`), or there is no flush. Reports are
-  matched by top-level window, not process: WebView2 pages run in a
-  process of their own. `scan_flush = 0` restores the fixed wait. Reasoned
-  from Chromium's source (2026-11), not yet measured on Windows.
+  scan worker) flushes and listens. After our scroll the first flush goes
+  out at 230 ms (Chrome animates a wheel scroll for at most 200 ms,
+  `kInverseDelta` 6 to 12 frames), after a click at 300 ms (what it opened
+  slides in). A flush answered by a scroll report means the page moved
+  since the flush before: flush again, 35 ms later (Blink takes a new
+  scroll offset once per frame, so a flush at once can find nothing new
+  while the page still moves; the first draft did that). A flush with no
+  report within 70 ms means the tree is current: "stopped" when an earlier
+  flush moved the page, "asked" after a click or a scroll we did not cause,
+  "reported" after our scroll when the browser reported it after 230 ms.
+  A report alone never ends the wait: Edge can animate a wheel scroll
+  longer than Chrome, and only a flush that finds nothing new proves the
+  page stopped. After our own scroll with no report since 230 ms (the
+  flush did not reach the page, or it did not move), and after back /
+  forward (a loading page sends no positions), it waits out `scan_settle`
+  as before. The same wait starts after a scroll the window reported
+  itself (the mouse wheel, a touchpad, keys, the page's script), capped at
+  300 ms, which covers physical scrolls for the first time; reports within
+  `scan_settle` of our own action are its own and start nothing, and a
+  page that scrolled through a whole such wait (a live chat) is left alone
+  for 10 s. The flush point must be on top in that window and over its
+  page area (`uia_page_point`: our action's point if it is on a
+  `Chrome_RenderWidgetHostHWND`, else that window's centre), or there is no
+  flush. Reports are matched by top-level window, not process: WebView2
+  pages run in a process of their own. `scan_flush = 0` restores the fixed
+  wait. Reasoned from Chromium's source (2026-11) and reviewed, not yet
+  measured on Windows; also unverified there is that UI Automation's hit
+  test passes through our click-through overlay while it shows the status
+  text (if not, every wait after our scroll ends at the time limit).
 - **The time is in the app, not in our code; measure before tuning.**
   Asked to make the hints faster "even with assembly", a split of one scan
   showed window enumeration at 0.2 ms, the filters and labels under 1 ms,
@@ -828,7 +841,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The bottom jump fires on press through UI Automation; where that cannot scroll, the wheel goes after Shift is released | `be52799`, `ba62724` | Wheel at once (sideways in browsers, before `ba62724`); wheel only after Shift release (`ba62724` to `be52799`) |
 | Scroll-to-end glides | `aad1eaa` | 64-event burst (still used with `smooth_scroll = 0`) |
 | After our own scroll or click in a Chromium window, the first scan waits for the page, at most `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
-| That wait asks the browser to send its changes (`uia_flush`) and ends when they are in, about 250 ms after a scroll; scrolls the browser reports itself start it too, up to 300 ms (`scan_flush = 0` restores the fixed wait) | browser flush | A fixed `scan_settle` after our own actions only; physical scrolls labelled the old page |
+| That wait asks the browser to send its changes (`uia_flush`) and ends when they are in, about 330 ms after a scroll (back / forward keep the fixed wait); scrolls the browser reports itself start it too, up to 300 ms (`scan_flush = 0` restores the fixed wait) | browser flush | A fixed `scan_settle` after our own actions only; physical scrolls labelled the old page |
 | With a browser active, its labels show as soon as it answered; other windows' merge in (`browser_first = 0` restores) | browser flush | Every window waited for up to `scan_timeout` |
 | With `keep_labels`, the first labels leave free codes (a quarter more, at least an alphabet's worth); up to three one-letter labels become two letters | `515eb02` | Exactly as many codes as elements |
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
@@ -860,7 +873,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
   (`GetLocationSerializationDelay`, `GetDeferredEventsDelay`,
   `RenderAccessibilityImpl::HitTest`, `OnLocationChanges`), not tried on
   Windows. Check with `log = 1`: scroll with `j` and press `f` straight
-  away; `vim.log` should say "the page caught up after" about 200 to 300 ms
+  away; `vim.log` should say "the page caught up after" about 300 to 400 ms
   ("stopped" or "reported"), and the labels sit on the scrolled page. Then
   wheel with the mouse and press `f`: a short wait ("asked" or "stopped"),
   labels in place. Click the Google account avatar through a hint and press

@@ -1583,7 +1583,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; (0-2000, default 650; 0 = scan at once).\r\n");
     appendf(buf, cch, L"scan_settle = %d\r\n", d.scan_settle);
     appendf(buf, cch, L"; 1 = during that wait, ask the browser to send its changes at once and\r\n");
-    appendf(buf, cch, L"; scan as soon as they are in (about a quarter second after a scroll\r\n");
+    appendf(buf, cch, L"; scan as soon as they are in (about a third of a second after a scroll\r\n");
     appendf(buf, cch, L"; instead of two thirds); also wait like this after scrolls the browser\r\n");
     appendf(buf, cch, L"; reports itself (mouse wheel, touchpad, keys). 0 = wait out scan_settle\r\n");
     appendf(buf, cch, L"; after this program's own scrolls and clicks only.\r\n");

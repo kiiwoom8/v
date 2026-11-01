@@ -180,9 +180,10 @@ typedef struct {
                                // so an earlier scan labels old positions (0-2000 ms, default
                                // 650; 0 = off). See scan_flush.
     int   scan_flush;          // 1 = during that wait, ask the browser to send its changes now
-                               // and scan as soon as they are in (about 250 ms after a scroll
-                               // instead of 650), and wait after scrolls the browser reports
-                               // itself (mouse wheel, touchpad, keys) too; default 1.
+                               // and scan as soon as they are in (about 330 ms after a scroll
+                               // instead of 650; back / forward still wait it out), and wait
+                               // after scrolls the browser reports itself (mouse wheel,
+                               // touchpad, keys) too, up to 300 ms; default 1.
                                // 0 = wait out scan_settle after our own actions only.
 } Config;
 
@@ -260,10 +261,11 @@ void input_config_changed(void);        // g_cfg was reloaded
 // Text shortcuts use it only with shortcut_method = type (see snippet_insert).
 void input_type_text(const WCHAR *text);
 // Milliseconds since this program last scrolled, clicked or went back or
-// forward (INFINITE if it never did); kind gets PAGE_SCROLL or PAGE_CLICK
-// (back / forward count as a click) and pt where it happened, physical
-// screen px (either may be NULL). The hints wait for browsers to catch up.
-enum { PAGE_SCROLL = 1, PAGE_CLICK = 2 };
+// forward (INFINITE if it never did); kind gets PAGE_SCROLL, PAGE_CLICK or
+// PAGE_NAV (back / forward) and pt where it happened, physical screen px
+// (the cursor for PAGE_NAV; either may be NULL). The hints wait for browsers
+// to catch up.
+enum { PAGE_SCROLL = 1, PAGE_CLICK = 2, PAGE_NAV = 3 };
 DWORD input_since_page_action(int *kind, POINT *pt);
 
 enum { BTN_LEFT = 0, BTN_RIGHT = 1, BTN_MIDDLE = 2 };
@@ -354,8 +356,9 @@ BOOL uia_chromium_window(HWND hwnd);
 // above, or Firefox. Window functions only.
 BOOL uia_browser_window(HWND hwnd);
 // Picks a point of root (a Chromium top-level window) where a UI Automation
-// hit test reaches its web page: prefer, if it is one, then the centre of its
-// page area. Window functions only. FALSE when no point of root is on top.
+// hit test reaches its web page: prefer, if it is on top and over a page
+// area (Chrome_RenderWidgetHostHWND), then the centre of its page area.
+// Window functions only. FALSE when no such point of root is on top.
 BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out);
 // Makes the Chromium window under pt send what it holds back from UI
 // Automation now: a UI Automation hit test there has its page send every

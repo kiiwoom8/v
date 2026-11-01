@@ -133,9 +133,11 @@ the hints. Chrome, Edge and apps built on them tell UI Automation about moved
 and new elements up to half a second late, so right after vim mouse scrolled
 or clicked there, or the browser reported a scroll of its own (mouse wheel,
 touchpad, keys), the hints first ask the browser to send its changes at once
-and scan as soon as they are in: about a quarter second after a scroll
-instead of two thirds, and at once when you press the hotkey later
-(`scan_flush`; never longer than `scan_settle`, default 650 ms). The labels
+and scan as soon as they are in: about a third of a second after a scroll
+instead of two thirds, and well under a tenth when you press the hotkey
+later (`scan_flush`; never longer than `scan_settle`, default 650 ms; after
+back / forward the hints still wait it out, since a loading page reports
+nothing). The labels
 then sit where things are now, and a panel the click opened has its own. In
 a browser the labels show as soon as the browser has answered; other windows
 on the monitor get theirs a moment later (`browser_first`). A menu, dialog or embedded frame drawn over a web page

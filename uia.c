@@ -1441,9 +1441,8 @@ BOOL uia_browser_window(HWND hwnd)
     WCHAR cls[64];
 
     hwnd = hwnd ? GetAncestor(hwnd, GA_ROOT) : NULL;
-    if (!hwnd)
+    if (!hwnd || !GetClassNameW(hwnd, cls, 64))
         return FALSE;
-    GetClassNameW(hwnd, cls, 64);
     if (wcscmp(cls, L"MozillaWindowClass") == 0)
         return TRUE;
     return uia_chromium_window(hwnd);
@@ -1451,7 +1450,10 @@ BOOL uia_browser_window(HWND hwnd)
 
 typedef struct {
     POINT cursor;
-    RECT best;          // the page area under the cursor, else the largest
+    POINT prefer;
+    BOOL has_prefer;
+    BOOL prefer_on_page;    // prefer lies on one of the page areas
+    RECT best;              // the page area under the cursor, else the largest
     BOOL under_cursor;
     BOOL found;
 } PageAreaSearch;
@@ -1465,11 +1467,13 @@ static BOOL CALLBACK find_page_area(HWND hwnd, LPARAM lp)
     RECT rc;
     BOOL under;
 
-    GetClassNameW(hwnd, cls, 64);
-    if (wcscmp(cls, L"Chrome_RenderWidgetHostHWND") != 0 ||
+    if (!GetClassNameW(hwnd, cls, 64) ||
+        wcscmp(cls, L"Chrome_RenderWidgetHostHWND") != 0 ||
         !IsWindowVisible(hwnd) || !GetWindowRect(hwnd, &rc) ||
         rc.right <= rc.left || rc.bottom <= rc.top)
         return TRUE;
+    if (search->has_prefer && PtInRect(&rc, search->prefer))
+        search->prefer_on_page = TRUE;
     under = PtInRect(&rc, search->cursor);
     if (search->under_cursor && !under)
         return TRUE;
@@ -1498,13 +1502,21 @@ BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out)
 
     if (!root || !IsWindow(root))
         return FALSE;
-    if (prefer && root_point_on_top(root, *prefer)) {
+    memset(&search, 0, sizeof(search));
+    GetCursorPos(&search.cursor);
+    if (prefer) {
+        search.prefer = *prefer;
+        search.has_prefer = TRUE;
+    }
+    EnumChildWindows(root, find_page_area, (LPARAM)&search);
+    // Where we scrolled or clicked, unless it is the browser's own toolbar
+    // or tab strip: a hit test there never reaches the page. Without page
+    // area windows (an older or newer Chromium) any point on top will do.
+    if (prefer && (search.prefer_on_page || !search.found) &&
+        root_point_on_top(root, *prefer)) {
         *out = *prefer;
         return TRUE;
     }
-    memset(&search, 0, sizeof(search));
-    GetCursorPos(&search.cursor);
-    EnumChildWindows(root, find_page_area, (LPARAM)&search);
     if (search.found) {
         pt.x = search.best.left + (search.best.right - search.best.left) / 2;
         pt.y = search.best.top + (search.best.bottom - search.best.top) / 2;

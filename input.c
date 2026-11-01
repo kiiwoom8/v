@@ -526,7 +526,7 @@ static void send_nav(BOOL forward, BOOL alt_held)
     UINT vk = forward ? VK_RIGHT : VK_LEFT;
     UINT n = 0;
 
-    page_acted(PAGE_CLICK);
+    page_acted(PAGE_NAV);
     ZeroMemory(in, sizeof(in));
     if (!alt_held) {
         in[n].type = INPUT_KEYBOARD;
