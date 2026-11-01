@@ -586,6 +586,8 @@ void config_set_defaults(Config *c)
     c->prescan = 1;
     c->scan_split = 1;
     c->scan_settle = 650;
+    c->scan_flush = 1;
+    c->browser_first = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -923,6 +925,10 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_bool(&c->scan_split, line, key, val);
     else if (_wcsicmp(key, L"scan_settle") == 0)
         apply_int_range(&c->scan_settle, line, key, val, 0, 2000);
+    else if (_wcsicmp(key, L"scan_flush") == 0)
+        apply_bool(&c->scan_flush, line, key, val);
+    else if (_wcsicmp(key, L"browser_first") == 0)
+        apply_bool(&c->browser_first, line, key, val);
     else
         warn_add(line, L"unknown key \"%ls\" in [hints]", key);
 }
@@ -1548,6 +1554,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; elements are always waited for, up to 3 seconds; with nothing found by\r\n");
     appendf(buf, cch, L"; then, the hints close.\r\n");
     appendf(buf, cch, L"scan_timeout = %d\r\n", d.scan_timeout);
+    appendf(buf, cch, L"; 1 = with a browser active (Chrome, Edge, Firefox, apps built on\r\n");
+    appendf(buf, cch, L"; them), show its labels as soon as it answered; other windows' labels\r\n");
+    appendf(buf, cch, L"; follow as they answer (needs scan_refresh). 0 = wait for every\r\n");
+    appendf(buf, cch, L"; window up to scan_timeout, as for other apps.\r\n");
+    appendf(buf, cch, L"browser_first = %d\r\n", d.browser_first ? 1 : 0);
     appendf(buf, cch, L"; While the hints are open, rescan this often (ms) so elements that\r\n");
     appendf(buf, cch, L"; appear or move get labels by themselves (0-5000, default 500; 0 = off).\r\n");
     appendf(buf, cch, L"scan_refresh = %d\r\n", d.scan_refresh);
@@ -1567,10 +1578,16 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"scan_split = %d\r\n", d.scan_split ? 1 : 0);
     appendf(buf, cch, L"; Browsers (Chrome, Edge) and apps built on them report moved and new\r\n");
     appendf(buf, cch, L"; elements up to half a second late. After this program scrolled or\r\n");
-    appendf(buf, cch, L"; clicked there, the hints wait until this many ms have passed, so labels\r\n");
+    appendf(buf, cch, L"; clicked there, the hints wait at most this many ms from then, so labels\r\n");
     appendf(buf, cch, L"; land where things are now and a panel the click opened gets its own\r\n");
     appendf(buf, cch, L"; (0-2000, default 650; 0 = scan at once).\r\n");
     appendf(buf, cch, L"scan_settle = %d\r\n", d.scan_settle);
+    appendf(buf, cch, L"; 1 = during that wait, ask the browser to send its changes at once and\r\n");
+    appendf(buf, cch, L"; scan as soon as they are in (about a quarter second after a scroll\r\n");
+    appendf(buf, cch, L"; instead of two thirds); also wait like this after scrolls the browser\r\n");
+    appendf(buf, cch, L"; reports itself (mouse wheel, touchpad, keys). 0 = wait out scan_settle\r\n");
+    appendf(buf, cch, L"; after this program's own scrolls and clicks only.\r\n");
+    appendf(buf, cch, L"scan_flush = %d\r\n", d.scan_flush ? 1 : 0);
 
     appendf(buf, cch, L"\r\n[shortcuts]\r\n%ls", SHORTCUTS_COMMENT);
     appendf(buf, cch, L"; Example:\r\n");

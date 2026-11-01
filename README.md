@@ -131,9 +131,14 @@ run out one may grow a letter, and a label whose element went away is never
 reused). A scan that finds nothing keeps trying for up to 3 s, then closes
 the hints. Chrome, Edge and apps built on them tell UI Automation about moved
 and new elements up to half a second late, so right after vim mouse scrolled
-or clicked there the hints wait until `scan_settle` ms (default 650) have
-passed: the labels then sit where things are now, and a panel the click
-opened has its own. A menu, dialog or embedded frame drawn over a web page
+or clicked there, or the browser reported a scroll of its own (mouse wheel,
+touchpad, keys), the hints first ask the browser to send its changes at once
+and scan as soon as they are in: about a quarter second after a scroll
+instead of two thirds, and at once when you press the hotkey later
+(`scan_flush`; never longer than `scan_settle`, default 650 ms). The labels
+then sit where things are now, and a panel the click opened has its own. In
+a browser the labels show as soon as the browser has answered; other windows
+on the monitor get theirs a moment later (`browser_first`). A menu, dialog or embedded frame drawn over a web page
 (Google's account menu, a Zendesk menu or modal) gets its own labels; page
 links partly under it get their label and click on the part that shows, and
 links entirely under a menu or dialog get none. Chrome sometimes reports
@@ -275,6 +280,9 @@ ones:
   400: how long to wait for every window's elements before showing the ones
   found so far. The active window's elements are always waited for, up to
   3 s; with nothing found by then, the hints close),
+  `browser_first` (1 = with a browser active, show its labels as soon as it
+  answered and add the other windows' as they answer, default; 0 = wait for
+  every window up to `scan_timeout` as for other apps),
   `scan_refresh` (0-5000 ms, default 500: while the hints are open, rescan
   this often so elements that appear get labels by themselves. 0 = off),
   `keep_labels` (1 = a label already on screen stays put and keeps its letters
@@ -293,8 +301,12 @@ ones:
   one question at a time),
   `scan_settle` (0-2000 ms, default 650: after vim mouse scrolled, clicked or
   went back or forward in Chrome, Edge or an app built on them, the hints
-  wait until this long has passed, because those report the page's new
-  positions up to half a second late. 0 = scan at once)
+  wait at most this long from then for the page to catch up, because those
+  report the page's new positions up to half a second late. 0 = scan at
+  once), `scan_flush` (1 = meanwhile ask the browser to send its changes at
+  once and scan as soon as they are in, and do the same after scrolls the
+  browser reports itself, such as the mouse wheel, default; 0 = wait out
+  `scan_settle` after vim mouse's own scrolls and clicks only)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
@@ -364,10 +376,13 @@ when GitHub cannot be reached.
   already active when vim mouse started; press `Esc` and open the hints again.
 - **Labels sit where things were a moment ago, or a panel that just opened
   has none.** Chrome, Edge and apps built on them report moved and new
-  elements up to half a second late. After vim mouse's own scrolls and clicks
-  the hints wait for that (`scan_settle`); after scrolling with the mouse
-  wheel or clicking with the mouse, wait a moment before opening the hints,
-  or press the hint hotkey again to relabel.
+  elements up to half a second late. After vim mouse's own scrolls and clicks,
+  and after scrolls the browser reports (mouse wheel, touchpad, keys), the
+  hints ask the browser to catch up first (`scan_flush`, `scan_settle`).
+  After clicking with the mouse, wait a moment before opening the hints, or
+  press the hint hotkey again to relabel. If labels land in the wrong place
+  right after scrolling, set `scan_flush = 0` and tell us (with `log = 1`,
+  `vim.log` says how each wait ended).
 - **A panel, menu or page element gets no label.** Set `log = 2`, open the
   hints where the label is missing, press `Esc`, and look in `vim.log` for
   the lines starting with `scan:`. Each element of the active window is

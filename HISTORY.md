@@ -33,9 +33,9 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `common.h` | 393 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
 | `main.c` | 566 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2131 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey` |
-| `input.c` | 3294 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `input_thread_proc` |
-| `hint.c` | 2834 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up, live refresh merging, monitor cycling. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_wait_ms`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay` |
-| `uia.c` | 5842 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `input.c` | 3294 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted`, `input_thread_proc` |
+| `hint.c` | 2834 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up, live refresh merging, monitor cycling. | `hint_open`, `hint_prepare`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_begin`, `settle_step`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay` |
+| `uia.c` | 5842 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1385 | Tray icon and menu, balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -50,7 +50,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 
 | Thread | Owner | Does |
 |---|---|---|
-| Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here. |
+| Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here, and so do Chromium's scroll reports (`EVENT_SYSTEM_SCROLLINGSTART`/`END`, an out-of-context WinEvent hook in `hint.c`). |
 | Input (highest priority) | `input.c` `input_thread_proc` | Installs the low-level hook (`kb_proc`), WinEvent focus hooks, raw keyboard input (hook-loss check) and the power/session window; owns the mode indicator window. |
 | Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Calls `uia_scroll_target` and `uia_scroll_end`. |
 | UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel (a classic window's parts too: one queue of work items per scan), merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
@@ -252,6 +252,15 @@ Invariants stated in `common.h` and enforced by history:
   menu (`scan_split`): File Explorer about 200 to 105 ms, Character Map
   135 to 60 ms. Chromium answers one question at a time and stays one
   search.
+- Asked again for "revolutionary" browser speed, and for the CapsLock state
+  to stay off: the wait for Chromium after a scroll (650 ms) was the
+  largest delay left in a browser. Chromium's source showed that a UI
+  Automation hit test makes the page send its held-back changes at once,
+  and that the browser reports each scroll it applies as a WinEvent. The
+  settle wait now asks and listens instead of sleeping (section 5), covers
+  physical scrolls, and a browser's labels no longer wait for the other
+  windows (`browser_first`). `capslock_off` keeps the CapsLock state off
+  from the input thread, where the hook cannot see the key.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -533,7 +542,15 @@ last ten are all `worktree-agent-*` into `element-hints`.
   results; `25e734f` changed the merge order so "first" was no longer the
   foreground window; `267ab08` waits for the whole scan up to `scan_timeout`;
   `348a968` waits for the foreground window (`ClickList.fg_done`) up to the
-  3 s hard limit (`SCAN_HARD_LIMIT_MS`). Keep both conditions.
+  3 s hard limit (`SCAN_HARD_LIMIT_MS`). Keep both conditions. One
+  exception, made when merging had become safe: with a browser active on
+  the scanned monitor (`uia_browser_window`, `browser_first`), its labels
+  show as soon as it answered (`scan_ready`). In `f6cb7d4`'s time the slower
+  windows were lost; now the kept scan merges them in (`keep_scan`, needs
+  `scan_refresh`), and `build_labels` plans free codes for the windows still
+  out (`ClickList.pending` x `EARLY_ROOM_PER_WINDOW`), so `keep_labels` has
+  codes to give them. A browser covers most of its monitor; what is left is
+  usually the taskbar, which must not hold its labels back.
 - **Do not hold back fast windows behind slow ones.** `25e734f`: merge in
   completion order, and reference-count the job so a cancelled scan returns
   at once while late helpers clean up after themselves.
@@ -620,10 +637,41 @@ last ten are all `worktree-agent-*` into `element-hints`.
   see it at its first, unplaced position. `515eb02`: the first scan waits
   `scan_settle` after our own scroll, click, end jump or back/forward, in
   Chromium windows only (native apps answer synchronously). The wait is
-  measured from our last `SendInput`/`PostMessage`, so physical mouse wheel
-  scrolls and clicks are not covered (there is no mouse hook). Any new
-  action that changes a page (a new key that scrolls, clicks or navigates)
-  must call `page_acted` in `input.c`.
+  measured from our last `SendInput`/`PostMessage`. Any new action that
+  changes a page (a new key that scrolls, clicks or navigates) must call
+  `page_acted` in `input.c` with its kind (`PAGE_SCROLL`, `PAGE_CLICK`) and
+  point.
+- **Ask Chromium to catch up instead of waiting for it.** The 500 ms is a
+  throttle on location-only messages (`SerializeLocationChanges`). Any
+  serialization of tree updates or events takes the pending position and
+  scroll changes along (`SerializeUpdatesAndEvents`:
+  `TakeLocationChangsForSerialization`), and an action's event is
+  serialized immediately, past the 150 ms deferral too. A UI Automation
+  `ElementFromPoint` over the page is such an action: the fragment root
+  calls `BrowserAccessibility::HitTestSync`, which starts an asynchronous
+  hit test in the renderer (`CachingAsyncHitTest`), and the renderer fires
+  a hover event with immediate serialization
+  (`RenderAccessibilityImpl::HitTest`). The browser applies it in
+  `OnLocationChanges` and fires `EVENT_SYSTEM_SCROLLINGEND` (an
+  out-of-context WinEvent) for every scroller whose offset changed; ignored
+  nodes fire nothing, but Blink keeps scroll containers unignored. So the
+  settle wait (`settle_begin`, `settle_step` in `hint.c`, `uia_flush` on the
+  scan worker) flushes and listens: after our scroll it flushes from 150 ms
+  on (Chrome animates a wheel scroll for at most 200 ms, `kInverseDelta` 6
+  to 12 frames), after a click from 300 ms on (what it opened slides in).
+  A flush answered by a scroll report means the page moved since the last
+  one: flush again; one with no report within 60 ms means the tree is
+  current. A report from 230 ms after our scroll on proves it by itself.
+  After our own scroll with no report at all (the flush did not reach the
+  page, or it did not move), it waits out `scan_settle` as before. The same
+  wait starts after a scroll the window reported itself (the mouse wheel,
+  a touchpad, keys, the page's script), capped at 300 ms, which covers
+  physical scrolls for the first time. The flush point must be on top in
+  that window (`uia_page_point`: our action's point, then the centre of
+  its `Chrome_RenderWidgetHostHWND`), or there is no flush. Reports are
+  matched by top-level window, not process: WebView2 pages run in a
+  process of their own. `scan_flush = 0` restores the fixed wait. Reasoned
+  from Chromium's source (2026-11), not yet measured on Windows.
 - **The time is in the app, not in our code; measure before tuning.**
   Asked to make the hints faster "even with assembly", a split of one scan
   showed window enumeration at 0.2 ms, the filters and labels under 1 ms,
@@ -779,7 +827,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | `g g` / `Shift+g` scroll to the top / bottom; `Alt+g g` / `Alt+Shift+g` in text fields | `6622ce0` | `Alt+u u` / `Alt+d d` (`b54285f`) |
 | The bottom jump fires on press through UI Automation; where that cannot scroll, the wheel goes after Shift is released | `be52799`, `ba62724` | Wheel at once (sideways in browsers, before `ba62724`); wheel only after Shift release (`ba62724` to `be52799`) |
 | Scroll-to-end glides | `aad1eaa` | 64-event burst (still used with `smooth_scroll = 0`) |
-| After our own scroll or click in a Chromium window, the first scan waits `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
+| After our own scroll or click in a Chromium window, the first scan waits for the page, at most `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
+| That wait asks the browser to send its changes (`uia_flush`) and ends when they are in, about 250 ms after a scroll; scrolls the browser reports itself start it too, up to 300 ms (`scan_flush = 0` restores the fixed wait) | browser flush | A fixed `scan_settle` after our own actions only; physical scrolls labelled the old page |
+| With a browser active, its labels show as soon as it answered; other windows' merge in (`browser_first = 0` restores) | browser flush | Every window waited for up to `scan_timeout` |
 | With `keep_labels`, the first labels leave free codes (a quarter more, at least an alphabet's worth); up to three one-letter labels become two letters | `515eb02` | Exactly as many codes as elements |
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
 | In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
@@ -805,15 +855,23 @@ last ten are all `worktree-agent-*` into `element-hints`.
   not tried on Windows. If bare keys still scroll in a Zendesk field, set
   `log = 1`: `vim.log` says "focus: no text field" there, and the next step
   is to see which element UI Automation names and whether the caret answers.
-- **Late browser trees** (`515eb02`) was reasoned from Chromium's source
-  (`GetLocationSerializationDelay`, `GetDeferredEventsDelay`), not tried on
-  Windows. Check on a Google results page: click the account avatar through
-  a hint, press `f` at once, and expect the status text briefly, then labels
-  on the panel. Also scroll with `j` and press `f` straight away. Still
-  open: physical mouse scrolls and clicks (no settle wait); page elements
-  behind a non-modal overlay are still in the tree and get labels drawn
-  over it (Chromium hides the rest of the page only for `aria-modal`
-  dialogs, `IsBlockedByAriaModalDialog`).
+- **Late browser trees** (`515eb02`, and the flush that replaced most of
+  its wait) was reasoned from Chromium's source
+  (`GetLocationSerializationDelay`, `GetDeferredEventsDelay`,
+  `RenderAccessibilityImpl::HitTest`, `OnLocationChanges`), not tried on
+  Windows. Check with `log = 1`: scroll with `j` and press `f` straight
+  away; `vim.log` should say "the page caught up after" about 200 to 300 ms
+  ("stopped" or "reported"), and the labels sit on the scrolled page. Then
+  wheel with the mouse and press `f`: a short wait ("asked" or "stopped"),
+  labels in place. Click the Google account avatar through a hint and press
+  `f` at once: labels on the panel. A "time limit" ending after our own
+  scroll means no report came back (a page that did not move, or a flush
+  that did not reach it); if it happens on ordinary pages, the hit test is
+  not reaching the renderer and `uia_page_point` needs another point. Still
+  open: physical mouse clicks (no settle wait); page elements behind a
+  non-modal overlay are still in the tree and get labels drawn over it
+  (Chromium hides the rest of the page only for `aria-modal` dialogs,
+  `IsBlockedByAriaModalDialog`).
 - **Google's account menu and Zendesk overlays without labels.** After
   `515eb02` the user reported the account menu (from a Google results page)
   still unlabelled, and not a timing problem. `443b135` (panel rows dropped
@@ -891,8 +949,8 @@ bring it to the front first). Without Windows, run `tools/ax_sim/run.sh` on a mo
 `tools/ax_sim/pages` for a new layout, and keep `mk.py`'s main in step
 with `scan_window_uia`; `INPUT=<file>` replays a scan written down from
 Windows, offscreen flags included). For a window or panel without labels on Windows,
-`log = 2` lists every element of the active window with the reason. Overlay timing lives in `hint.c` (`start_scan`,
-`begin_scan`, `settle_wait_ms`, `adopt_prescan`, `finalize_scan`,
+`log = 2` lists every element of the active window with the reason. Overlay timing lives in `hint.c` (`settle_begin`, `settle_step`, `scan_ready`, `start_scan`,
+`begin_scan`, `adopt_prescan`, `finalize_scan`,
 `scan_limit_ms`, `SCAN_HARD_LIMIT_MS`).
 
 ### Change scrolling or movement

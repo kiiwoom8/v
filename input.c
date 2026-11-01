@@ -236,9 +236,15 @@ static BOOL s_prepared = FALSE;
 // pointer, so a following Alt scroll finds its target at once.
 static volatile LONG s_scroll_prefetch = 0;
 // When this program last scrolled, clicked or went back or forward
-// (GetTickCount, 0 = never). Chromium reports the page that results to UI
-// Automation up to half a second later, so the hints wait (scan_settle).
+// (GetTickCount, 0 = never), which of them (PAGE_*) and where (screen px).
+// Chromium reports the page that results to UI Automation up to half a second
+// later, so the hints wait for it (scan_settle) and ask it there to hurry.
+// Written by the hook, movement and UI threads; a reader that mixes two
+// actions' fields only picks a worse place to ask.
 static volatile LONG s_page_acted = 0;
+static volatile LONG s_page_kind = 0;
+static volatile LONG s_page_x = 0;
+static volatile LONG s_page_y = 0;
 
 // Text shortcut being typed while Alt is held (see shortcut_begin).
 static BOOL  s_sc_active = FALSE;
@@ -336,15 +342,37 @@ static void notify_state(void)
     post_main(WM_APP_STATE_CHANGED, 0, 0);
 }
 
-static void page_acted(void)
+// at: where it happened; NULL = at the cursor (the wheel and clicks go there).
+static void page_acted_at(int kind, const POINT *at)
 {
     DWORD now = GetTickCount();
+    POINT pt = { 0, 0 };
+
+    if (at)
+        pt = *at;
+    else
+        GetCursorPos(&pt);
+    InterlockedExchange(&s_page_kind, kind);
+    InterlockedExchange(&s_page_x, pt.x);
+    InterlockedExchange(&s_page_y, pt.y);
     InterlockedExchange(&s_page_acted, (LONG)(now ? now : 1));
 }
 
-DWORD input_since_page_action(void)
+static void page_acted(int kind)
+{
+    page_acted_at(kind, NULL);
+}
+
+DWORD input_since_page_action(int *kind, POINT *pt)
 {
     DWORD at = (DWORD)InterlockedCompareExchange(&s_page_acted, 0, 0);
+
+    if (kind)
+        *kind = (int)InterlockedCompareExchange(&s_page_kind, 0, 0);
+    if (pt) {
+        pt->x = InterlockedCompareExchange(&s_page_x, 0, 0);
+        pt->y = InterlockedCompareExchange(&s_page_y, 0, 0);
+    }
     return at ? GetTickCount() - at : INFINITE;
 }
 
@@ -375,7 +403,7 @@ static void send_absolute_move(int x, int y, int vx, int vy, int vw, int vh)
 // close or move something on the page.
 static void focus_clicked(void)
 {
-    page_acted();
+    page_acted(PAGE_CLICK);
     if (g_cfg.bare_keys)
         uia_focus_changed(FOCUS_CLICK_DELAY_MS);
 }
@@ -418,7 +446,7 @@ static void click_button(int button)
 static void send_wheel(BOOL vertical, int delta)
 {
     INPUT in;
-    page_acted();
+    page_acted(PAGE_SCROLL);
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
     in.mi.mouseData = (DWORD)delta;
@@ -434,7 +462,7 @@ static void send_wheel_jump(BOOL vertical, int delta)
     INPUT in[64];
     int i;
 
-    page_acted();
+    page_acted(PAGE_SCROLL);
     ZeroMemory(in, sizeof(in));
     for (i = 0; i < 64; i++) {
         in[i].type = INPUT_MOUSE;
@@ -498,7 +526,7 @@ static void send_nav(BOOL forward, BOOL alt_held)
     UINT vk = forward ? VK_RIGHT : VK_LEFT;
     UINT n = 0;
 
-    page_acted();
+    page_acted(PAGE_CLICK);
     ZeroMemory(in, sizeof(in));
     if (!alt_held) {
         in[n].type = INPUT_KEYBOARD;
@@ -912,7 +940,7 @@ static void post_wheel(POINT pt, BOOL vertical, int delta)
         send_wheel(vertical, delta);
         return;
     }
-    page_acted();
+    page_acted_at(PAGE_SCROLL, &pt);
     if (!tried) {
         tried = TRUE;
         to_logical = (ToLogicalFn)(void *)GetProcAddress(
@@ -2577,7 +2605,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
                                 else
                                     GetCursorPos(&pt);
                                 if (uia_scroll_end(pt, SCROLL_END_UIA_MS)) {
-                                    page_acted();
+                                    page_acted_at(PAGE_SCROLL, &pt);
                                     after = InterlockedCompareExchange(
                                         &s_end_uia, END_UIA_DONE,
                                         END_UIA_ASKING);

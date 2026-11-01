@@ -156,6 +156,10 @@ typedef struct {
                                // showing the ones found so far (100-5000 ms, default 400).
                                // The active window's are always waited for, up to 3 s;
                                // with nothing found by then, the hints close.
+    int   browser_first;       // 1 = with a browser active (Chrome, Edge, Firefox, Electron),
+                               // show its labels as soon as it answered; the other windows'
+                               // labels follow as they answer (needs scan_refresh). Default 1;
+                               // 0 = wait for every window up to scan_timeout as elsewhere.
     int   scan_refresh;        // while the hints are open, rescan this often so new or moved
                                // elements get labels (0-5000 ms, default 500; 0 = off).
                                // Existing labels never change meaning.
@@ -170,10 +174,16 @@ typedef struct {
                                // bar's system menu; default 1. 0 = one search per window as
                                // before, which also labels the window icon's system menu.
     int   scan_settle;         // after this program scrolled or clicked, a scan of a Chromium
-                               // window (Chrome, Edge, Electron, WebView2) waits until this
-                               // long has passed: Chromium tells UI Automation about moved
-                               // and new elements up to 500 ms late, so an earlier scan
-                               // labels old positions (0-2000 ms, default 650; 0 = off)
+                               // window (Chrome, Edge, Electron, WebView2) waits at most this
+                               // long from then for the page to catch up: Chromium tells UI
+                               // Automation about moved and new elements up to 500 ms late,
+                               // so an earlier scan labels old positions (0-2000 ms, default
+                               // 650; 0 = off). See scan_flush.
+    int   scan_flush;          // 1 = during that wait, ask the browser to send its changes now
+                               // and scan as soon as they are in (about 250 ms after a scroll
+                               // instead of 650), and wait after scrolls the browser reports
+                               // itself (mouse wheel, touchpad, keys) too; default 1.
+                               // 0 = wait out scan_settle after our own actions only.
 } Config;
 
 extern Config g_cfg;
@@ -250,8 +260,11 @@ void input_config_changed(void);        // g_cfg was reloaded
 // Text shortcuts use it only with shortcut_method = type (see snippet_insert).
 void input_type_text(const WCHAR *text);
 // Milliseconds since this program last scrolled, clicked or went back or
-// forward (INFINITE if it never did). The hints wait for browsers to catch up.
-DWORD input_since_page_action(void);
+// forward (INFINITE if it never did); kind gets PAGE_SCROLL or PAGE_CLICK
+// (back / forward count as a click) and pt where it happened, physical
+// screen px (either may be NULL). The hints wait for browsers to catch up.
+enum { PAGE_SCROLL = 1, PAGE_CLICK = 2 };
+DWORD input_since_page_action(int *kind, POINT *pt);
 
 enum { BTN_LEFT = 0, BTN_RIGHT = 1, BTN_MIDDLE = 2 };
 void mouse_move_to(POINT pt);                          // absolute, physical px
@@ -285,6 +298,7 @@ typedef struct ClickList {
     UINT scan_id;   // the id passed to uia_scan
     BOOL done;      // FALSE = partial result, more windows still being scanned
     BOOL fg_done;   // the foreground window is in (or is not scanned); TRUE when done
+    int  pending;   // windows still being scanned (0 when done)
     int  count;
     ClickTarget items[];   // cumulative: every post contains everything found so far
 } ClickList;
@@ -336,6 +350,20 @@ BOOL uia_chromium_panel(HWND hwnd);      // hwnd is one of Chrome's owned panels
 // WebView2, CEF), which reports moved and new elements late. Window functions
 // only (no UI Automation), so the UI thread may call it.
 BOOL uia_chromium_window(HWND hwnd);
+// hwnd's top-level window is a web browser or shows web content: Chromium as
+// above, or Firefox. Window functions only.
+BOOL uia_browser_window(HWND hwnd);
+// Picks a point of root (a Chromium top-level window) where a UI Automation
+// hit test reaches its web page: prefer, if it is one, then the centre of its
+// page area. Window functions only. FALSE when no point of root is on top.
+BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out);
+// Makes the Chromium window under pt send what it holds back from UI
+// Automation now: a UI Automation hit test there has its page send every
+// pending tree, position and scroll change at once (Blink serializes
+// immediately for an action), instead of up to 500 ms later. Asynchronous, on
+// the scan worker; returns at once. The page's scroll updates arrive as
+// EVENT_SYSTEM_SCROLLINGEND from Chromium (hint.c listens).
+void uia_flush(POINT pt);
 int  uia_focus_state(void);
 int  uia_focus_wait(DWORD max_ms);
 void uia_focus_stop(void);

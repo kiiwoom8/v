@@ -506,6 +506,7 @@ typedef struct {
     int count;
     int cap;
     BOOL fg_done;               // uia_scan_monitor: foreground window merged
+    int pending;                // uia_scan_monitor: windows not merged yet
     DetailText detail;          // log = 2: what the scan made of each element
 } ScanResult;
 
@@ -1433,6 +1434,98 @@ BOOL uia_chromium_window(HWND hwnd)
         return TRUE;
     EnumChildWindows(hwnd, find_chromium_child, (LPARAM)&chromium);
     return chromium;
+}
+
+BOOL uia_browser_window(HWND hwnd)
+{
+    WCHAR cls[64];
+
+    hwnd = hwnd ? GetAncestor(hwnd, GA_ROOT) : NULL;
+    if (!hwnd)
+        return FALSE;
+    GetClassNameW(hwnd, cls, 64);
+    if (wcscmp(cls, L"MozillaWindowClass") == 0)
+        return TRUE;
+    return uia_chromium_window(hwnd);
+}
+
+typedef struct {
+    POINT cursor;
+    RECT best;          // the page area under the cursor, else the largest
+    BOOL under_cursor;
+    BOOL found;
+} PageAreaSearch;
+
+// Chromium keeps a child window over each page it shows
+// (Chrome_RenderWidgetHostHWND, "Chrome Legacy Window" in UI Automation).
+static BOOL CALLBACK find_page_area(HWND hwnd, LPARAM lp)
+{
+    PageAreaSearch *search = (PageAreaSearch *)lp;
+    WCHAR cls[64];
+    RECT rc;
+    BOOL under;
+
+    GetClassNameW(hwnd, cls, 64);
+    if (wcscmp(cls, L"Chrome_RenderWidgetHostHWND") != 0 ||
+        !IsWindowVisible(hwnd) || !GetWindowRect(hwnd, &rc) ||
+        rc.right <= rc.left || rc.bottom <= rc.top)
+        return TRUE;
+    under = PtInRect(&rc, search->cursor);
+    if (search->under_cursor && !under)
+        return TRUE;
+    if (!search->found || (under && !search->under_cursor) ||
+        rect_area(&rc) > rect_area(&search->best)) {
+        search->best = rc;
+        search->found = TRUE;
+        search->under_cursor = under;
+    }
+    return TRUE;
+}
+
+// A point of root that is on top (no other window, no menu over it).
+static BOOL root_point_on_top(HWND root, POINT pt)
+{
+    HWND hit = WindowFromPoint(pt);
+
+    return hit && GetAncestor(hit, GA_ROOT) == root;
+}
+
+BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out)
+{
+    PageAreaSearch search;
+    RECT rc;
+    POINT pt;
+
+    if (!root || !IsWindow(root))
+        return FALSE;
+    if (prefer && root_point_on_top(root, *prefer)) {
+        *out = *prefer;
+        return TRUE;
+    }
+    memset(&search, 0, sizeof(search));
+    GetCursorPos(&search.cursor);
+    EnumChildWindows(root, find_page_area, (LPARAM)&search);
+    if (search.found) {
+        pt.x = search.best.left + (search.best.right - search.best.left) / 2;
+        pt.y = search.best.top + (search.best.bottom - search.best.top) / 2;
+        if (root_point_on_top(root, pt)) {
+            *out = pt;
+            return TRUE;
+        }
+    }
+    if (root_point_on_top(root, search.cursor)) {
+        *out = search.cursor;
+        return TRUE;
+    }
+    if (GetWindowRect(root, &rc)) {
+        pt.x = rc.left + (rc.right - rc.left) / 2;
+        pt.y = rc.top + (rc.bottom - rc.top) / 2;
+        if (root_point_on_top(root, pt)) {
+            *out = pt;
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 // Browsers and Electron apps build their tree lazily: a slow, nearly empty
@@ -3396,6 +3489,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     if (fg_index >= 0)
         fg_task = task_of_win[fg_index];
     result->fg_done = (fg_task < 0);
+    result->pending = task_count;
 
     // Every visible window on the monitor, top first. An owned popup (a
     // menu, Chrome's panels) shows up here as its own window.
@@ -3546,6 +3640,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
             task->merged = 1;
             if (ti == fg_task)
                 result->fg_done = TRUE;
+            result->pending = job->task_count - merged_count - 1;
 
             win = &ctx.items[task->win_index];
             before = result->count;
@@ -3871,6 +3966,9 @@ static BOOL g_uia_cs_ready;
 static volatile LONG g_uia_quit;
 static volatile LONG g_uia_available;
 static ScanRequest g_uia_request;
+// uia_flush: one pending hit test for the worker (under g_uia_cs).
+static BOOL  g_flush_pending;
+static POINT g_flush_pt;
 
 static BOOL uia_still_current(UINT scan_id)
 {
@@ -3902,6 +4000,7 @@ static ClickList *make_click_list(UINT scan_id, BOOL done,
     list->scan_id = scan_id;
     list->done = done;
     list->fg_done = done || result->fg_done;
+    list->pending = done ? 0 : result->pending;
     list->count = result->count;
     for (i = 0; i < result->count; ++i)
         list->items[i] = result->items[i].target;
@@ -3964,6 +4063,31 @@ static void warm_foreground(UiaEngine *engine)
     root->lpVtbl->Release(root);
 }
 
+// A UI Automation hit test on a Chromium page (uia_flush). Its fragment root
+// answers ElementFromPoint through BrowserAccessibility::HitTestSync, which
+// starts an asynchronous hit test in the page's renderer
+// (CachingAsyncHitTest). The renderer fires a hover event for it with
+// immediate serialization (RenderAccessibilityImpl::HitTest), and that
+// serialization takes every pending position and scroll change along
+// (AXObjectCacheImpl::SerializeUpdatesAndEvents), past both the 500 ms
+// location throttle and the 150 ms deferral of new elements. The element
+// itself is not needed.
+static void flush_at(UiaEngine *engine, POINT pt)
+{
+    IUIAutomationElement *el = NULL;
+    HWND hwnd = WindowFromPoint(pt);
+    DWORD pid = 0;
+
+    if (!hwnd)
+        return;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId())
+        return;
+    if (SUCCEEDED(engine->automation->lpVtbl->ElementFromPoint(
+            engine->automation, pt, &el)) && el)
+        el->lpVtbl->Release(el);
+}
+
 static DWORD WINAPI uia_worker(void *arg)
 {
     UiaEngine engine;
@@ -3983,6 +4107,9 @@ static DWORD WINAPI uia_worker(void *arg)
             engine_ok = uia_engine_init(&engine, FALSE);
         }
         if (engine_ok) {
+            // A wake for a flush alone must not run the last scan again.
+            UINT last_scan = 0;
+
             InterlockedExchange(&g_uia_available, TRUE);
             SetEvent(g_uia_ready);
 
@@ -3990,6 +4117,8 @@ static DWORD WINAPI uia_worker(void *arg)
                 ScanRequest request;
                 ScanResult result;
                 WorkerScan scan;
+                BOOL flush;
+                POINT flush_pt;
 
                 DWORD wait = WaitForSingleObject(g_uia_wake, 500);
                 if (InterlockedCompareExchange(&g_uia_quit, 0, 0))
@@ -4003,9 +4132,16 @@ static DWORD WINAPI uia_worker(void *arg)
 
                 EnterCriticalSection(&g_uia_cs);
                 request = g_uia_request;
+                flush = g_flush_pending;
+                flush_pt = g_flush_pt;
+                g_flush_pending = FALSE;
                 LeaveCriticalSection(&g_uia_cs);
-                if (!request.scan_id || !request.mon)
+                if (flush)
+                    flush_at(&engine, flush_pt);
+                if (!request.scan_id || !request.mon ||
+                    request.scan_id == last_scan)
                     continue;
+                last_scan = request.scan_id;
 
                 scan.scan_id = request.scan_id;
                 memset(&result, 0, sizeof(result));
@@ -4132,6 +4268,17 @@ void uia_scan(HMONITOR mon, UINT scan_id, BOOL detail)
     g_uia_request.scan_id = scan_id;
     g_uia_request.mon = mon;
     g_uia_request.detail = detail;
+    LeaveCriticalSection(&g_uia_cs);
+    SetEvent(g_uia_wake);
+}
+
+void uia_flush(POINT pt)
+{
+    if (!g_uia_thread || !g_uia_available || !g_uia_cs_ready)
+        return;
+    EnterCriticalSection(&g_uia_cs);
+    g_flush_pt = pt;
+    g_flush_pending = TRUE;
     LeaveCriticalSection(&g_uia_cs);
     SetEvent(g_uia_wake);
 }
