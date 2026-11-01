@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `c33324e` (2026-11-01): 106
-commits, 92 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `1b6a156` (2026-11-02): 108
+commits, 94 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -199,7 +199,7 @@ Invariants stated in `common.h` and enforced by history:
 - Real-app robustness: Explorer (`348a968`) and Teams (`729e682`, `e987c6a`).
 
 ### Phase 7: live hints, bare keys, `g g` (2026-10-30)
-`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de` `03cb03e`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
+`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de` `03cb03e` `1b6a156`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
 
 - `8b0a194`: labels stay current while the overlay is open (`scan_refresh`).
 - `b474c89`: **bare keys**. Outside text fields `f h j k l u d , .` work
@@ -399,6 +399,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 90 | `12502dc` | 11-01 | 7 | `capslock_off` (default 1): the hook swallows every CapsLock press that is not the mouse-mode key; the input thread checks the state every 250 ms and after each CapsLock or modifier key-up (`caps_check`) and taps CapsLock off with `SendInput`, never with a modifier held, never injecting Shift, backing off 0.5 to 8 s when Windows drops the tap, not while paused or suspended | The user had to turn CapsLock off by hand: `Shift+CapsLock` passed through, and administrator windows, the lock screen, a paused program and the state at start were out of the hook's reach |
 | 91 | `77ec7f4` | 11-01 | 7 | The settle wait asks the Chromium page to send its held-back changes (`uia_flush`: a UI Automation hit test) and ends when a flush finds nothing new, listening to `EVENT_SYSTEM_SCROLLINGEND`; scrolls the browser reports itself start it too (`scan_flush`); with a browser active its labels show as soon as it answered (`scan_ready`, `browser_first`, `ClickList.pending`); page actions record kind and point | Asked for radically faster browser hints: the fixed 650 ms after a scroll was the largest delay left, and physical scrolls were labelled where the page had been |
 | 92 | `c33324e` | 11-01 | 7 | Review fixes to `77ec7f4`: the confirming flush 35 ms after a report, the first flush after our scroll at 230 ms, a report alone never ends the wait, back / forward keep the fixed wait (`PAGE_NAV`), the flush point over the page area, our own scroll's reports start nothing, a self-scrolling page is left alone for 10 s | An independent review found the wait could end mid-animation (a flush at once after a report found nothing new) and that a cursor over the toolbar flushed nothing after back / forward |
+| 93 | `d742026` | 11-01 | 7 | Commit-log rows for `12502dc`, `77ec7f4` and `c33324e` | |
+| 94 | `1b6a156` | 11-02 | 7 | `key_grid` (default `;`): while the hints are open, the grid instead of the labels and back (`toggle_view`, read before the key queue); `Alt` + label moves only; `Ctrl+Shift` + label middle-clicks; a right, double or middle click waits for Shift, Ctrl and Alt to come up (`click_when_free`, `TIMER_ACT_ID`, 3 s at most); a key typed into the hints consumes the withheld Alt; the status bar names the click kinds before a label is typed; the help always shows the grid | An element without a label meant editing `vim.ini` for the grid; move-only was only possible for the one remaining match; clicks went out with Ctrl or Shift still down, so Explorer toggled the selection and browsers opened a new tab |
 
 ## 5. Lessons learned: rules not to break
 
@@ -882,8 +884,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
 | In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
 | A classic window's parts are searched at the same time and the title bar's system menu gets no label (`scan_split = 0` restores) | `03cb03e` | One search per window |
-| `;` switches between the element labels and the grid while the hints are open (`key_grid = none` restores) | 2026-11-02 | The grid only with `hint_mode = grid` |
-| A right, double or middle hint click is sent once Shift and Ctrl are up; `Alt` + label moves only; `Ctrl+Shift` + label middle-clicks | 2026-11-02 | Clicks sent with the modifier still down (Ctrl+click semantics in the app) |
+| `;` switches between the element labels and the grid while the hints are open (`key_grid = none` restores) | `1b6a156` | The grid only with `hint_mode = grid` |
+| A right, double or middle hint click is sent once Shift and Ctrl are up; `Alt` + label moves only; `Ctrl+Shift` + label middle-clicks | `1b6a156` | Clicks sent with the modifier still down (Ctrl+click semantics in the app) |
 | Bare keys outside text fields (`bare_keys = 0` restores) | `b474c89` | Alt always needed |
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
 | Settings next to the exe, else `%APPDATA%\vim mouse` | `e04d6a0` | Exe folder only |
