@@ -355,6 +355,11 @@ Invariants stated in `common.h` and enforced by history:
   catch-up wait (or 300 ms later where none applies). The Alt prescan's
   cancel (`HINT_PREPARE_CANCEL`) leaves a scan ahead alone, and an Alt
   press with a young scan ahead starts no second scan.
+- "The navigator appears twice (the first one flickering)": the adopted
+  scan made the open paint later than before, and the overlay window
+  still held the previous open's labels, which Windows composed for a
+  frame (section 5: a window shown again shows what it last painted).
+  `paint_blank` clears it before it hides.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -940,6 +945,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
   once known (`scrOwed`): a redirect means the pointer's spot does not
   scroll that way, so nothing was lost there. `uia_scroll_end` (`Shift+g`)
   still waits up to 300 ms: one shot, rare.
+- **A window shown again shows what it last painted.** The overlay hid
+  with the labels still in its surface, and the next open painted only
+  once its adopted labels were built and drawn (several ms), so one frame
+  of the old labels showed first: "the navigator appears twice, the first
+  one flickering" (phase 9). `paint_blank` fills the window with the key
+  colour before it hides (`hint_close`) and before it moves to another
+  screen (`cycle_monitor`). Anything that shows or moves that window
+  must leave it blank first, or paint it before the next frame.
 - **Do the scan before the key, not after it.** UI Automation needs 100 to
   400 ms for a window, and after a scroll a Chromium page another 330 ms
   to report where things are; nothing makes that faster once the hotkey

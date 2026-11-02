@@ -297,6 +297,7 @@ static void ahead_forget(void);
 static void ahead_schedule(DWORD ms);
 static HMONITOR cursor_monitor(void);
 static BOOL settle_needed(void);
+static void paint_blank(void);
 static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
 static void schedule_refresh(void);
@@ -3161,6 +3162,8 @@ static void cycle_monitor(UINT mods)
         hint_close();
         return;
     }
+    // The old screen's labels must not come along to the new one.
+    paint_blank();
     if (!show_on_monitor()) {
         hint_close();
         return;
@@ -3436,6 +3439,30 @@ void hint_page_acted(void)
         ahead_schedule(AHEAD_DELAY_MS);
 }
 
+// Paints the window plain key colour (fully transparent) right now, outside
+// WM_PAINT. A window shown again composes what it last painted until its
+// first paint, and an open that adopts a finished scan paints only once its
+// labels are built and drawn, long enough for a frame of the old labels to
+// show: the hints seemed to open twice, the first time flickering.
+static void paint_blank(void)
+{
+    HDC dc;
+    RECT rc;
+    HBRUSH br;
+
+    if (!g_hint_wnd) return;
+    dc = GetDC(g_hint_wnd);
+    if (!dc) return;
+    GetClientRect(g_hint_wnd, &rc);
+    br = g_br_key ? g_br_key : CreateSolidBrush(KEY_COLOR);
+    if (br) {
+        FillRect(dc, &rc, br);
+        if (br != g_br_key) DeleteObject(br);
+    }
+    ReleaseDC(g_hint_wnd, dc);
+    g_mem_blank = FALSE;   // the back buffer may differ from the window now
+}
+
 void hint_close(void)
 {
     if (!g_open) return;
@@ -3443,6 +3470,7 @@ void hint_close(void)
     if (g_hint_wnd) {
         KillTimer(g_hint_wnd, TIMER_FLASH_ID);
         KillTimer(g_hint_wnd, TIMER_SCAN_ID);
+        paint_blank();
         ShowWindow(g_hint_wnd, SW_HIDE);
     }
 
