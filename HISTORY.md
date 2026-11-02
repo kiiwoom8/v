@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `1b6a156` (2026-11-02): 108
-commits, 94 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `1514be3` (2026-11-02): 110
+commits, 96 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -203,7 +203,7 @@ Invariants stated in `common.h` and enforced by history:
 - Real-app robustness: Explorer (`348a968`) and Teams (`729e682`, `e987c6a`).
 
 ### Phase 7: live hints, bare keys, `g g` (2026-10-30)
-`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de` `03cb03e` `1b6a156`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
+`8b0a194` `b9a8d6f` `b474c89` `e51fecb` `27e5efe` `da32599` `7855485` `5ea3a61` `6622ce0` `ba62724` `37b210c` `1c0a83b` `ee4f7fb` `33a979f` `515eb02` `443b135` `17d27bc` `a7a6d9f` `d53e87d` `b7871de` `03cb03e` `1b6a156` `1514be3`, merges `0979ae1` `40657d6` `30f7f62` `735de23`
 
 - `8b0a194`: labels stay current while the overlay is open (`scan_refresh`).
 - `b474c89`: **bare keys**. Outside text fields `f h j k l u d , .` work
@@ -419,6 +419,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 92 | `c33324e` | 11-01 | 7 | Review fixes to `77ec7f4`: the confirming flush 35 ms after a report, the first flush after our scroll at 230 ms, a report alone never ends the wait, back / forward keep the fixed wait (`PAGE_NAV`), the flush point over the page area, our own scroll's reports start nothing, a self-scrolling page is left alone for 10 s | An independent review found the wait could end mid-animation (a flush at once after a report found nothing new) and that a cursor over the toolbar flushed nothing after back / forward |
 | 93 | `d742026` | 11-01 | 7 | Commit-log rows for `12502dc`, `77ec7f4` and `c33324e` | |
 | 94 | `1b6a156` | 11-02 | 7 | `key_grid` (default `;`): while the hints are open, the grid instead of the labels and back (`toggle_view`, read before the key queue); `Alt` + label moves only; `Ctrl+Shift` + label middle-clicks; a right, double or middle click waits for Shift, Ctrl and Alt to come up (`click_when_free`, `TIMER_ACT_ID`, 3 s at most); a key typed into the hints consumes the withheld Alt; the status bar names the click kinds before a label is typed; the help always shows the grid | An element without a label meant editing `vim.ini` for the grid; move-only was only possible for the one remaining match; clicks went out with Ctrl or Shift still down, so Explorer toggled the selection and browsers opened a new tab |
+| 95 | `2e8aad5` | 11-02 | 7 | Commit-log row for `1b6a156` | |
+| 96 | `1514be3` | 11-02 | 7 | The wait for a Chromium page starts with our scroll, click or back / forward (`WM_APP_PAGE_ACTED`, once per 100 ms burst, `hint_page_acted`) and with a scroll the browser reports, hints open or not (`settle_poke`, `settle_arm`, `settle_rebase`); when it ends the tick is kept per window (`fresh_tick`) and a later open scans at once with its prescan; an open during it joins it (`g_settle_wait`); a wait ahead of the hotkey that runs out backs off 5 s (`SETTLE_BACKOFF_MS`) instead of marking the page restless. Browser windows search with `web_condition` (keyboard-focusable elements too, `scan_focusable`, default 1); `focusable_left_out` drops text, scroll areas, what lies outside the page Document and what covers over a quarter of it, and such elements are never actionable for `filter_containers`; `log = 2` says `focusable only: ...`. `tools/ax_sim`: focusable-only elements (actionable 2) and `focus.html` | "Still not fast enough" in Chrome: the wait only started with the hotkey, and the prescan was refused for 650 ms after any scroll, so a hotkey 300 to 650 ms after `j` paid a flush and the whole search. "Some labels don't appear on clickable elements": Blink gives a div whose click handler sits on an ancestor (React, jsaction) no Invoke pattern, only the focusable state with a tabindex |
 
 ## 5. Lessons learned: rules not to break
 
@@ -950,8 +952,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | After our own scroll or click in a Chromium window, the first scan waits for the page, at most `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
 | That wait asks the browser to send its changes (`uia_flush`) and ends when they are in, about 330 ms after a scroll (back / forward keep the fixed wait); scrolls the browser reports itself start it too, up to 300 ms (`scan_flush = 0` restores the fixed wait) | `77ec7f4`, `c33324e` | A fixed `scan_settle` after our own actions only; physical scrolls labelled the old page |
 | With a browser active, its labels show as soon as it answered; other windows' merge in (`browser_first = 0` restores) | `77ec7f4`, `c33324e` | Every window waited for up to `scan_timeout` |
-| The wait for a Chromium page starts with our scroll or click, or with the scroll the browser reported, hints open or not; an open after it scans at once with its prescan, an open during it joins it | this round | The wait started when the hotkey came, and the prescan was refused for `scan_settle` after any action |
-| In browser windows, keyboard-focusable elements without a clickable type or pattern get labels unless text, scroll areas, outside the page or over a quarter of it (`scan_focusable = 0` restores) | this round | Only control types and the four patterns |
+| The wait for a Chromium page starts with our scroll or click, or with the scroll the browser reported, hints open or not; an open after it scans at once with its prescan, an open during it joins it | `1514be3` | The wait started when the hotkey came, and the prescan was refused for `scan_settle` after any action |
+| In browser windows, keyboard-focusable elements without a clickable type or pattern get labels unless text, scroll areas, outside the page or over a quarter of it (`scan_focusable = 0` restores) | `1514be3` | Only control types and the four patterns |
 | With `keep_labels`, the first labels leave free codes (a quarter more, at least an alphabet's worth); up to three one-letter labels become two letters | `515eb02` | Exactly as many codes as elements |
 | A page element under a web dialog, menu or frame is labelled and clicked on its uncovered part, or not at all under a dialog or menu that covers it | `17d27bc` | Labels under a panel clicked the panel |
 | In a Chromium window, the offscreen elements inside a web dialog or menu that shows almost nothing of its own are labelled | `b7871de` | Google's account menu had no labels (Chromium calls its rows offscreen) |
