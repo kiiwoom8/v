@@ -75,7 +75,9 @@ permission prompts) do not count as an open menu, while Chrome's menus do. vim
 mouse asks UI Automation where the focus is after every focus change; while it
 is not sure (right after a click, in a game or a remote desktop, with a menu
 open) the letters type as usual. A key pressed while it is still asking waits
-up to 0.1 s for the answer instead of typing at once.
+up to 0.1 s for the answer instead of typing at once. A `g` that typed while
+it was still asking still counts as the first of `g g`: the second `g` scrolls
+to the top once the answer says the focus is outside a text field.
 Text shortcuts always need Alt. `bare_keys = 0` turns this off.
 
 **Enter twice.** Two quick taps of `Enter` (within `center_tap_ms`, default
@@ -381,7 +383,7 @@ ones:
   default; 0 = always Alt), `fast_scroll_lines` (notches per Alt + `u`/`d` tap, 1-50, default
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held),
   `scroll_end_tap_ms` (two `g` taps within this many ms scroll to the top,
-  0-1000, default 300; 0 = `g g` and `Shift+g` off), `center_tap_ms` (two
+  0-1000, default 500; 0 = `g g` and `Shift+g` off), `center_tap_ms` (two
   `Enter` taps within this many ms move the pointer to the middle of the
   screen, 0-1000, default 300; 0 = off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),

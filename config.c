@@ -582,7 +582,7 @@ void config_set_defaults(Config *c)
     c->bare_keys = 1;
     c->shortcut_paste = 1;
     c->fast_scroll_lines = 5;
-    c->scroll_end_tap_ms = 300;
+    c->scroll_end_tap_ms = 500;
     c->center_tap_ms = 300;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
@@ -1588,7 +1588,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"fast_scroll_max_speed = %ls\r\n", num);
     appendf(buf, cch, L"; Alt + g g (two taps within this many ms) scrolls to the top and\r\n");
     appendf(buf, cch, L"; Alt + Shift + g to the bottom, also without Alt outside text fields\r\n");
-    appendf(buf, cch, L"; and in mouse mode; 0 = both off.\r\n");
+    appendf(buf, cch, L"; and in mouse mode; 0 = both off. Outside text fields a first g that\r\n");
+    appendf(buf, cch, L"; typed because the focus was not known yet still counts.\r\n");
     appendf(buf, cch, L"scroll_end_tap_ms = %d\r\n", d.scroll_end_tap_ms);
     appendf(buf, cch, L"; key_center twice (two taps within this many ms) puts the pointer in the\r\n");
     appendf(buf, cch, L"; middle of the active window's screen; the key still reaches the app.\r\n");

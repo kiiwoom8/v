@@ -144,7 +144,7 @@ typedef struct {
                                // scrolling, back / forward) work without Alt; default 1
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
     int    scroll_end_tap_ms;  // Alt + g g within this many ms goes to the top (Alt +
-                               // Shift + g to the bottom), default 300 (0 = both off)
+                               // Shift + g to the bottom), default 500 (0 = both off)
     int    center_tap_ms;      // key_center twice within this many ms puts the pointer in
                                // the middle of the active window's screen, default 300
                                // (0 = off)

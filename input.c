@@ -273,7 +273,9 @@ static BOOL  s_pause_tap = FALSE;
 static DWORD s_pause_tick = 0;
 
 // The last key was a lone g. A second g within scroll_end_tap_ms goes to the
-// top; any other key starts over.
+// top; any other key starts over. The first g may have typed: outside mouse
+// mode a bare g reaches the app while the focus is still being asked for
+// (bare_key_ok, s_bare_asked), and it still arms the second.
 static BOOL  s_end_tap = FALSE;
 static DWORD s_end_tap_tick = 0;
 
@@ -1164,8 +1166,16 @@ static void scroll_end_press(BOOL shift, BOOL armed, BOOL auto_target)
         scroll_press(ACT_FAST_DOWN, auto_target, TRUE);
     } else if (armed && (DWORD)(now - s_end_tap_tick) <=
                             (DWORD)g_cfg.scroll_end_tap_ms) {
+        if (g_cfg.log)
+            app_log(L"g g: top, second tap %lu ms after the first",
+                    (unsigned long)(now - s_end_tap_tick));
         scroll_press(ACT_FAST_UP, auto_target, TRUE);
     } else {
+        if (g_cfg.log && armed)
+            app_log(L"g g: second tap %lu ms after the first, over "
+                    L"scroll_end_tap_ms (%d); it is the first again",
+                    (unsigned long)(now - s_end_tap_tick),
+                    g_cfg.scroll_end_tap_ms);
         s_end_tap = TRUE;
         s_end_tap_tick = now;
     }
@@ -1571,6 +1581,11 @@ static void bare_log(int kind, HWND popup)
             (gti.flags & GUI_CARETBLINKING) ? L" blinking" : L"");
 }
 
+// Set by bare_key_ok: the key types only because the focus is not known yet
+// (still asking, or a classification that failed), not because it is in a
+// text field or a menu is open. A lone g in that state still arms g g.
+static BOOL s_bare_asked = FALSE;
+
 // Checked only for an unmodified press of one of those keys. Anything not
 // known to be outside a text field (still asking, a menu open) types as usual.
 static BOOL bare_key_ok(UINT vk)
@@ -1578,6 +1593,7 @@ static BOOL bare_key_ok(UINT vk)
     HWND popup = NULL;
     int kind;
 
+    s_bare_asked = FALSE;
     if (!g_cfg.bare_keys || flag_get(&s_mouse_mode))
         return FALSE;
     if (!bare_hint_key(vk) && alt_key_action(vk) == ACT_NONE)
@@ -1591,6 +1607,7 @@ static BOOL bare_key_ok(UINT vk)
     kind = uia_focus_wait(BARE_WAIT_MS);
     if (g_cfg.log)
         bare_log(kind, NULL);
+    s_bare_asked = kind != FOCUS_OTHER && kind != FOCUS_TEXT;
     return kind == FOCUS_OTHER;
 }
 
@@ -1881,6 +1898,18 @@ static BOOL handle_down(UINT vk)
             mark_caps_used();
             return TRUE;
         }
+    }
+    // A lone g types here when the focus is not known yet (right after a
+    // click, a page still loading). It is still the first of a g g: the
+    // second g jumps if by then the answer says the focus is outside a text
+    // field, where the typed g did nothing, and types as usual otherwise.
+    // Without this, g g right after a click needed g g g.
+    if (act == ACT_SCROLL_END && mods == 0 && s_bare_asked) {
+        s_end_tap = TRUE;
+        s_end_tap_tick = GetTickCount();
+        if (g_cfg.log)
+            app_log(L"g g: the first g typed while the focus was being "
+                    L"asked for; a second g still goes to the top");
     }
     center_key_down(vk, mods, center_tap);
     focus_key_passed(vk);

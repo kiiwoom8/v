@@ -624,7 +624,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 108 | `f536827` | 11-03 | 10 | `labels_apart` (default 1): `place_labels` finds each label's box once, smallest element first, and `labelbox_apart` (`labelbox.h`, shared with `tools/hint_check.c`) moves a box that would cover a placed one right of it or below it (`HintLabel.box`, `placed`, `g_labels_replace`); `scan_hidden_checkbox` (default 1): a 1 px checkbox or radio button in a browser takes its label's box (`label_stand_in`: next sibling, previous sibling, parent Group within 64 px, `STAND_IN_MAX` 40), which needs elements with full references, so `find_all_window` fetches them (`full_cache`) for a window `full_memory` remembers and once more at the first sight of such a box (`tiny_boxes_listed`); the log = 2 cache is full too; `hint_check.mjs` counts a `<label>` whose control is hidden and the tools run with the app's browser settings | "The navigator is not appearing" on a Google result's title (the result block's label painted over the link's at the same corner) and on Naver Mail's "select all" label (the input is 1 px, the label a nameless Group that is not a control) |
 | 109 | `8bca056` | 11-03 | 10 | Commit-log row for `f536827`; the Naver Mail "select all" label confirmed by the user | |
 | 110 | `9ce3e54` | 11-03 | 10 | `pause_hotkey` defaults to `Alt+P` and takes two presses within `pause_tap_ms` (0-1000, default 300; 0 = one press): `handle_hotkeys` arms `s_pause_tap` on the first and toggles on the second, both swallowed, cleared by any other key and in `reset_key_state`; `pause_label` shows "Alt+P P" in the help and the tray menu | "Add shortcut for pause/restart vim navigator", asked as `Alt+0 0` and corrected to `Alt+p p` |
-| 111 | | 11-03 | 10 | `draw_element_label` drops the typed prefix: only the characters still to type are drawn, in a box shrunk from the right of the placed one (`match_fg` now colours the grid's typed row letter only) | "Instead of shadowing the typed char, remove the typed char of the navigators so I can view it more cleanly instead of overlapped big boxes" |
+| 111 | `5c687e5` | 11-03 | 10 | `draw_element_label` drops the typed prefix: only the characters still to type are drawn, in a box shrunk from the right of the placed one (`match_fg` now colours the grid's typed row letter only) | "Instead of shadowing the typed char, remove the typed char of the navigators so I can view it more cleanly instead of overlapped big boxes" |
+| 112 | | 11-03 | 10 | A bare `g` that typed because the focus was not known yet still arms `g g` (`s_bare_asked` set by `bare_key_ok`, read on the pass-through path of `handle_down`); the second `g` jumps only where the answer by then is "no text field" and types otherwise; `scroll_end_tap_ms` defaults to 500 (was 300); `log = 1` writes the tap timing and the reason a second tap did not jump | "Sometimes g g doesn't work at once so I have to press this twice": right after a hint click (`FOCUS_CLICK_DELAY_MS` and the classification) or on a page still loading, the first `g` reached the app and the second only armed, so the top needed `g g g` |
 
 ## 5. Lessons learned: rules not to break
 
@@ -738,6 +739,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
   outside a text field (still asking, a caret, an open menu, a game, a remote
   desktop) types as usual. Keep this bias: a swallowed letter in a text field
   is worse than a missed scroll.
+- **A typed first `g` still arms `g g`.** Right after a click or a page load
+  the focus is unknown for up to half a second, so the first `g` types (the
+  rule above) and only the second armed; the top needed `g g g`. Now the
+  pass-through path arms the tap when the key typed for that reason alone
+  (`s_bare_asked`), and the second `g` jumps only where the answer says the
+  focus is outside a text field, so a `g` typed into a text field never
+  turns into a jump. The window is 500 ms (`scroll_end_tap_ms`); vim itself
+  has no timeout for `g g`, and a lone `g` is swallowed or harmless anyway.
 - **Do not throw away a good answer.** `da32599`: every focus change made the
   answer unknown; background apps and IME windows invalidated the foreground
   answer; a failed poll replaced a good one. The fix: ignore focus events
