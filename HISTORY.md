@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `709bcb9` (2026-11-03): 124
-commits, 110 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `f536827` (2026-11-03): 125
+commits, 111 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -606,7 +606,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 105 | `9d1a3e6` | 11-03 | 9 | `hide_pointer` (default 2000 ms): outside mouse mode the system cursors are blank (`SetSystemCursor` from `ptr_thread_proc`, `SPI_SETCURSORS` back), decided by `ptr_update` on the input thread (`ptr_schedule`, `WM_INPUT_PTR_UPDATE`, `PTR_TIMER`, `s_ptr_away` on lock and sleep); a `WH_MOUSE_LL` hook (`mouse_proc`) shows it for the real mouse (`LLMHF_INJECTED`, `own_move` with `s_own_x` / `s_own_y`); `ptr_forget_mouse` on leaving mouse mode and after a hint click. `click_return` (default 1): `mouse_click_at` puts the pointer back after the clicks unless mouse mode is on; `focus_clicked_at` records the click point | "While not activating CapsLock, disable the mouse pointer so I am not interrupted reading articles; and do not move the pointer to the point I clicked with the navigator". Checked here: blank arrow while running, the real one back after a graceful close, blank again after a restart |
 | 106 | `14883fb` | 11-03 | 9 | `key_center` (default Enter) twice within `center_tap_ms` (300 ms): the pointer to the middle of the active window's monitor (`center_key_down` on the pass-through paths of `handle_down`, `s_center_ok` read at the first press, `WM_INPUT_CENTER`, `center_pointer` on the input thread); both presses still reach the app; shows the hidden pointer like the real mouse | "Enter twice for moving mouse cursor to the center": Enter cannot be swallowed, so the jump is a side effect of the second press, outside text fields or in mouse mode |
 | 107 | `709bcb9` | 11-03 | 9 | Commit-log row for `14883fb` | |
-| 108 | | 11-03 | 10 | `labels_apart` (default 1): `place_labels` finds each label's box once, smallest element first, and `labelbox_apart` (`labelbox.h`, shared with `tools/hint_check.c`) moves a box that would cover a placed one right of it or below it (`HintLabel.box`, `placed`, `g_labels_replace`); `scan_hidden_checkbox` (default 1): a 1 px checkbox or radio button in a browser takes its label's box (`label_stand_in`: next sibling, previous sibling, parent Group within 64 px, `STAND_IN_MAX` 40), which needs elements with full references, so `find_all_window` fetches them (`full_cache`) for a window `full_memory` remembers and once more at the first sight of such a box (`tiny_boxes_listed`); the log = 2 cache is full too; `hint_check.mjs` counts a `<label>` whose control is hidden and the tools run with the app's browser settings | "The navigator is not appearing" on a Google result's title (the result block's label painted over the link's at the same corner) and on Naver Mail's "select all" label (the input is 1 px, the label a nameless Group that is not a control) |
+| 108 | `f536827` | 11-03 | 10 | `labels_apart` (default 1): `place_labels` finds each label's box once, smallest element first, and `labelbox_apart` (`labelbox.h`, shared with `tools/hint_check.c`) moves a box that would cover a placed one right of it or below it (`HintLabel.box`, `placed`, `g_labels_replace`); `scan_hidden_checkbox` (default 1): a 1 px checkbox or radio button in a browser takes its label's box (`label_stand_in`: next sibling, previous sibling, parent Group within 64 px, `STAND_IN_MAX` 40), which needs elements with full references, so `find_all_window` fetches them (`full_cache`) for a window `full_memory` remembers and once more at the first sight of such a box (`tiny_boxes_listed`); the log = 2 cache is full too; `hint_check.mjs` counts a `<label>` whose control is hidden and the tools run with the app's browser settings | "The navigator is not appearing" on a Google result's title (the result block's label painted over the link's at the same corner) and on Naver Mail's "select all" label (the input is 1 px, the label a nameless Group that is not a control) |
+| 109 | | 11-03 | 10 | Commit-log row for `f536827`; the Naver Mail "select all" label confirmed by the user | |
 
 ## 5. Lessons learned: rules not to break
 
@@ -1394,11 +1395,12 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Hidden checkboxes** (`label_stand_in`, phase 10) were seen working on
   a mock page (`tools/hint_check.mjs` on `tools/ax_sim/pages/label.html`,
   Naver's `.blind` pattern: the four variants that leave a 1 px input in
-  the tree get their label's box), not on `mail.naver.com` itself, which this
-  session could not open (the browser extension refuses webmail). To
-  check: open the mail list, press `f`, expect a label on the "select
-  all" square and on each row's box; `log = 2` says "hidden behind its
-  label, which stands in" for each. If a page has more than
+  the tree get their label's box), and the user confirmed the label on
+  `mail.naver.com`'s "select all" square the same day (this session
+  could not open the site: the browser extension refuses webmail). Not
+  yet looked at there: each row's box, and whether a long list runs
+  past `STAND_IN_MAX`; `log = 2` says "hidden behind its label, which
+  stands in" for each box taken. If a page has more than
   `STAND_IN_MAX` (40) such boxes on screen, the rest stay unlabelled. A
   `<label>` with plain text for a 1 px input ("Remember me") stays
   unlabelled by design: Chromium prunes that label as redundant and
