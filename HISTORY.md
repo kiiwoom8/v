@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `9d1a3e6` (2026-11-03): 121
-commits, 107 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `14883fb` (2026-11-03): 123
+commits, 109 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -576,6 +576,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 103 | `a630c0f` | 11-03 | 9 | The first flush after our scroll goes out 30 ms after the last wheel tick (`SETTLE_INPUT_MS`, was 230) from a flush thread of its own (`flush_worker`, `WM_APP_FLUSH_DONE`, `hint_flush_done`); a 15 ms grace after it returns replaces the 70 ms answer timer; a flush whose hit test did not reach the page (`flush_at`) is the only one that proves nothing; `scan_early` (default 1: Windows' animation effects off; 2 always; 0 never) starts the scan on the first flush that reached the page (`settle_early_start`, `settle_blocks`, `g_settle_stale`) and lets the next one confirm it | "Navigator speed on Chrome is still not satisfying, I use f right after scrolls": the log showed `f` 312 to 422 ms after the scroll, the wait ending at 350 and the scan after it; measured on Windows, Chrome scrolls without animation here (animation effects off) and the hit test's report comes with its answer |
 | 104 | `207505f` | 11-03 | 9 | Commit-log row for `a630c0f`; `tools/flush_probe.c` kept (`make flushprobe`) | |
 | 105 | `9d1a3e6` | 11-03 | 9 | `hide_pointer` (default 2000 ms): outside mouse mode the system cursors are blank (`SetSystemCursor` from `ptr_thread_proc`, `SPI_SETCURSORS` back), decided by `ptr_update` on the input thread (`ptr_schedule`, `WM_INPUT_PTR_UPDATE`, `PTR_TIMER`, `s_ptr_away` on lock and sleep); a `WH_MOUSE_LL` hook (`mouse_proc`) shows it for the real mouse (`LLMHF_INJECTED`, `own_move` with `s_own_x` / `s_own_y`); `ptr_forget_mouse` on leaving mouse mode and after a hint click. `click_return` (default 1): `mouse_click_at` puts the pointer back after the clicks unless mouse mode is on; `focus_clicked_at` records the click point | "While not activating CapsLock, disable the mouse pointer so I am not interrupted reading articles; and do not move the pointer to the point I clicked with the navigator". Checked here: blank arrow while running, the real one back after a graceful close, blank again after a restart |
+| 106 | `14883fb` | 11-03 | 9 | `key_center` (default Enter) twice within `center_tap_ms` (300 ms): the pointer to the middle of the active window's monitor (`center_key_down` on the pass-through paths of `handle_down`, `s_center_ok` read at the first press, `WM_INPUT_CENTER`, `center_pointer` on the input thread); both presses still reach the app; shows the hidden pointer like the real mouse | "Enter twice for moving mouse cursor to the center": Enter cannot be swallowed, so the jump is a side effect of the second press, outside text fields or in mouse mode |
+| 107 | | 11-03 | 9 | Commit-log row for `14883fb` | |
 
 ## 5. Lessons learned: rules not to break
 
