@@ -267,6 +267,7 @@ static HWND  s_ind_wnd = NULL;
 static HFONT s_ind_font = NULL;
 static int   s_ind_font_h = 0;
 static BOOL  s_ind_timer_on = FALSE;
+static volatile LONG s_ind_posted = 0;   // a WM_INPUT_IND_UPDATE from a move is queued
 // Windows silently removes a low-level hook whose callback is too slow. Raw
 // keyboard input still arrives, so compare its count with the hook's to notice.
 static volatile LONG s_kb_calls = 0;
@@ -292,6 +293,7 @@ static BOOL s_test_popup_value = FALSE;
 
 static void indicator_schedule(void);
 static void indicator_update(void);
+static void indicator_moved(void);
 static BOOL install_hook(void);
 static void uninstall_hook(void);
 static void reset_key_state(void);
@@ -2328,6 +2330,14 @@ static DWORD WINAPI movement_thread(LPVOID param)
     LONG seen_gen = 0;
     POINT target = { 0, 0 };
     BOOL target_ok = FALSE;
+    // The lookup of the last Alt press: where it was made, which way, when,
+    // and whether it is still being answered. scrOwed is what each stream
+    // sent to the pointer while asking.
+    BOOL aim_asking = FALSE;
+    POINT aim_pt = { 0, 0 };
+    BOOL aim_vertical = TRUE;
+    DWORD aim_start_us = 0;
+    double scrOwed[6] = { 0 };
     DWORD last_prefetch = 0;
     HANDLE timer;
 
@@ -2383,7 +2393,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
             LONG mf = InterlockedCompareExchange(&s_move_flags, 0, 0);
             LONG sf = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
             LONG gen = InterlockedCompareExchange(&s_target_gen, 0, 0);
-            LONG pending, aimed;
+            LONG auto_bits, aimed;
             DWORD now_us;
             double dt, remaining, tickDX = 0.0, tickDY = 0.0;
             double speed, max_speed, accel_time, curve, slow_speed;
@@ -2395,23 +2405,67 @@ static DWORD WINAPI movement_thread(LPVOID param)
             BOOL have_cur;
 
             scroll_prefetch_now();
-            // A new Alt scroll press: find where it should go. The search
-            // time does not count as scrolling time. Clear only the bits the
-            // lookup covered; a press made meanwhile keeps its own lookup.
+            // A new Alt scroll press: its stream starts under the pointer at
+            // once, as a wheel would, and moves to the nearest scrollable
+            // area as soon as the lookup answers (right away from a warm
+            // cache, up to AUTO_TARGET_TIMEOUT_MS from a cold one). Waiting
+            // for the answer first held back the scroll and the pointer for
+            // that long. Clear only the bits this press covers; a press made
+            // meanwhile gets its own lookup.
             if (gen != seen_gen) {
-                POINT cur_pt;
                 LONG bits = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
 
                 seen_gen = gen;
-                target_ok = GetCursorPos(&cur_pt) &&
-                    uia_scroll_target(cur_pt, !(bits & (SCR_LEFT | SCR_RIGHT)),
-                                      AUTO_TARGET_TIMEOUT_MS, &target);
+                target_ok = FALSE;
+                aim_asking = GetCursorPos(&aim_pt) != 0;
+                aim_vertical = !(bits & (SCR_LEFT | SCR_RIGHT));
+                QueryPerformanceCounter(&now);
+                aim_start_us = qpc_us_from(now, freq);
+                for (idx = 0; idx < 6; idx++)
+                    scrOwed[idx] = 0.0;
                 InterlockedCompareExchange(&s_scroll_pending, 0, bits);
-                QueryPerformanceCounter(&prev);
             }
-            pending = InterlockedCompareExchange(&s_scroll_pending, 0, 0);
-            aimed = target_ok ? InterlockedCompareExchange(&s_scroll_auto, 0, 0)
-                              : 0;
+            auto_bits = InterlockedCompareExchange(&s_scroll_auto, 0, 0);
+            if (aim_asking) {
+                DWORD since_ms;
+                int answer;
+
+                QueryPerformanceCounter(&now);
+                since_ms = (DWORD)(qpc_us_from(now, freq) - aim_start_us) / 1000;
+                answer = uia_scroll_aim(aim_pt, aim_vertical, since_ms, &target);
+                if (answer == SCROLL_AIM_ASKING &&
+                    since_ms >= AUTO_TARGET_TIMEOUT_MS)
+                    answer = SCROLL_AIM_POINTER;
+                if (answer != SCROLL_AIM_ASKING) {
+                    aim_asking = FALSE;
+                    target_ok = answer == SCROLL_AIM_TARGET;
+                    now_us = qpc_us_from(now, freq);
+                    for (idx = 0; idx < 6; idx++) {
+                        double owed = scrOwed[idx];
+
+                        scrOwed[idx] = 0.0;
+                        if (!target_ok || owed <= 0.0 || scrJump[idx])
+                            continue;
+                        // What went to the pointer while asking went to a
+                        // place that does not scroll that way (that is what
+                        // a redirect means), so the target still gets it: a
+                        // tap's notch arrives there in full, a held key only
+                        // keeps going.
+                        if (scrActive[idx]) {
+                            scrFed[idx] -= owed;
+                            if (scrFed[idx] < 0.0)
+                                scrFed[idx] = 0.0;
+                        } else if (!(sf & (1 << idx))) {
+                            scrMin[idx] = owed;
+                            scrFed[idx] = 0.0;
+                            scrStartUs[idx] = now_us;
+                            scrLastUs[idx] = now_us;
+                            scrActive[idx] = 1;
+                        }
+                    }
+                }
+            }
+            aimed = target_ok ? auto_bits : 0;
             // A bare key has no Alt press to prefetch on, so keep the list
             // warm here: the next tap or held key then finds a fresh one
             // instead of waiting for a search. uia_scroll_prefetch never
@@ -2438,9 +2492,11 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 holdX = holdY = 0.0;
                 scrAccX = scrAccY = 0.0;
                 prevSignX = prevSignY = 0;
+                aim_asking = FALSE;
                 // A glide does not survive a suspend; the gap would otherwise
                 // arrive all at once.
                 for (idx = 0; idx < 6; idx++) {
+                    scrOwed[idx] = 0.0;
                     if (!scrJump[idx])
                         continue;
                     scrJump[idx] = 0;
@@ -2566,6 +2622,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     send_absolute_move(px, py, vx, vy, vw, vh);
                     ref.x = px;
                     ref.y = py;
+                    indicator_moved();
                 }
             }
 
@@ -2584,9 +2641,12 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     LONG jump;
                     int j, k, delta;
 
-                    // An Alt press starts only once its target lookup is
-                    // done; its pending bit is cleared right after the lookup.
-                    if (pending & (1 << idx))
+                    // The bottom jump through UI Automation is one shot at
+                    // one point, so it alone waits for the lookup; streams
+                    // start at once and are re-aimed.
+                    if (aim_asking && idx == 5 && (auto_bits & (1 << idx)) &&
+                        (InterlockedCompareExchange(&s_scroll_jump, 0, 0) &
+                         (1 << idx)))
                         continue;
                     scrSeenGen[idx] = gen_i;
 
@@ -2705,6 +2765,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                         // accrues.
                         dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
                         scrFed[idx] = 120.0;
+                        if (aim_asking && (auto_bits & (1 << idx)))
+                            scrOwed[idx] = 120.0;
                         dir_aimed = (aimed & (1 << idx)) != 0;
                         if (scroll_vertical(idx)) {
                             scrAccY += dir * 120.0;
@@ -2787,6 +2849,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 if (delta <= 0.0)
                     continue;
                 scrFed[idx] += delta;
+                if (aim_asking && (auto_bits & (1 << idx)))
+                    scrOwed[idx] += delta;
                 dir = scroll_notch(idx) < 0 ? -1.0 : 1.0;
                 dir_aimed = (aimed & (1 << idx)) != 0;
                 if (scroll_vertical(idx)) {
@@ -2877,7 +2941,9 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 }
             }
 
-            if (!mf && !sf && !any_streams &&
+            // A lookup still asking keeps the loop ticking: a tap's notch
+            // may yet have to go to the target.
+            if (!mf && !sf && !any_streams && !aim_asking &&
                 !scroll_flush_pending(scrAccX, scrAccY) &&
                 !scroll_press_pending(scrSeenGen) &&
                 !InterlockedCompareExchange(&s_scroll_pending, 0, 0))
@@ -2992,6 +3058,8 @@ static LRESULT CALLBACK ind_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_ERASEBKGND:
         return 1;
     case WM_INPUT_IND_UPDATE:
+        // Cleared before the cursor is read, so a move in between posts again.
+        InterlockedExchange(&s_ind_posted, 0);
         indicator_update();
         return 0;
     case WM_DESTROY:
@@ -3088,6 +3156,21 @@ static void indicator_schedule(void)
         PostMessageW(s_ind_wnd, WM_INPUT_IND_UPDATE, 0, 0);
     else if (s_input_tid)
         PostThreadMessageW(s_input_tid, WM_INPUT_IND_UPDATE, 0, 0);
+}
+
+// The movement thread moved the pointer: move the pill with it now, not at
+// the next tick of the 15 ms timer, which left it trailing and stepping
+// behind a pointer that moves every millisecond. The timer stays for the
+// physical mouse. One post in flight at a time; the input thread is idle and
+// at the highest priority, so it lands within the same millisecond. The
+// window outlives the movement thread (cleanup_input stops that first).
+static void indicator_moved(void)
+{
+    if (!s_ind_wnd || g_cfg.indicator != INDICATOR_CURSOR ||
+        !flag_get(&s_mouse_mode))
+        return;
+    if (InterlockedCompareExchange(&s_ind_posted, 1, 0) == 0)
+        PostMessageW(s_ind_wnd, WM_INPUT_IND_UPDATE, 0, 0);
 }
 
 static BOOL create_indicator_window(void)

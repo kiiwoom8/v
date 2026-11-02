@@ -35,7 +35,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3535 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `input_thread_proc` |
 | `hint.c` | 3484 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_done`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
-| `uia.c` | 6194 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `uia.c` | 6194 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -54,7 +54,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 |---|---|---|
 | Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`), the scheduled shutdown's timer and windows (`shutdown.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here, and so do Chromium's scroll reports (`EVENT_SYSTEM_SCROLLINGSTART`/`END`, an out-of-context WinEvent hook in `hint.c`). |
 | Input (highest priority) | `input.c` `input_thread_proc` | Installs the low-level hook (`kb_proc`), WinEvent focus hooks, raw keyboard input (hook-loss check) and the power/session window; owns the mode indicator window. |
-| Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Calls `uia_scroll_target` and `uia_scroll_end`. |
+| Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Polls `uia_scroll_aim` (never waits) and calls `uia_scroll_end`; moves the mode indicator with each pointer move (`indicator_moved`). |
 | UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel (a classic window's parts too: one queue of work items per scan), merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
 | UIA scroll worker | `uia.c` `scroll_worker` | Per-window cache (8 windows, LRU) of scrollable areas for Alt and bare scrolling, kept warm after a press. |
 | UIA scroll-end worker | `uia.c` `scroll_end_worker` | `Shift+g`: `ScrollPattern.SetScrollPercent` to 100 on the scrollable area at a point. Started on first use. |
@@ -317,6 +317,21 @@ Invariants stated in `common.h` and enforced by history:
   more minutes reopened at once with a 600 s countdown (the range is now
   0-300); the clock set back left the countdown up for an hour; a one-off
   days away dropped every `shutdown_at` day before it for good.
+
+### Phase 9: nothing in the pointer's way (2026-11-03)
+
+- Asked for a program that feels natural and smooth, "not laggy", as
+  close to built in as possible. The pointer path measured clean on the
+  user's machine (section 5, scrolling), so the lag was in what waited: the
+  scroll-target lookup on the movement thread, which held back every Alt
+  and bare scroll press and froze the pointer with it, and the `MOUSE` pill
+  on its 15 ms timer. `uia_scroll_aim` replaces the waiting
+  `uia_scroll_target`: the stream starts under the pointer at once and is
+  re-aimed when the answer comes; the pill moves with each pointer move.
+  Not changed, for lack of evidence: the speeds, the velocity smoothing,
+  the per-frame wheel. Still waiting somewhere: `uia_scroll_end` (300 ms,
+  `Shift+g` only) and the hook's `uia_focus_wait` (100 ms, only while a
+  focus answer is pending).
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -890,6 +905,25 @@ last ten are all `worktree-agent-*` into `element-hints`.
   does not report its conversation as scrollable, so a redirect only goes to
   an area in line with the pointer or at most 64 px beside it. If in doubt,
   leave the wheel at the pointer.
+- **Never wait in the movement thread.** Until phase 9, every Alt or bare
+  scroll press waited there for the scroll-target list (up to 500 ms from a
+  cold cache, 150 ms from a stale one): the scroll started late, and the
+  pointer, driven by the same thread, stopped with it. Anything the thread
+  needs from UI Automation is asked without waiting and polled each tick
+  (`uia_scroll_aim`), and the stream starts under the pointer meanwhile.
+  What a tap sent to the pointer while asking is sent again to the target
+  once known (`scrOwed`): a redirect means the pointer's spot does not
+  scroll that way, so nothing was lost there. `uia_scroll_end` (`Shift+g`)
+  still waits up to 300 ms: one shot, rare.
+- **Anything that follows the pointer moves with it, not on a timer.** The
+  `MOUSE` pill on a 15 ms timer trailed a pointer that moves every
+  millisecond and stepped after it. `indicator_moved` posts an update from
+  each pointer move (one in flight at a time); the timer stays for the
+  physical mouse. The pointer path itself was measured on the user's
+  machine before this (a scratch program making the same absolute
+  `SendInput` moves on the 1 ms timer): every move landed exactly and was
+  visible at the next tick, with ticks of 1.66 ms. Measure before tuning
+  speeds.
 
 ### Settings, files, Windows integration
 
@@ -1182,9 +1216,11 @@ triggers are `hint_page_acted` (from `input.c` `page_acted_at`) and
 
 `input.c` `movement_thread` (streams, glides, timer), `scroll_press` /
 `scroll_release`, `scroll_end_press`, `post_wheel`, `send_wheel_jump`.
-Targeting and its cache: `uia.c` `uia_scroll_target`, `scroll_area_answer`,
-`scroll_side_gap`, the `SCROLL_*_MS` constants. Re-check the Teams cases in
-section 5 after any targeting change.
+Targeting and its cache: `uia.c` `uia_scroll_aim` (never waits; the movement
+thread polls it each tick and re-aims the streams, `aim_asking`, `scrOwed`),
+`scroll_area_answer`, `scroll_side_gap`, the `SCROLL_*_MS` constants.
+Re-check the Teams cases in section 5 after any targeting change. The mode
+indicator: `indicator_update`, `indicator_moved`.
 
 ### Add a tray menu item
 

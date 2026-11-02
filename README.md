@@ -85,8 +85,10 @@ through UI Automation, without moving the pointer. Within the window it only
 picks an area in line with the pointer (a list below its toolbar) or right
 beside it; over another panel the wheel stays with the pointer, since some
 apps (Teams) do not report everything that scrolls. Over the desktop or the
-taskbar it uses the active window. `alt_scroll_auto = 0` always scrolls what
-is under the pointer, like a mouse wheel.
+taskbar it uses the active window. The scroll starts under the pointer the
+moment the key goes down, like a wheel, and moves to that area as soon as it
+is found (at once in a window scrolled lately; a tap's notch arrives there in
+full). `alt_scroll_auto = 0` always scrolls what is under the pointer.
 
 ### Mouse mode
 

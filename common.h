@@ -345,12 +345,18 @@ void uia_cancel(void);
 // Forgets the windows skipped for answering slowly, so the next scan asks
 // them again (another hint hotkey press).
 void uia_forget_slow(void);
-// Alt scrolling: finds the element nearest to pt that scrolls that way in the
-// window under pt (UI Automation, on its own thread; waits up to timeout_ms).
-// TRUE with *target set when pt is not over such an element and the wheel
-// should go to *target instead. One caller thread at a time (the movement
+// Alt scrolling: where the wheel of a press at pt should go, from the cache
+// of scrollable areas of the window under pt (UI Automation, on its own
+// thread). Never waits, so the stream starts under the pointer at once and
+// asks again every tick: SCROLL_AIM_ASKING means a search is running;
+// SCROLL_AIM_TARGET sets *target, a point of the area nearest to pt that
+// scrolls that way (pt is not over one); SCROLL_AIM_POINTER leaves the wheel
+// at the pointer. since_ms is how long ago the press was: a slightly old list
+// that would redirect gets SCROLL_STALE_WAIT_MS for its refresh, then
+// answers with what it has. One caller thread at a time (the movement
 // thread). uia_stop stops it too.
-BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms, POINT *target);
+enum { SCROLL_AIM_POINTER = 0, SCROLL_AIM_TARGET = 1, SCROLL_AIM_ASKING = -1 };
+int  uia_scroll_aim(POINT pt, BOOL vertical, DWORD since_ms, POINT *target);
 void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);
 // Shift + g (bottom) through UI Automation: scrolls the area at pt to the

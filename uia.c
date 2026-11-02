@@ -4540,7 +4540,6 @@ typedef struct {
     DWORD       last_used;   // LRU tick
     UINT        gen;         // incremented when a refresh completes
     BOOL        refreshing;  // queued or in flight
-    int         waiters;     // uia_scroll_target callers waiting for it
     HANDLE      done;        // manual reset; set when a refresh completes
 } ScrollCache;
 
@@ -4695,7 +4694,7 @@ static ScrollCache *scroll_cache_alloc(HWND root, DWORD now)
     if (!e) {
         for (i = 0; i < SCROLL_CACHE_ROOTS; ++i) {
             ScrollCache *c = &g_sc_cache[i];
-            if (c->refreshing || c->waiters > 0)
+            if (c->refreshing)
                 continue;
             if (victim < 0 || (LONG)(c->last_used - oldest) < 0) {
                 victim = i;
@@ -4717,7 +4716,6 @@ static ScrollCache *scroll_cache_alloc(HWND root, DWORD now)
     e->last_used = now;
     e->gen = 0;
     e->refreshing = FALSE;
-    e->waiters = 0;
     ResetEvent(e->done);
     return e;
 }
@@ -5039,17 +5037,8 @@ static BOOL scroll_worker_init(void)
     return TRUE;
 }
 
-static BOOL scroll_worker_start(void)
-{
-    if (InterlockedCompareExchange(&g_sc_state, 1, 0) == 0)
-        InterlockedExchange(&g_sc_state, scroll_worker_init() ? 2 : 3);
-    while (InterlockedCompareExchange(&g_sc_state, 1, 1) == 1)
-        Sleep(0);
-    return InterlockedCompareExchange(&g_sc_state, 2, 2) == 2;
-}
-
-// Like scroll_worker_start but never spins. Returns FALSE while another thread
-// is still starting the worker.
+// Starts the worker on first use; never spins. Returns FALSE while another
+// thread is still starting it (g_sc_state 1) and when that failed (3).
 static BOOL scroll_worker_start_nonblocking(void)
 {
     if (InterlockedCompareExchange(&g_sc_state, 1, 0) == 0)
@@ -5083,91 +5072,67 @@ static HWND scroll_root_for(POINT pt)
     return root;
 }
 
-BOOL uia_scroll_target(POINT pt, BOOL vertical, DWORD timeout_ms,
-                       POINT *target)
+// The movement thread used to wait here for the answer (up to 500 ms from a
+// cold cache), which held back the scroll and the pointer with it: a press
+// felt late, and h/j/k/l held at the same time stopped. Now it never waits.
+// The stream scrolls under the pointer meanwhile and asks again every tick;
+// the caller gives up on a search after its own time limit.
+int uia_scroll_aim(POINT pt, BOOL vertical, DWORD since_ms, POINT *target)
 {
     HWND root;
     ScrollCache *e;
-    HANDLE done;
-    DWORD start, wait_ms;
-    UINT gen;
-    BOOL redirect, stale_answer = FALSE;
+    DWORD now;
+    int answer;
 
     root = scroll_root_for(pt);
     if (!root)
-        return FALSE;
-    if (!scroll_worker_start())
-        return FALSE;
+        return SCROLL_AIM_POINTER;
+    if (!scroll_worker_start_nonblocking()) {
+        // Still starting: ask again. Failed for good: no list, ever.
+        return InterlockedCompareExchange(&g_sc_state, 1, 1) == 1
+                   ? SCROLL_AIM_ASKING : SCROLL_AIM_POINTER;
+    }
 
-    start = GetTickCount();
-    InterlockedExchange(&g_sc_last_use, (LONG)start);
-    wait_ms = timeout_ms;
+    now = GetTickCount();
+    if (since_ms == 0)
+        InterlockedExchange(&g_sc_last_use, (LONG)now);
     EnterCriticalSection(&g_sc_cs);
     e = scroll_cache_find(root);
-    if (e && e->valid &&
-        (DWORD)(start - e->tick) < SCROLL_STALE_MS) {
-        BOOL fresh = (DWORD)(start - e->tick) <= SCROLL_FRESH_MS;
+    if (e && e->valid && (DWORD)(now - e->tick) < SCROLL_STALE_MS) {
+        BOOL fresh = (DWORD)(now - e->tick) <= SCROLL_FRESH_MS;
+        BOOL redirect;
 
         if (!fresh && !e->refreshing)
-            scroll_queue_locked(root, start);
-        e->last_used = start;
+            scroll_queue_locked(root, now);
+        e->last_used = now;
         redirect = scroll_area_answer(e, pt, vertical, target);
         // Only a fresh list may send the wheel away from the pointer at
         // once: the area under it may be new since (another chat opened in
         // Teams), and an older list would aim at a side panel instead. A
-        // slightly old list that would redirect waits only briefly for its
-        // refresh, then still redirects with what it has: waiting the whole
-        // timeout for a slow search feels far worse than a stale answer.
-        if (fresh || !redirect) {
-            LeaveCriticalSection(&g_sc_cs);
-            return redirect;
-        }
-        stale_answer = TRUE;
-        wait_ms = SCROLL_STALE_WAIT_MS;
+        // slightly old list that would redirect gets its refresh a short
+        // while, then still redirects with what it has: a slow search is
+        // far worse than a stale answer.
+        if (fresh || !redirect)
+            answer = redirect ? SCROLL_AIM_TARGET : SCROLL_AIM_POINTER;
+        else if (since_ms >= SCROLL_STALE_WAIT_MS)
+            answer = SCROLL_AIM_TARGET;
+        else
+            answer = SCROLL_AIM_ASKING;
+        LeaveCriticalSection(&g_sc_cs);
+        return answer;
     }
     if (!e) {
-        e = scroll_cache_alloc(root, start);
+        e = scroll_cache_alloc(root, now);
         if (!e) {
             LeaveCriticalSection(&g_sc_cs);
-            return FALSE;
+            return SCROLL_AIM_POINTER;
         }
     }
     if (!e->refreshing)
-        scroll_queue_locked(root, start);
-    e->last_used = start;
-    gen = e->gen;
-    ++e->waiters;
-    done = e->done;
+        scroll_queue_locked(root, now);
+    e->last_used = now;
     LeaveCriticalSection(&g_sc_cs);
-
-    for (;;) {
-        DWORD elapsed = GetTickCount() - start;
-
-        if (elapsed >= wait_ms ||
-            WaitForSingleObject(done, wait_ms - elapsed) != WAIT_OBJECT_0)
-            break;
-        EnterCriticalSection(&g_sc_cs);
-        e = scroll_cache_find(root);
-        if (e && e->valid && e->gen != gen) {
-            e->last_used = GetTickCount();
-            redirect = scroll_area_answer(e, pt, vertical, target);
-            --e->waiters;
-            LeaveCriticalSection(&g_sc_cs);
-            return redirect;
-        }
-        LeaveCriticalSection(&g_sc_cs);
-    }
-
-    EnterCriticalSection(&g_sc_cs);
-    e = scroll_cache_find(root);
-    if (e && e->waiters > 0)
-        --e->waiters;
-    // The refresh missed its short deadline: the stale list's answer, still
-    // better than scrolling under the pointer when it is over another panel.
-    redirect = e && stale_answer &&
-               scroll_area_answer(e, pt, vertical, target);
-    LeaveCriticalSection(&g_sc_cs);
-    return redirect;
+    return SCROLL_AIM_ASKING;
 }
 
 // Starts caching the scrollable areas of the window under pt. Never waits and
@@ -5229,7 +5194,6 @@ void uia_scroll_stop(void)
         g_sc_cache[i].cap = 0;
         g_sc_cache[i].used = FALSE;
         g_sc_cache[i].refreshing = FALSE;
-        g_sc_cache[i].waiters = 0;
         if (g_sc_cache[i].done) {
             CloseHandle(g_sc_cache[i].done);
             g_sc_cache[i].done = NULL;

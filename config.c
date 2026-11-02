@@ -1534,7 +1534,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"alt_scroll = %d\r\n", d.alt_scroll ? 1 : 0);
     appendf(buf, cch, L"; 1 = Alt scrolling finds the scrollable area nearest to the pointer\r\n");
     appendf(buf, cch, L"; (when the pointer is not over one) and scrolls that. Within the window\r\n");
-    appendf(buf, cch, L"; only an area in line with the pointer or right beside it counts.\r\n");
+    appendf(buf, cch, L"; only an area in line with the pointer or right beside it counts. The\r\n");
+    appendf(buf, cch, L"; scroll starts under the pointer at once and moves there once found.\r\n");
     appendf(buf, cch, L"alt_scroll_auto = %d\r\n", d.alt_scroll_auto ? 1 : 0);
     appendf(buf, cch, L"; 1 = Alt + h / Alt + l go back / forward (as Alt+Left / Alt+Right) in\r\n");
     appendf(buf, cch, L"; browsers, Explorer and most apps, and Alt + , / Alt + . scroll left /\r\n");
