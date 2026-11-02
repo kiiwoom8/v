@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `2216b2a` (2026-11-02): 113
-commits, 99 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `009d671` (2026-11-03): 115
+commits, 101 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -319,6 +319,7 @@ Invariants stated in `common.h` and enforced by history:
   days away dropped every `shutdown_at` day before it for good.
 
 ### Phase 9: nothing in the pointer's way (2026-11-03)
+`009d671`
 
 - Asked for a program that feels natural and smooth, "not laggy", as
   close to built in as possible. The pointer path measured clean on the
@@ -469,6 +470,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 97 | `999227e` | 11-02 | 7 | Commit-log rows for `2e8aad5` and `1514be3` | |
 | 98 | `2d82ade` | 11-02 | 8 | `shutdown.c`: tray "Schedule shutdown" (in 15 / 30 min, 1 / 2 h, "At a time or after...": `23:30`, `90`, `2h`, `1h30`), `shutdown_at` every day (a tray cancel skips one day), `shutdown_warning` countdown window (Cancel, 10 more minutes, Shut down now off the keyboard), `ExitWindowsEx` with `SeShutdownPrivilege` (`shutdown_force` for `EWX_FORCE`); wall-clock UTC, a shutdown slept through by over 5 min skipped with a balloon, a late wake counts down in full; `parse_clock`; tooltip; `WM_TIMECHANGE`; `tools/shutdown_test.c` (`make shutdown-test`, built in CI) | Asked to "implement scheduling shut off computer". Checked under Wine: a fake-clock test and the real `vim.exe` driven through its tray commands; not on Windows |
 | 99 | `2216b2a` | 11-02 | 8 | Review fixes to `2d82ade`: `WM_TIMECHANGE` keeps the last check time and a due `shutdown_at`; Cancel and `power_off` use up shutdowns close together (`consume_between`); Shut down now disabled for 1 s (`NOW_DELAY_MS`); `shutdown_warning` 0-300; clock set back closes the countdown; a one-off replaces only the next `shutdown_at` day and gives it back (`undo_replace`) | An independent review found a sleep with the countdown showing could shut down at once after the clock resync on waking, Cancel could leave a second countdown, and a 72 h one-off dropped three `shutdown_at` days for good |
+| 100 | `009d671` | 11-03 | 9 | `uia_scroll_aim` (never waits; `SCROLL_AIM_*`) replaces the blocking `uia_scroll_target`; the movement thread polls it each tick (`aim_asking`, `aim_pt`, `aim_start_us`), starts every stream under the pointer at once and re-aims it, resending to the target what a tap sent to the pointer meanwhile (`scrOwed`); the UIA bottom jump alone waits; the `waiters` field is gone. `indicator_moved`: the pill follows each pointer move through one queued `WM_INPUT_IND_UPDATE` (`s_ind_posted`) | "Still don't feel natural and smooth, I don't want a laggy program": the pointer path measured exact on the user's machine, but every Alt / bare scroll press waited up to 500 ms on the movement thread (pointer frozen too), and the pill trailed on a 15 ms timer |
 
 ## 5. Lessons learned: rules not to break
 
