@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `1514be3` (2026-11-02): 110
-commits, 96 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `2216b2a` (2026-11-02): 113
+commits, 99 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -292,6 +292,7 @@ Invariants stated in `common.h` and enforced by history:
   `tools/ax_sim` (`focus.html`).
 
 ### Phase 8: scheduled shutdown (2026-11-02)
+`2d82ade` `2216b2a`
 
 - Asked to "implement scheduling shut off computer", a new module,
   `shutdown.c`. The tray menu's **Schedule shutdown** turns the computer off
@@ -450,6 +451,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 94 | `1b6a156` | 11-02 | 7 | `key_grid` (default `;`): while the hints are open, the grid instead of the labels and back (`toggle_view`, read before the key queue); `Alt` + label moves only; `Ctrl+Shift` + label middle-clicks; a right, double or middle click waits for Shift, Ctrl and Alt to come up (`click_when_free`, `TIMER_ACT_ID`, 3 s at most); a key typed into the hints consumes the withheld Alt; the status bar names the click kinds before a label is typed; the help always shows the grid | An element without a label meant editing `vim.ini` for the grid; move-only was only possible for the one remaining match; clicks went out with Ctrl or Shift still down, so Explorer toggled the selection and browsers opened a new tab |
 | 95 | `2e8aad5` | 11-02 | 7 | Commit-log row for `1b6a156` | |
 | 96 | `1514be3` | 11-02 | 7 | The wait for a Chromium page starts with our scroll, click or back / forward (`WM_APP_PAGE_ACTED`, once per 100 ms burst, `hint_page_acted`) and with a scroll the browser reports, hints open or not (`settle_poke`, `settle_arm`, `settle_rebase`); when it ends the tick is kept per window (`fresh_tick`) and a later open scans at once with its prescan; an open during it joins it (`g_settle_wait`); a wait ahead of the hotkey that runs out backs off 5 s (`SETTLE_BACKOFF_MS`) instead of marking the page restless. Browser windows search with `web_condition` (keyboard-focusable elements too, `scan_focusable`, default 1); `focusable_left_out` drops text, scroll areas, what lies outside the page Document and what covers over a quarter of it, and such elements are never actionable for `filter_containers`; `log = 2` says `focusable only: ...`. `tools/ax_sim`: focusable-only elements (actionable 2) and `focus.html` | "Still not fast enough" in Chrome: the wait only started with the hotkey, and the prescan was refused for 650 ms after any scroll, so a hotkey 300 to 650 ms after `j` paid a flush and the whole search. "Some labels don't appear on clickable elements": Blink gives a div whose click handler sits on an ancestor (React, jsaction) no Invoke pattern, only the focusable state with a tabindex |
+| 97 | `999227e` | 11-02 | 7 | Commit-log rows for `2e8aad5` and `1514be3` | |
+| 98 | `2d82ade` | 11-02 | 8 | `shutdown.c`: tray "Schedule shutdown" (in 15 / 30 min, 1 / 2 h, "At a time or after...": `23:30`, `90`, `2h`, `1h30`), `shutdown_at` every day (a tray cancel skips one day), `shutdown_warning` countdown window (Cancel, 10 more minutes, Shut down now off the keyboard), `ExitWindowsEx` with `SeShutdownPrivilege` (`shutdown_force` for `EWX_FORCE`); wall-clock UTC, a shutdown slept through by over 5 min skipped with a balloon, a late wake counts down in full; `parse_clock`; tooltip; `WM_TIMECHANGE`; `tools/shutdown_test.c` (`make shutdown-test`, built in CI) | Asked to "implement scheduling shut off computer". Checked under Wine: a fake-clock test and the real `vim.exe` driven through its tray commands; not on Windows |
+| 99 | `2216b2a` | 11-02 | 8 | Review fixes to `2d82ade`: `WM_TIMECHANGE` keeps the last check time and a due `shutdown_at`; Cancel and `power_off` use up shutdowns close together (`consume_between`); Shut down now disabled for 1 s (`NOW_DELAY_MS`); `shutdown_warning` 0-300; clock set back closes the countdown; a one-off replaces only the next `shutdown_at` day and gives it back (`undo_replace`) | An independent review found a sleep with the countdown showing could shut down at once after the clock resync on waking, Cancel could leave a second countdown, and a 72 h one-off dropped three `shutdown_at` days for good |
 
 ## 5. Lessons learned: rules not to break
 
