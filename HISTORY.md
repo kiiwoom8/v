@@ -34,8 +34,8 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3535 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `input_thread_proc` |
-| `hint.c` | 3484 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_done`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
-| `uia.c` | 6194 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
+| `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -322,7 +322,7 @@ Invariants stated in `common.h` and enforced by history:
   days away dropped every `shutdown_at` day before it for good.
 
 ### Phase 9: nothing in the pointer's way (2026-11-03)
-`009d671` `03cd1d4` `d8d05b0`
+`009d671` `03cd1d4` `d8d05b0` `a630c0f`
 
 - Asked for a program that feels natural and smooth, "not laggy", as
   close to built in as possible. The pointer path measured clean on the
@@ -360,6 +360,36 @@ Invariants stated in `common.h` and enforced by history:
   still held the previous open's labels, which Windows composed for a
   frame (section 5: a window shown again shows what it last painted).
   `paint_blank` clears it before it hides.
+- "Navigator speed on Chrome is still not satisfying; I use `f` right
+  after scrolls, my typing is quite fast." A real session's log (`log = 1`
+  turned on for a minute) showed `f` 312 to 422 ms after the last wheel
+  tick, while the wait ended at about 350 ms and the scan it started at
+  about 500: the wait, not the search, was the delay. Measured here with
+  a scratch probe (now `tools/flush_probe.c`: one wheel notch posted to
+  Chrome, hit tests at chosen times, `EVENT_SYSTEM_SCROLLINGEND` timed):
+  Chrome applied the scroll at once, since Windows' animation effects are
+  off on this machine and Chrome's smooth scrolling follows them; it
+  reported the scroll 2 ms after the wheel when its 500 ms throttle
+  allowed and otherwise on the next hit test, whose report arrives within
+  a millisecond of the call returning (a hit test takes 4 to 38 ms); a
+  search of the YouTube window took 103 ms and re-reading its 149
+  elements' rectangles 14 ms (kept in mind, not used). So the first flush
+  goes out 30 ms after the last wheel tick (`SETTLE_INPUT_MS`, was 230),
+  from a thread of its own (`flush_worker`: on the scan worker it queued
+  behind a scan); its verdict is read when it returns
+  (`WM_APP_FLUSH_DONE`, `hint_flush_done`) plus a 15 ms grace
+  (`SETTLE_GRACE_MS`, was a 70 ms timer); only a hit test that did not
+  reach the page (`flush_at` compares the element's process with the
+  window's) proves nothing. With `scan_early` (default 1: when animation
+  effects are off; 2 always; 0 never) the first flush that reaches the
+  page starts the scan at once (`settle_early_start`: the open's
+  `begin_scan`, or `ahead_start_now`; `settle_blocks` lets an open adopt
+  it while the wait runs) and the next flush only confirms it; movement
+  found after that marks the scan stale (`g_settle_stale`) and
+  `settle_done` scans again. A browser-reported scroll now ends its wait
+  in 110 to 160 ms with the scan already running; after our own scroll
+  the labels are ready about 50 ms plus the search after the last wheel
+  tick, before a fast `f` arrives.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -500,6 +530,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 100 | `009d671` | 11-03 | 9 | `uia_scroll_aim` (never waits; `SCROLL_AIM_*`) replaces the blocking `uia_scroll_target`; the movement thread polls it each tick (`aim_asking`, `aim_pt`, `aim_start_us`), starts every stream under the pointer at once and re-aims it, resending to the target what a tap sent to the pointer meanwhile (`scrOwed`); the UIA bottom jump alone waits; the `waiters` field is gone. `indicator_moved`: the pill follows each pointer move through one queued `WM_INPUT_IND_UPDATE` (`s_ind_posted`) | "Still don't feel natural and smooth, I don't want a laggy program": the pointer path measured exact on the user's machine, but every Alt / bare scroll press waited up to 500 ms on the movement thread (pointer frozen too), and the pill trailed on a 15 ms timer |
 | 101 | `03cd1d4` | 11-03 | 9 | `scan_ahead` (default 1): the scan runs when the screen changes, ahead of the hotkey (`ahead_start` from `settle_done`, `hint_page_acted` with `AHEAD_DELAY_MS`, `fg_event_proc` with `AHEAD_SWITCH_MS`, `TIMER_AHEAD_ID`); kept as the prescan of kind `PRE_AHEAD` (`g_pre_kind`), adopted up to `AHEAD_MAX_AGE_MS` (3 s, the Alt prescan too, was 2 s), refreshed at once when older than `AHEAD_REFRESH_MS`; dropped by page actions, browser scroll reports, foreground and focus changes (two WinEvent hooks of `hint.c`) and keys that reached the app (`input.c` `ahead_key_passed`, `HINT_PREPARE_FORGET`); `hint_prepare` takes `HINT_PREPARE_*` | "Better, but not satisfied, especially on the navigator (f)": the scan is 100 to 140 ms here, but after a scroll `f` also waited about 330 ms for the page, all of it after the key |
 | 102 | `d8d05b0` | 11-03 | 9 | `paint_blank`: the overlay is filled with the key colour before it hides (`hint_close`) and before it moves to another screen (`cycle_monitor`) | "The navigator appears twice (the first one flickering)": a window shown again composes what it last painted, and since `03cd1d4` the open paints only once its adopted labels are built, so a frame of the old labels showed first |
+| 103 | `a630c0f` | 11-03 | 9 | The first flush after our scroll goes out 30 ms after the last wheel tick (`SETTLE_INPUT_MS`, was 230) from a flush thread of its own (`flush_worker`, `WM_APP_FLUSH_DONE`, `hint_flush_done`); a 15 ms grace after it returns replaces the 70 ms answer timer; a flush whose hit test did not reach the page (`flush_at`) is the only one that proves nothing; `scan_early` (default 1: Windows' animation effects off; 2 always; 0 never) starts the scan on the first flush that reached the page (`settle_early_start`, `settle_blocks`, `g_settle_stale`) and lets the next one confirm it | "Navigator speed on Chrome is still not satisfying, I use f right after scrolls": the log showed `f` 312 to 422 ms after the scroll, the wait ending at 350 and the scan after it; measured on Windows, Chrome scrolls without animation here (animation effects off) and the hit test's report comes with its answer |
 
 ## 5. Lessons learned: rules not to break
 
@@ -784,22 +815,28 @@ last ten are all `worktree-agent-*` into `element-hints`.
   out-of-context WinEvent) for every scroller whose offset changed; ignored
   nodes fire nothing, but Blink keeps scroll containers unignored. So the
   settle wait (`settle_begin`, `settle_step` in `hint.c`, `uia_flush` on the
-  scan worker) flushes and listens. After our scroll the first flush goes
-  out at 230 ms (Chrome animates a wheel scroll for at most 200 ms,
-  `kInverseDelta` 6 to 12 frames), after a click at 300 ms (what it opened
-  slides in). A flush answered by a scroll report means the page moved
-  since the flush before: flush again, 35 ms later (Blink takes a new
-  scroll offset once per frame, so a flush at once can find nothing new
-  while the page still moves; the first draft did that). A flush with no
-  report within 70 ms means the tree is current: "stopped" when an earlier
-  flush moved the page, "asked" after a click or a scroll we did not cause,
-  "reported" after our scroll when the browser reported it after 230 ms.
-  A report alone never ends the wait: Edge can animate a wheel scroll
-  longer than Chrome, and only a flush that finds nothing new proves the
-  page stopped. After our own scroll with no report since 230 ms (the
-  flush did not reach the page, or it did not move), and after back /
-  forward (a loading page sends no positions), it waits out `scan_settle`
-  as before. The same wait starts after a scroll the window reported
+  flush thread) flushes and listens. After our scroll the first flush goes
+  out 30 ms after the last wheel tick (`SETTLE_INPUT_MS`: the wheel has
+  reached the page and been applied in a frame), after a click at 300 ms
+  (what it opened slides in). A flush answered by a scroll report means
+  the page moved since the flush before: flush again, 35 ms later (Blink
+  takes a new scroll offset once per frame, so a flush at once can find
+  nothing new while the page still moves; the first draft did that). The
+  verdict of a flush is read when its hit test returns
+  (`WM_APP_FLUSH_DONE`, `hint_flush_done`) plus a 15 ms grace: the
+  report, if any, is fired before the browser answers the hit test
+  (measured: within a millisecond). A flush with no report then means the
+  tree is current: "stopped" when an earlier flush moved the page,
+  "asked" when two flushes a couple of frames apart found nothing (one
+  alone could fall between the frames of an animation that has only just
+  started). A report alone never ends the wait: Chrome with animation
+  effects on animates a wheel scroll for 100 to 200 ms (`kInverseDelta`
+  6 to 12 frames), Edge can animate longer, and only a flush that finds
+  nothing new proves the page stopped. A hit test that did not reach the
+  page (`flush_at`: the element found is not the window's process, so
+  something covers the page) proves nothing, and the wait runs out
+  `scan_settle` as before, as after back / forward (a loading page sends
+  no positions). The same wait starts after a scroll the window reported
   itself (the mouse wheel, a touchpad, keys, the page's script), capped at
   300 ms, which covers physical scrolls for the first time; reports within
   `scan_settle` of our own action are its own and start nothing, and a
@@ -809,10 +846,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
   `Chrome_RenderWidgetHostHWND`, else that window's centre), or there is no
   flush. Reports are matched by top-level window, not process: WebView2
   pages run in a process of their own. `scan_flush = 0` restores the fixed
-  wait. Reasoned from Chromium's source (2026-11) and reviewed, not yet
-  measured on Windows; also unverified there is that UI Automation's hit
-  test passes through our click-through overlay while it shows the status
-  text (if not, every wait after our scroll ends at the time limit).
+  wait. Reasoned from Chromium's source (2026-11) and measured on Windows
+  on 2026-11-03 with `tools/flush_probe.c` (`EVENT_SYSTEM_SCROLLINGEND`
+  timed against posted wheel notches and hit tests): the throttle, the
+  immediate first report and the flush behave as read. Still unverified:
+  that the hit test passes through our click-through overlay while it
+  shows the status text (the probe ran with the hints closed; `flush_at`
+  now says whether the hit test reached the page, so waits that end at
+  the time limit only with the hints open would show it).
 - **Start the wait with the action, not with the hotkey.** The first
   version waited only inside an open, and `hint_prepare` and
   `adopt_prescan` refused the prescan whenever a wait was due (any action
@@ -835,9 +876,28 @@ last ten are all `worktree-agent-*` into `element-hints`.
   it alone for 10 s as before (`g_restless_root`), a wait ahead of the
   hotkey that ran out only stops its own kind for 5 s
   (`SETTLE_BACKOFF_MS`), or a live chat would be flushed without end and
-  a long wheel scroll would turn the hotkey's wait off. The flush and the
-  scan share the UIA worker; a flush posted while a prescan runs is
-  served right after it.
+  a long wheel scroll would turn the hotkey's wait off. The flush runs on
+  a thread of its own (`flush_worker`): on the scan worker it queued
+  behind a scan, and the scan started early would have delayed the very
+  flush that confirms it.
+- **Measure the browser; do not assume its animation.** The 230 ms floor
+  before the first flush was Chrome's worst-case animation, but on this
+  machine Chrome does not animate at all: Windows' animation effects are
+  off (`SPI_GETCLIENTAREAANIMATION`, which Chrome's
+  `gfx::Animation::ScrollAnimationsEnabledBySystem` follows), so every
+  scroll paid 200 ms for nothing, and the hotkey (312 to 422 ms after
+  the scroll in the log) arrived before the scan had even started.
+  `scan_early` reads that setting and starts the scan on the first flush
+  that reached the page (`settle_early_start`); the confirming flush
+  still runs, and movement after the early scan marks it stale
+  (`g_settle_stale`) so `settle_done` scans again, which keeps the proof
+  for browsers that do animate. What must hold: the early scan starts
+  only on a flush that reached the page; a newer action makes it stale
+  (`settle_arm`); an open adopting it keeps `g_settle_wait`, so a stale
+  verdict reaches it (`adopt_prescan`, `start_scan`); `cancel_scan`
+  drops the early mark of the open's own scan; `settle_blocks`, not
+  `settle_needed`, decides whether an open must wait. Measure with
+  `make flushprobe` before touching the `SETTLE_*` constants.
 - **Chromium shows a page's clickable divs only when they say so
   themselves.** Blink's `AXNodeObject::IsClickable` tests the node's own
   mouse listeners (`HasAnyEventListeners`) and the role; a handler on an
@@ -1102,6 +1162,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Scroll-to-end glides | `aad1eaa` | 64-event burst (still used with `smooth_scroll = 0`) |
 | After our own scroll or click in a Chromium window, the first scan waits for the page, at most `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
 | That wait asks the browser to send its changes (`uia_flush`) and ends when they are in, about 330 ms after a scroll (back / forward keep the fixed wait); scrolls the browser reports itself start it too, up to 300 ms (`scan_flush = 0` restores the fixed wait) | `77ec7f4`, `c33324e` | A fixed `scan_settle` after our own actions only; physical scrolls labelled the old page |
+| The first flush goes out 30 ms after the last wheel tick and its verdict is read when it returns; with Windows' animation effects off the scan starts on that first flush and the next one only confirms it (`scan_early = 0` restores the scan after the confirmation) | `a630c0f` | The first flush at 230 ms, a 70 ms answer timer, the scan only after the confirming flush |
 | With a browser active, its labels show as soon as it answered; other windows' merge in (`browser_first = 0` restores) | `77ec7f4`, `c33324e` | Every window waited for up to `scan_timeout` |
 | The wait for a Chromium page starts with our scroll or click, or with the scroll the browser reported, hints open or not; an open after it scans at once with its prescan, an open during it joins it | `1514be3` | The wait started when the hotkey came, and the prescan was refused for `scan_settle` after any action |
 | In browser windows, keyboard-focusable elements without a clickable type or pattern get labels unless text, scroll areas, outside the page or over a quarter of it (`scan_focusable = 0` restores) | `1514be3` | Only control types and the four patterns |
@@ -1135,10 +1196,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Late browser trees** (`515eb02`, and the flush that replaced most of
   its wait) was reasoned from Chromium's source
   (`GetLocationSerializationDelay`, `GetDeferredEventsDelay`,
-  `RenderAccessibilityImpl::HitTest`, `OnLocationChanges`), not tried on
-  Windows. Check with `log = 1`: scroll with `j` and press `f` straight
-  away; `vim.log` should say "the page caught up after" about 300 to 400 ms
-  ("stopped" or "reported"), and the labels sit on the scrolled page. Then
+  `RenderAccessibilityImpl::HitTest`, `OnLocationChanges`) and measured
+  on Windows on 2026-11-03 (section 5): the flush, the throttle and the
+  reports behave as read. Check with `log = 1`: scroll with `j` and press
+  `f` straight away; `vim.log` should say "the page caught up" about 50
+  to 150 ms after the scroll ("stopped" or "asked"; with Windows'
+  animation effects off also "scanned on the first flush"), and the
+  labels sit on the scrolled page. Then
   wheel with the mouse and press `f`: a short wait ("asked" or "stopped"),
   labels in place. Click the Google account avatar through a hint and press
   `f` at once: labels on the panel. A "time limit" ending after our own
@@ -1146,7 +1210,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
   that did not reach it); if it happens on ordinary pages, the hit test is
   not reaching the renderer and `uia_page_point` needs another point. Since
   the wait starts with the action, most of those lines should end with
-  "ahead of the hotkey", and a hotkey pressed later than about 400 ms
+  "ahead of the hotkey", and a hotkey pressed later than about 150 ms
   after a scroll should log no "waiting" line at all; if the hints still
   feel slow there, the "N targets after M ms" line says how long the
   browser's own search took, which is the part left (a long page). Still
@@ -1258,10 +1322,15 @@ Windows, offscreen flags included). For a window or panel without labels on Wind
 focusable-only element: `focusable only: ...`; `focus.html` is the mock
 page for those). Overlay timing lives in `hint.c` (`settle_poke`,
 `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`,
-`settle_done`, `scan_ready`, `start_scan`, `begin_scan`, `adopt_prescan`,
-`finalize_scan`, `scan_limit_ms`, `SCAN_HARD_LIMIT_MS`); the wait's
-triggers are `hint_page_acted` (from `input.c` `page_acted_at`) and
-`scroll_event_proc`. The scan ahead of the hotkey (`scan_ahead`):
+`settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`,
+`hint_flush_done`, `scan_ready`, `start_scan`, `begin_scan`,
+`adopt_prescan`, `finalize_scan`, `scan_limit_ms`, `SCAN_HARD_LIMIT_MS`,
+the `SETTLE_*` constants); the wait's triggers are `hint_page_acted`
+(from `input.c` `page_acted_at`) and `scroll_event_proc`; the flush
+itself is `uia.c` `flush_worker` and `flush_at`. `make flushprobe`
+(`tools/flush_probe.exe`, with Chrome in front) posts a wheel notch to
+the page, sends hit tests at chosen times and prints every scroll report
+with its time: how the browser behaves on that machine. The scan ahead of the hotkey (`scan_ahead`):
 `ahead_start`, `ahead_forget`, `ahead_schedule`, `fg_event_proc`,
 `TIMER_AHEAD_ID`, the `AHEAD_*` constants, `g_pre_kind`; what drops it is
 listed above `ahead_forget`. The hook tells it about keys that reached the

@@ -33,6 +33,13 @@ probe: tools/uia_probe.exe
 tools/uia_probe.exe: tools/uia_probe.c uia.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/uia_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32
 
+# Console tool that times how the front Chrome window reports a scroll and
+# answers the hit tests of the settle wait (it scrolls the page one notch and back)
+flushprobe: tools/flush_probe.exe
+
+tools/flush_probe.exe: tools/flush_probe.c uia.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/flush_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32 -lwinmm
+
 # Console tool that compares Chrome's DOM with what the scan finds (hint_check.mjs)
 check: tools/hint_check.exe
 
@@ -51,7 +58,8 @@ clean:
 	-@del /Q *.o 2>nul || true
 	-@del /Q tools\uia_probe.exe 2>nul || true
 	-@del /Q tools\hint_check.exe 2>nul || true
+	-@del /Q toolslush_probe.exe 2>nul || true
 	-@del /Q tools\make_icon.exe 2>nul || true
 	-@del /Q tools\shutdown_test.exe 2>nul || true
 
-.PHONY: all clean probe check icon shutdown-test
+.PHONY: all clean probe check icon shutdown-test flushprobe
