@@ -859,6 +859,13 @@ static void build_help_rows(void)
     }
     if (g_cfg.hide_pointer > 0)
         help_add_row(L"Pointer", L"Hidden outside mouse mode; the real mouse shows it");
+    if (g_cfg.key_center && g_cfg.center_tap_ms > 0) {
+        WCHAR k[16];
+        format_key(g_cfg.key_center, k, 16);
+        _snwprintf(buf, 127, L"%s %s", k, k);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Pointer to the middle of the screen (two taps; outside text fields or in mouse mode)");
+    }
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.lock_hotkey.vk)
         help_add_hotkey(&g_cfg.lock_hotkey,

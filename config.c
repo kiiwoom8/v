@@ -583,6 +583,7 @@ void config_set_defaults(Config *c)
     c->shortcut_paste = 1;
     c->fast_scroll_lines = 5;
     c->scroll_end_tap_ms = 300;
+    c->center_tap_ms = 300;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
 
@@ -599,6 +600,7 @@ void config_set_defaults(Config *c)
     parse_key(L",", &c->key_scroll_left);
     parse_key(L".", &c->key_scroll_right);
     parse_key(L"g", &c->key_scroll_end);
+    parse_key(L"Enter", &c->key_center);
     parse_key(L"f", &c->key_hints);
     parse_key(L"i", &c->key_exit);
     parse_key(L"/", &c->key_help);
@@ -891,6 +893,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->fast_scroll_lines, line, key, val, 1, 50);
     else if (_wcsicmp(key, L"scroll_end_tap_ms") == 0)
         apply_int_range(&c->scroll_end_tap_ms, line, key, val, 0, 1000);
+    else if (_wcsicmp(key, L"center_tap_ms") == 0)
+        apply_int_range(&c->center_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
         apply_double_positive(&c->fast_scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_max_speed") == 0)
@@ -921,6 +925,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_key(&c->key_scroll_right, line, key, val);
     else if (_wcsicmp(key, L"key_scroll_end") == 0)
         apply_key(&c->key_scroll_end, line, key, val);
+    else if (_wcsicmp(key, L"key_center") == 0)
+        apply_key(&c->key_center, line, key, val);
     else if (_wcsicmp(key, L"key_hints") == 0)
         apply_key(&c->key_hints, line, key, val);
     else if (_wcsicmp(key, L"key_exit") == 0)
@@ -1572,6 +1578,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Alt + Shift + g to the bottom, also without Alt outside text fields\r\n");
     appendf(buf, cch, L"; and in mouse mode; 0 = both off.\r\n");
     appendf(buf, cch, L"scroll_end_tap_ms = %d\r\n", d.scroll_end_tap_ms);
+    appendf(buf, cch, L"; key_center twice (two taps within this many ms) puts the pointer in the\r\n");
+    appendf(buf, cch, L"; middle of the active window's screen; the key still reaches the app.\r\n");
+    appendf(buf, cch, L"; In mouse mode, and outside it where the focus is not in a text field\r\n");
+    appendf(buf, cch, L"; (needs bare_keys). 0 = off.\r\n");
+    appendf(buf, cch, L"center_tap_ms = %d\r\n", d.center_tap_ms);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
     add_key_line(buf, cch, L"Move the mouse down.", L"key_down", d.key_down);
@@ -1594,6 +1605,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
                  d.key_scroll_right);
     add_key_line(buf, cch, L"Scroll to the top (tap twice) / bottom (with Shift).",
                  L"key_scroll_end", d.key_scroll_end);
+    add_key_line(buf, cch, L"Tap twice: pointer to the middle of the screen (none = off).",
+                 L"key_center", d.key_center);
     add_key_line(buf, cch, L"Open the click hints.", L"key_hints",
                  d.key_hints);
     add_key_line(buf, cch, L"Leave mouse mode (Esc and CapsLock also leave it).",

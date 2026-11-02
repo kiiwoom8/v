@@ -161,6 +161,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_SET_LOCKED  (WM_APP + 25)
 #define WM_INPUT_CAPS_CHECK  (WM_APP + 26)  // to s_power_wnd; wParam = key just released
 #define WM_INPUT_PTR_UPDATE  (WM_APP + 27)  // decide again whether the pointer is hidden
+#define WM_INPUT_CENTER      (WM_APP + 28)  // key_center twice: pointer to the middle
 
 #define MOVE_LEFT  0x01
 #define MOVE_DOWN  0x02
@@ -269,6 +270,14 @@ static BOOL s_alt_extended = FALSE;
 // top; any other key starts over.
 static BOOL  s_end_tap = FALSE;
 static DWORD s_end_tap_tick = 0;
+
+// The last key was a lone key_center (Enter). A second one within
+// center_tap_ms puts the pointer in the middle of the screen; any other key
+// starts over. s_center_ok is whether the first press was somewhere the
+// jump is allowed (mouse mode, or the focus known not to be in a text field).
+static BOOL  s_center_tap = FALSE;
+static BOOL  s_center_ok = FALSE;
+static DWORD s_center_tick = 0;
 
 // Shift + g asked for the bottom while Shift was still held. It scrolls
 // through UI Automation on press (Shift does not matter there); the wheel
@@ -1563,6 +1572,36 @@ static BOOL bare_key_ok(UINT vk)
     return kind == FOCUS_OTHER;
 }
 
+// key_center twice (Enter Enter within center_tap_ms, no modifiers) puts the
+// pointer in the middle of the active window's screen, from the input thread
+// once the hook has returned (both presses reach the app as usual). Outside
+// mouse mode only where the focus is known not to be in a text field, like
+// the bare keys, read when the first press arms it: that press asks the
+// focus again (focus_key_passed), so the answer at the second is often still
+// pending, and nothing here waits for it.
+static void center_key_down(UINT vk, UINT mods, BOOL armed)
+{
+    DWORD now;
+    BOOL ok;
+
+    if (!g_cfg.key_center || vk != g_cfg.key_center || mods != 0 ||
+        g_cfg.center_tap_ms <= 0)
+        return;
+    now = GetTickCount();
+    if (armed && s_center_ok &&
+        (DWORD)(now - s_center_tick) <= (DWORD)g_cfg.center_tap_ms) {
+        ok = flag_get(&s_mouse_mode) ||
+             (!popup_open(TRUE, NULL) && uia_focus_wait(0) != FOCUS_TEXT);
+        if (ok && s_input_tid)
+            PostThreadMessageW(s_input_tid, WM_INPUT_CENTER, 0, 0);
+        return;
+    }
+    s_center_tap = TRUE;
+    s_center_tick = now;
+    s_center_ok = flag_get(&s_mouse_mode) ||
+                  (!popup_open(TRUE, NULL) && uia_focus_wait(0) == FOCUS_OTHER);
+}
+
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
 // it, so ask again once it has.
 static void focus_key_passed(UINT vk)
@@ -1707,12 +1746,15 @@ static BOOL handle_down(UINT vk)
     UINT base;
     int act;
     BOOL end_tap = s_end_tap;
+    BOOL center_tap = s_center_tap;
     BOOL shift;
     BOOL bare;
 
-    // Any key ends a pending g g (a second g is armed by end_tap) and drops a
-    // bottom jump still waiting for Shift; modifiers never reach here.
+    // Any key ends a pending g g (a second g is armed by end_tap) and a
+    // pending Enter Enter, and drops a bottom jump still waiting for Shift;
+    // modifiers never reach here.
     s_end_tap = FALSE;
+    s_center_tap = FALSE;
     s_end_shift = FALSE;
 
     if (handle_hotkeys(vk, mods, TRUE)) {
@@ -1811,11 +1853,14 @@ static BOOL handle_down(UINT vk)
             return TRUE;
         }
         if (is_typing_key(vk)) {
+            // A typing key as key_center still counts, swallowed or not.
+            center_key_down(vk, mods, center_tap);
             s_owner[vk] = OWN_SWALLOW;
             mark_caps_used();
             return TRUE;
         }
     }
+    center_key_down(vk, mods, center_tap);
     focus_key_passed(vk);
     ahead_key_passed();
     s_owner[vk] = OWN_PASS;
@@ -2124,6 +2169,7 @@ static void reset_key_state(void)
     s_alt_scan = 0;
     s_alt_extended = FALSE;
     s_end_shift = FALSE;
+    s_center_tap = FALSE;
     InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
 }
@@ -2382,6 +2428,37 @@ static void ptr_schedule(void)
         return;
     if (InterlockedCompareExchange(&s_ptr_posted, 1, 0) == 0)
         PostThreadMessageW(s_input_tid, WM_INPUT_PTR_UPDATE, 0, 0);
+}
+
+// WM_INPUT_CENTER, on the input thread: the pointer goes to the middle of
+// the active window's monitor (the pointer's own when there is none). A move
+// of ours, so the mouse hook ignores it; outside mouse mode the pointer is
+// shown there as the real mouse would show it, and hides again after
+// hide_pointer ms. In mouse mode the pill follows.
+static void center_pointer(void)
+{
+    HWND fg = GetForegroundWindow();
+    HMONITOR mon = NULL;
+    MONITORINFO mi;
+    POINT pt;
+
+    if (fg)
+        mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+    if (!mon && GetCursorPos(&pt))
+        mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    if (!mon)
+        return;
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi))
+        return;
+    pt.x = (mi.rcMonitor.left + mi.rcMonitor.right) / 2;
+    pt.y = (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2;
+    own_move(pt);
+    indicator_moved();
+    InterlockedExchange(&s_ptr_phys_tick, (LONG)GetTickCount());
+    ptr_update();
+    if (g_cfg.log)
+        app_log(L"center: pointer to %ld,%ld", pt.x, pt.y);
 }
 
 // The keyboard is in use: the real mouse's last event counts as long ago,
@@ -3772,6 +3849,10 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
             }
             if (msg.message == WM_INPUT_PTR_UPDATE) {
                 ptr_update();
+                continue;
+            }
+            if (msg.message == WM_INPUT_CENTER) {
+                center_pointer();
                 continue;
             }
             continue;

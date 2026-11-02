@@ -141,6 +141,9 @@ typedef struct {
     int    fast_scroll_lines;  // notches per Alt + u/d tap, default 5 (1-50)
     int    scroll_end_tap_ms;  // Alt + g g within this many ms goes to the top (Alt +
                                // Shift + g to the bottom), default 300 (0 = both off)
+    int    center_tap_ms;      // key_center twice within this many ms puts the pointer in
+                               // the middle of the active window's screen, default 300
+                               // (0 = off)
     double fast_scroll_speed;  // Alt + u/d held, default 3600
     double fast_scroll_max_speed; // default 14400
     UINT key_left, key_down, key_up, key_right;          // h j k l
@@ -153,6 +156,9 @@ typedef struct {
     UINT key_scroll_left;      // ,
     UINT key_scroll_right;     // .
     UINT key_scroll_end;       // g  (g g = top, Shift + g = bottom)
+    UINT key_center;           // Enter  (tap twice = pointer to the middle of the screen;
+                               // the key still reaches the app; in mouse mode, and outside
+                               // it where the focus is not in a text field)
     UINT key_hints;            // f  (open click hints)
     UINT key_exit;             // i  (leave mouse mode; Esc always works too)
     UINT key_help;             // /  (also shown as ?)

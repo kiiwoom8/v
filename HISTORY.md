@@ -33,7 +33,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `common.h` | 480 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
-| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `input_thread_proc` |
+| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the Enter Enter jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `center_pointer`, `input_thread_proc` |
 | `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
 | `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
@@ -414,6 +414,25 @@ Invariants stated in `common.h` and enforced by history:
   on from the element; `Alt` + label and a drag's drop still move it.
   `page_acted_at(PAGE_CLICK, &pt)` now records the click point rather than
   the cursor before the move (the flush asks the browser there).
+- "Enter twice for moving the mouse cursor to the center." `key_center`
+  (default Enter) twice within `center_tap_ms` (300 ms) puts the pointer in
+  the middle of the monitor that holds the active window (the pointer's
+  own when there is none; the pointer may be hidden anywhere). Decisions:
+  the key is never held back or swallowed, since Enter is every app's key
+  and a first press cannot know whether a second follows, so both reach
+  the app and only the second has the side effect (`center_key_down`, at
+  the two places in `handle_down` where a key goes on to the app or is
+  swallowed as a typing key in mouse mode); outside mouse mode it needs
+  the focus known to be outside a text field, like the bare keys, read
+  when the first press arms it (`s_center_ok`), because that press asks
+  the focus again (`focus_key_passed`) and the answer at the second is
+  often still pending; nothing waits in the hook, and the move itself runs
+  from the input thread's queue (`WM_INPUT_CENTER`, `center_pointer`),
+  not from the hook callback; it counts as the real mouse for
+  `hide_pointer`, so the pointer shows up where it landed and hides again,
+  and the pill follows in mouse mode. A single mouse-mode letter was
+  considered and not taken: the user asked for Enter, and a bare letter
+  would take a key from apps.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -1310,7 +1329,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
 3. `input.c`: an `ACT_*` value, the match in `binding_action` (mouse mode)
    and/or `alt_key_action` (Alt and bare keys), the press in
    `apply_action_down` and the release in `handle_up`. Clear any pending
-   state in `reset_key_state`.
+   state in `reset_key_state`. A key that must still reach the app
+   (`key_center`) is matched in `center_key_down` instead, on the
+   pass-through paths of `handle_down`.
 4. `snippet.c` `first_key_taken`: if it is a new Alt-key letter.
 5. `tray.c` `build_help_rows`: the help window.
 6. `README.md`: the Keys tables, Settings, and Troubleshooting if it takes a
