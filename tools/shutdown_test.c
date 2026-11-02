@@ -189,7 +189,7 @@ static void test_parsing(void)
         process_line(&c, 1, l1, &sec);
         CHECK(c.shutdown_at == 23 * 60 + 30);
         process_line(&c, 2, l2, &sec);
-        CHECK(c.shutdown_warning == 600);
+        CHECK(c.shutdown_warning == 300);
         process_line(&c, 3, l3, &sec);
         CHECK(c.shutdown_force == 1);
         process_line(&c, 4, l4, &sec);
@@ -345,6 +345,95 @@ static void test_schedule(void)
     advance(31 * 60);
     CHECK(g_exits == 1 && g_once_due == 0 &&
           g_daily_due == at_local(2026, 11, 3, 23, 30, 0));
+
+    reset(L"cancelling a one-off typed for shutdown_at's time cancels both",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    schedule_once(clock_next(23 * 60 + 30, 0, g_fake_now));
+    advance(29 * 60 + 10);
+    CHECK(g_deadline != 0);
+    shutdown_cancel();
+    CHECK(g_deadline == 0 && g_once_due == 0 &&
+          g_daily_due == at_local(2026, 11, 3, 23, 30, 0));
+    advance(3 * 60);
+    CHECK(g_exits == 0 && g_deadline == 0);
+
+    reset(L"a one-off days away replaces only the next shutdown_at day",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    shutdown_in(72 * 60);
+    CHECK(g_daily_due == at_local(2026, 11, 3, 23, 30, 0));
+    CHECK(wcscmp(g_last_title, L"Shutdown scheduled") == 0);
+
+    reset(L"cancelling that one-off gives the day back",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    shutdown_in(120);
+    CHECK(g_daily_due == at_local(2026, 11, 3, 23, 30, 0));
+    shutdown_cancel();
+    CHECK(g_once_due == 0 &&
+          g_daily_due == at_local(2026, 11, 2, 23, 30, 0));
+
+    reset(L"...but not when it is too close to count down in full",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    shutdown_in(120);
+    advance(29 * 60 + 20);
+    shutdown_cancel();
+    CHECK(g_daily_due == at_local(2026, 11, 3, 23, 30, 0));
+    advance(2 * 60);
+    CHECK(g_exits == 0 && g_deadline == 0);
+
+    reset(L"a second one-off before shutdown_at gives the day back",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    shutdown_in(120);
+    shutdown_in(15);
+    CHECK(g_once_due == at_local(2026, 11, 2, 23, 15, 0) &&
+          g_daily_due == at_local(2026, 11, 2, 23, 30, 0));
+
+    reset(L"a clock resync on waking does not hide the sleep",
+          at_local(2026, 11, 2, 20, 0, 0));
+    shutdown_in(1);
+    advance(30);
+    CHECK(g_deadline != 0);
+    g_fake_now += 2 * MINUTE_100NS;
+    shutdown_time_changed();
+    CHECK(g_exits == 0 && g_deadline >= g_fake_now + 59 * SEC_100NS);
+
+    reset(L"...nor a shutdown_at that passed while asleep",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    advance(10);
+    g_fake_now = at_local(2026, 11, 2, 23, 32, 0);
+    shutdown_time_changed();
+    CHECK(g_exits == 0 && g_deadline >= g_fake_now + 59 * SEC_100NS);
+    advance(61);
+    CHECK(g_exits == 1);
+
+    reset(L"...and one slept through still gets its balloon",
+          at_local(2026, 11, 2, 23, 0, 0));
+    set_daily(23, 30);
+    advance(10);
+    g_fake_now = at_local(2026, 11, 3, 8, 0, 0);
+    shutdown_time_changed();
+    CHECK(g_exits == 0 && wcscmp(g_last_title, L"Shutdown skipped") == 0 &&
+          g_daily_due == at_local(2026, 11, 3, 23, 30, 0));
+
+    reset(L"the clock set back during the countdown closes it",
+          at_local(2026, 11, 2, 20, 0, 0));
+    shutdown_in(1);
+    advance(20);
+    CHECK(g_deadline != 0);
+    g_fake_now -= 60 * MINUTE_100NS;
+    shutdown_time_changed();
+    CHECK(g_deadline == 0 && g_exits == 0);
+    advance(59 * 60 + 30);
+    CHECK(g_deadline == 0);
+    advance(20);
+    CHECK(g_deadline != 0 && g_exits == 0);
+    advance(55);
+    CHECK(g_exits == 1);
 
     reset(L"what the tray menu shows", at_local(2026, 11, 2, 23, 0, 0));
     shutdown_in(65);

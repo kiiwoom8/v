@@ -279,15 +279,16 @@ shutdown at ...** in the same menu cancels it.
 
 To shut down every day, set `shutdown_at = 23:30` in the `[general]` section
 of `vim.ini`. Cancelling from the tray menu then skips that day only, and a
-shutdown chosen in the tray menu that comes later than that day's replaces
-it.
+shutdown chosen in the tray menu that comes later than the next day's
+replaces it (cancelling that one gives the day back).
 
 A minute before (`shutdown_warning`), a countdown window opens on top:
 
 - **Cancel** (or `Esc`, `Enter`, or closing the window) keeps the computer on.
 - **10 more minutes** postpones it.
-- **Shut down now** shuts down at once. It can only be clicked, so keys typed
-  into the window by surprise never shut the computer down.
+- **Shut down now** shuts down at once. It can only be clicked, and only from
+  a second after the window opens, so keys typed or a click made into the
+  window by surprise never shut the computer down.
 
 Then Windows shuts down and turns the computer off (a full shutdown, like
 `shutdown /s`). Apps that do not respond are closed; an app with unsaved work
@@ -385,7 +386,7 @@ ones:
 - `shutdown_at` (a 24-hour time such as `23:30`: turn the computer off every
   day then; `none` = only when chosen in the tray menu, default),
   `shutdown_warning` (seconds the countdown window shows before a scheduled
-  shutdown, 0-600, default 60; 0 = none), `shutdown_force` (1 = close apps
+  shutdown, 0-300, default 60; 0 = none), `shutdown_force` (1 = close apps
   even when they have unsaved work; default 0), see
   [Scheduled shutdown](#scheduled-shutdown)
 - `[shortcuts]`: text shortcuts, see [Text shortcuts](#text-shortcuts)

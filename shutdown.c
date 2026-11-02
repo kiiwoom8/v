@@ -46,6 +46,7 @@
 #define TICK_NEAR_MS  1000
 #define TICK_COUNT_MS 200             // while the countdown shows
 #define POSTPONE_MIN  10              // the countdown's "10 more minutes"
+#define NOW_DELAY_MS  1000            // "Shut down now" takes clicks after this
 #define ONCE_MAX_MIN  (7 * 24 * 60)
 
 #define CD_CLASS      L"VimMouseShutdownCountdown"
@@ -80,6 +81,9 @@ static ULONGLONG g_deadline;       // the countdown ends here (UTC); 0 = no coun
 static ULONGLONG g_count_due;      // the shutdown the countdown is for
 static ULONGLONG g_prev_now;       // wall clock at the last check
 static LONG      g_tip_day;        // local day the tooltip's "tomorrow" was written on
+static BOOL      g_restore;        // the one-off replaced a shutdown_at day...
+static LONG      g_restore_done;   // ...and g_daily_done was this before
+static LONG      g_restore_day;    // ...and is this since
 static UINT_PTR  g_timer;
 static UINT      g_timer_ms;
 
@@ -88,6 +92,7 @@ static HWND  g_cd_text;
 static HFONT g_cd_font;
 static HFONT g_cd_big_font;
 static int   g_cd_shown = -1;     // seconds the countdown text shows
+static DWORD g_cd_opened;         // GetTickCount when it opened
 
 static HWND  g_dlg_wnd;
 static HWND  g_dlg_edit;
@@ -284,10 +289,42 @@ static void daily_consume(void)
 
 static void consume(BOOL daily)
 {
-    if (daily)
+    if (daily) {
         daily_consume();
-    else
+    } else {
         g_once_due = 0;
+        g_restore = FALSE;
+    }
+}
+
+// Uses up every shutdown due from lo to hi, of both kinds: shutdowns that
+// close together are one to the user, who cancels or sees it carried out.
+static void consume_between(ULONGLONG lo, ULONGLONG hi)
+{
+    int i;
+
+    if (g_once_due && g_once_due >= lo && g_once_due <= hi)
+        consume(FALSE);
+    for (i = 0; i < 16 && g_daily_due && g_daily_due >= lo &&
+                g_daily_due <= hi; i++)
+        daily_consume();
+}
+
+// The one-off that replaced a shutdown_at day is gone (cancelled, or replaced
+// in turn): that day is back, unless it is too close to count down in full
+// or another shutdown_at day was used up since.
+static void undo_replace(ULONGLONG now)
+{
+    if (!g_restore)
+        return;
+    g_restore = FALSE;
+    if (g_daily_done != g_restore_day)
+        return;
+    g_daily_done = g_restore_done;
+    g_daily_due = clock_next(g_daily_min, g_daily_done, now);
+    if (g_daily_due && g_daily_due <= now + (ULONGLONG)g_cfg.shutdown_warning *
+                                               SEC_100NS + MINUTE_100NS)
+        daily_consume();
 }
 
 static void timer_set(UINT ms);
@@ -507,10 +544,13 @@ static void countdown_open(void)
               g_cd_font);
     add_child(g_cd_wnd, L"BUTTON", L"10 more minutes",
               WS_TABSTOP | BS_PUSHBUTTON, 0, ID_CD_LATER, g_cd_font);
-    add_child(g_cd_wnd, L"BUTTON", L"Shut down now", WS_GROUP | BS_PUSHBUTTON,
-              0, ID_CD_NOW, g_cd_font);
+    // Disabled for a moment too: a click already on its way where the
+    // window appears must not land on it.
+    add_child(g_cd_wnd, L"BUTTON", L"Shut down now",
+              WS_GROUP | WS_DISABLED | BS_PUSHBUTTON, 0, ID_CD_NOW, g_cd_font);
     countdown_layout(g_cd_wnd);
     g_cd_shown = -1;
+    g_cd_opened = GetTickCount();
     ShowWindow(g_cd_wnd, SW_SHOWNORMAL);
     SetForegroundWindow(g_cd_wnd);
     SetFocus(GetDlgItem(g_cd_wnd, ID_CD_CANCEL));
@@ -524,6 +564,11 @@ static void countdown_update(ULONGLONG now)
 
     if (!g_cd_text)
         return;
+    if (GetTickCount() - g_cd_opened >= NOW_DELAY_MS) {
+        HWND now_btn = GetDlgItem(g_cd_wnd, ID_CD_NOW);
+        if (now_btn && !IsWindowEnabled(now_btn))
+            EnableWindow(now_btn, TRUE);
+    }
     s = g_deadline > now
             ? (int)((g_deadline - now + SEC_100NS - 1) / SEC_100NS)
             : 0;
@@ -543,21 +588,16 @@ static void power_off(BOOL daily)
 {
     HANDLE           token;
     TOKEN_PRIVILEGES tp;
-    ULONGLONG        limit;
     UINT             flags;
     WCHAR            text[256];
     DWORD            err;
-    int              i;
 
     // Used up first: if an app stops the shutdown, it is not tried again,
-    // and the other kind of shutdown within the next minutes goes with it.
+    // and any other one due before its countdown could end goes with it.
     consume(daily);
-    limit = wall_now() + (ULONGLONG)g_cfg.shutdown_warning * SEC_100NS +
-            MINUTE_100NS;
-    if (g_once_due && g_once_due <= limit)
-        g_once_due = 0;
-    for (i = 0; i < 4 && g_daily_due && g_daily_due <= limit; i++)
-        daily_consume();
+    consume_between(0, wall_now() +
+                           (ULONGLONG)g_cfg.shutdown_warning * SEC_100NS +
+                           MINUTE_100NS);
     countdown_close();
     tray_update();
 
@@ -599,10 +639,10 @@ static void missed(BOOL daily, ULONGLONG due)
     format_when(due, at, 96);
     consume(daily);
     countdown_close();
-    app_log(L"shutdown: the one at %s was missed, the computer was asleep",
-            at);
-    _snwprintf(text, 255, L"The computer was asleep at %s, so it was not "
-               L"shut down then and stays on.", at);
+    app_log(L"shutdown: the one at %s was missed (asleep, or the clock "
+            L"moved)", at);
+    _snwprintf(text, 255, L"The computer was asleep at %s (or its clock was "
+               L"changed), so it was not shut down and stays on.", at);
     text[255] = L'\0';
     tray_balloon(L"Shutdown skipped", text);
     tray_update();
@@ -647,6 +687,11 @@ static void sd_check(void)
                 missed(daily, due);
                 continue;
             }
+            // The clock was set back: count down again when it is due.
+            if (due > now + warn + SEC_100NS) {
+                countdown_close();
+                continue;
+            }
             // It slept with the countdown on screen: show it in full again.
             if (gap)
                 g_deadline = due > now + warn ? due : now + warn;
@@ -688,18 +733,26 @@ static void sd_check(void)
 static void schedule_once(ULONGLONG due)
 {
     ULONGLONG now = wall_now();
-    WCHAR     at[96], left[48], skipped[96], text[256];
-    int       i;
+    WCHAR     at[96], left[48], skipped[96], first[96], text[256];
+    BOOL      daily;
 
     if (!due)
         return;
+    // A new one-off replaces the old one, and with it the old one's
+    // replacement of a shutdown_at day.
+    if (g_once_due)
+        undo_replace(now);
+    g_once_due = 0;
     skipped[0] = L'\0';
-    // A shutdown_at day before it would turn the computer off first; the
-    // one-off asked for now takes its place.
-    for (i = 0; i < 16 && g_daily_due && g_daily_due < due; i++) {
-        if (!skipped[0])
-            format_when(g_daily_due, skipped, 96);
+    // The next shutdown_at day before it would turn the computer off first;
+    // the one-off asked for now takes its place (wanting to stay on longer
+    // tonight). Later days still come first if it is days away.
+    if (g_daily_due && g_daily_due < due) {
+        format_when(g_daily_due, skipped, 96);
+        g_restore_done = g_daily_done;
         daily_consume();
+        g_restore_day = g_daily_done;
+        g_restore = TRUE;
     }
     g_once_due = due;
     countdown_close();
@@ -707,13 +760,18 @@ static void schedule_once(ULONGLONG due)
     format_when(due, at, 96);
     format_left(due, now, left, 48);
     app_log(L"shutdown: scheduled for %s (%s)", at, left);
-    if (skipped[0])
+    if (next_due(&daily) != due) {
+        format_when(g_daily_due, first, 96);
+        _snwprintf(text, 255, L"Scheduled for %s (%s), but shutdown_at turns "
+                   L"the computer off before that, at %s.", at, left, first);
+    } else if (skipped[0]) {
         _snwprintf(text, 255, L"The computer shuts down at %s (%s), instead "
                    L"of at %s (shutdown_at). Cancel it from the tray menu.",
                    at, left, skipped);
-    else
+    } else {
         _snwprintf(text, 255, L"The computer shuts down at %s (%s). Cancel "
                    L"it from the tray menu.", at, left);
+    }
     text[255] = L'\0';
     tray_balloon(L"Shutdown scheduled", text);
     tray_update();
@@ -972,6 +1030,7 @@ void shutdown_config_changed(void)
     if (g_cfg.shutdown_at != g_daily_min) {
         g_daily_min = g_cfg.shutdown_at;
         g_daily_done = 0;
+        g_restore = FALSE;
         g_daily_due = clock_next(g_daily_min, 0, wall_now());
         if (g_daily_due) {
             WCHAR at[96];
@@ -988,15 +1047,18 @@ void shutdown_config_changed(void)
 
 void shutdown_time_changed(void)
 {
-    BOOL daily;
+    ULONGLONG now = wall_now();
+    BOOL      daily;
 
     if (!g_started)
         return;
     // The time zone may have changed: shutdown_at follows the local clock.
-    // A countdown on screen keeps its time.
-    if (g_daily_min >= 0 && !(g_deadline && next_due(&daily) && daily))
-        g_daily_due = clock_next(g_daily_min, g_daily_done, wall_now());
-    g_prev_now = 0;
+    // One already due stays for sd_check to count down late or skip (Windows
+    // also resyncs the clock on waking), and a countdown keeps its time.
+    // g_prev_now stays, so a jump still counts as a sleep.
+    if (g_daily_min >= 0 && g_daily_due > now &&
+        !(g_deadline && next_due(&daily) && daily))
+        g_daily_due = clock_next(g_daily_min, g_daily_done, now);
     tray_update();
     sd_check();
 }
@@ -1012,7 +1074,7 @@ void shutdown_in(int minutes)
 
 void shutdown_cancel(void)
 {
-    ULONGLONG now = wall_now(), due;
+    ULONGLONG now = wall_now(), due, hi;
     BOOL      daily;
     WCHAR     at[96], next_at[96], left[48], text[256];
 
@@ -1022,7 +1084,16 @@ void shutdown_cancel(void)
         return;
     }
     format_when(due, at, 96);
-    consume(daily);
+    hi = (g_deadline > due ? g_deadline : due) + MINUTE_100NS;
+    if (daily) {
+        daily_consume();
+    } else {
+        g_once_due = 0;
+        undo_replace(now);
+    }
+    // One due with it (a one-off typed for shutdown_at's time) is cancelled
+    // too, or it would count down again at once.
+    consume_between(due, hi);
     countdown_close();
     app_log(L"shutdown: the one at %s cancelled", at);
 

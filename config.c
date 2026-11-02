@@ -847,7 +847,7 @@ static void process_general(Config *c, int line, const WCHAR *key,
                      L"(use a 24-hour time such as 23:30, or none)", val);
     }
     else if (_wcsicmp(key, L"shutdown_warning") == 0)
-        apply_int_range(&c->shutdown_warning, line, key, val, 0, 600);
+        apply_int_range(&c->shutdown_warning, line, key, val, 0, 300);
     else if (_wcsicmp(key, L"shutdown_force") == 0)
         apply_bool(&c->shutdown_force, line, key, val);
     else
@@ -1499,7 +1499,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     else
         appendf(buf, cch, L"shutdown_at = none\r\n");
     appendf(buf, cch, L"; Seconds a countdown window shows before a scheduled shutdown, with\r\n");
-    appendf(buf, cch, L"; Cancel and 10 more minutes (0-600; 0 = shut down without one).\r\n");
+    appendf(buf, cch, L"; Cancel and 10 more minutes (0-300; 0 = shut down without one).\r\n");
     appendf(buf, cch, L"shutdown_warning = %d\r\n", d.shutdown_warning);
     appendf(buf, cch, L"; 1 = a scheduled shutdown closes apps even when they have unsaved\r\n");
     appendf(buf, cch, L"; work. 0 = only apps that do not respond; one that asks to save its\r\n");

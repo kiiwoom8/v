@@ -109,7 +109,7 @@ typedef struct {
                                // minutes after midnight (vim.ini "23:30"); -1 = none (default).
                                // The tray menu can cancel one day's.
     int    shutdown_warning;   // seconds the countdown window shows before a scheduled
-                               // shutdown (0-600, default 60; 0 = none)
+                               // shutdown (0-300, default 60; 0 = none)
     int    shutdown_force;     // 1 = a scheduled shutdown closes apps even with unsaved work;
                                // default 0 (only hung apps; others may hold it up)
 
