@@ -137,7 +137,11 @@ the hints. Chrome, Edge and apps built on them tell UI Automation about moved
 and new elements up to half a second late, so when vim mouse scrolls or
 clicks there, or the browser reports a scroll of its own (mouse wheel,
 touchpad, keys), vim mouse asks the browser right then to send its changes
-and waits for them: about a third of a second after a scroll. That starts
+and waits for them: a few dozen milliseconds after a scroll when the
+browser does not animate scrolling (Chrome and Edge follow Windows'
+animation effects setting), else once its animation is over. Where it does
+not animate, the search for the elements starts on the browser's first
+answer and the next one only confirms it (`scan_early`). That starts
 with the scroll or click itself, not with the hotkey, so a hotkey pressed
 after it is over finds the page in and shows the labels at once, and one
 pressed sooner waits for the rest of it (`scan_flush`; never longer than
@@ -375,7 +379,12 @@ ones:
   changes at once and end it as soon as they are in, and wait like that
   after scrolls the browser reports itself, such as the mouse wheel,
   default; 0 = wait out `scan_settle` after vim mouse's own scrolls and
-  clicks only), `scan_focusable` (1 = in a browser, also label elements
+  clicks only), `scan_early` (after a scroll, the browser's first answer
+  usually has the page in and the second only confirms it: 1 = search for
+  the elements from the first answer on when Windows' animation effects
+  are off, since Chrome and Edge then scroll without animating, default;
+  2 = always, for a browser whose smooth scrolling is off some other way;
+  0 = search only once the page is confirmed still), `scan_focusable` (1 = in a browser, also label elements
   that only say they can take the keyboard focus, such as a `div` with
   `tabindex` whose click handler sits on an ancestor or a range slider,
   unless they are text, scroll areas, lie outside the page or cover over a
@@ -471,9 +480,12 @@ when GitHub cannot be reached.
   hotkey).
 - **The hints take long to appear in a browser right after scrolling.** With
   `log = 1`, `vim.log` says how long each wait for the page took and how it
-  ended: "stopped", "reported" or "asked" is the browser answering (about a
-  third of a second after a scroll, usually before the hotkey), "time
-  limit" means it did not (`scan_settle`, 650 ms). "N targets after M ms"
+  ended: "stopped" or "asked" is the browser answering (a few dozen
+  milliseconds after a scroll with Windows' animation effects off, up to
+  about a third of a second with them on, usually before the hotkey;
+  "scanned on the first flush" means the search ran while the second
+  answer only confirmed the page), "time limit" means it did not
+  (`scan_settle`, 650 ms). "N targets after M ms"
   is the search itself, which runs in the browser: a long, busy page takes
   longer. Send those lines with a report.
 - **A panel, menu or page element gets no label.** Set `log = 2`, open the

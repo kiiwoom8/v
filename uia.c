@@ -305,7 +305,8 @@ typedef struct IUIAutomationElementVtbl {
     void *GetCachedPattern;
     void *GetCachedParent;
     void *GetCachedChildren;
-    void *get_CurrentProcessId;
+    HRESULT (STDMETHODCALLTYPE *get_CurrentProcessId)(
+        IUIAutomationElement *This, int *retVal);
     void *get_CurrentControlType;
     void *get_CurrentLocalizedControlType;
     void *get_CurrentName;
@@ -4171,9 +4172,6 @@ static BOOL g_uia_cs_ready;
 static volatile LONG g_uia_quit;
 static volatile LONG g_uia_available;
 static ScanRequest g_uia_request;
-// uia_flush: one pending hit test for the worker (under g_uia_cs).
-static BOOL  g_flush_pending;
-static POINT g_flush_pt;
 
 static BOOL uia_still_current(UINT scan_id)
 {
@@ -4275,22 +4273,125 @@ static void warm_foreground(UiaEngine *engine)
 // immediate serialization (RenderAccessibilityImpl::HitTest), and that
 // serialization takes every pending position and scroll change along
 // (AXObjectCacheImpl::SerializeUpdatesAndEvents), past both the 500 ms
-// location throttle and the 150 ms deferral of new elements. The element
-// itself is not needed.
-static void flush_at(UiaEngine *engine, POINT pt)
+// location throttle and the 150 ms deferral of new elements. Measured on
+// Windows (2026-11-03): the scroll report for what the hit test sent out
+// arrives within a millisecond of the call returning. Returns whether the
+// hit test reached the page: the element found belongs to the process of
+// the window at the point (our own overlay, or another window over it,
+// answers for another process and proves nothing about the page).
+static BOOL flush_at(UiaEngine *engine, POINT pt)
 {
     IUIAutomationElement *el = NULL;
     HWND hwnd = WindowFromPoint(pt);
     DWORD pid = 0;
+    int el_pid = 0;
+    BOOL reached = FALSE;
 
     if (!hwnd)
-        return;
+        return FALSE;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId())
-        return;
+        return FALSE;
     if (SUCCEEDED(engine->automation->lpVtbl->ElementFromPoint(
-            engine->automation, pt, &el)) && el)
+            engine->automation, pt, &el)) && el) {
+        reached = SUCCEEDED(el->lpVtbl->get_CurrentProcessId(el, &el_pid)) &&
+                  (DWORD)el_pid == pid;
         el->lpVtbl->Release(el);
+    }
+    return reached;
+}
+
+// The flush runs on a thread of its own, with an engine of its own, so it is
+// never queued behind a scan on the worker (the wait reads its timing, and
+// the scan it starts early must not delay the flush that confirms it). It
+// posts WM_APP_FLUSH_DONE (wParam = reached, lParam = the request's seq).
+static HANDLE g_fl_thread;
+static HANDLE g_fl_wake;
+static CRITICAL_SECTION g_fl_cs;
+static BOOL  g_fl_cs_ready;
+static volatile LONG g_fl_quit;
+static BOOL  g_fl_pending;
+static POINT g_fl_pt;
+static UINT  g_fl_seq;
+
+static DWORD WINAPI flush_worker(void *arg)
+{
+    UiaEngine engine;
+    HRESULT hr;
+    (void)arg;
+
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (hr != S_OK && hr != S_FALSE)
+        return 0;
+    if (uia_engine_init(&engine, FALSE)) {
+        for (;;) {
+            BOOL pending;
+            POINT pt;
+            UINT seq;
+            BOOL reached;
+
+            if (WaitForSingleObject(g_fl_wake, INFINITE) != WAIT_OBJECT_0)
+                break;
+            if (InterlockedCompareExchange(&g_fl_quit, 0, 0))
+                break;
+            EnterCriticalSection(&g_fl_cs);
+            pending = g_fl_pending;
+            pt = g_fl_pt;
+            seq = g_fl_seq;
+            g_fl_pending = FALSE;
+            LeaveCriticalSection(&g_fl_cs);
+            if (!pending)
+                continue;
+            reached = flush_at(&engine, pt);
+            if (g_main_wnd)
+                PostMessageW(g_main_wnd, WM_APP_FLUSH_DONE, (WPARAM)reached,
+                             (LPARAM)seq);
+        }
+        uia_engine_cleanup(&engine);
+    } else {
+        app_log(L"uia: flush engine init failed");
+    }
+    CoUninitialize();
+    return 0;
+}
+
+static void flush_worker_start(void)
+{
+    if (g_fl_thread)
+        return;
+    InitializeCriticalSection(&g_fl_cs);
+    g_fl_cs_ready = TRUE;
+    g_fl_quit = 0;
+    g_fl_pending = FALSE;
+    g_fl_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (g_fl_wake)
+        g_fl_thread = CreateThread(NULL, 0, flush_worker, NULL, 0, NULL);
+    if (!g_fl_thread) {
+        if (g_fl_wake)
+            CloseHandle(g_fl_wake);
+        g_fl_wake = NULL;
+        DeleteCriticalSection(&g_fl_cs);
+        g_fl_cs_ready = FALSE;
+    }
+}
+
+static void flush_worker_stop(void)
+{
+    if (!g_fl_thread)
+        return;
+    InterlockedExchange(&g_fl_quit, 1);
+    SetEvent(g_fl_wake);
+    if (WaitForSingleObject(g_fl_thread, 3000) != WAIT_OBJECT_0)
+        return;
+    CloseHandle(g_fl_thread);
+    g_fl_thread = NULL;
+    CloseHandle(g_fl_wake);
+    g_fl_wake = NULL;
+    if (g_fl_cs_ready) {
+        DeleteCriticalSection(&g_fl_cs);
+        g_fl_cs_ready = FALSE;
+    }
+    InterlockedExchange(&g_fl_quit, 0);
 }
 
 static DWORD WINAPI uia_worker(void *arg)
@@ -4312,7 +4413,7 @@ static DWORD WINAPI uia_worker(void *arg)
             engine_ok = uia_engine_init(&engine, FALSE);
         }
         if (engine_ok) {
-            // A wake for a flush alone must not run the last scan again.
+            // A wake without a new request must not run the last scan again.
             UINT last_scan = 0;
 
             InterlockedExchange(&g_uia_available, TRUE);
@@ -4322,8 +4423,6 @@ static DWORD WINAPI uia_worker(void *arg)
                 ScanRequest request;
                 ScanResult result;
                 WorkerScan scan;
-                BOOL flush;
-                POINT flush_pt;
 
                 DWORD wait = WaitForSingleObject(g_uia_wake, 500);
                 if (InterlockedCompareExchange(&g_uia_quit, 0, 0))
@@ -4337,12 +4436,7 @@ static DWORD WINAPI uia_worker(void *arg)
 
                 EnterCriticalSection(&g_uia_cs);
                 request = g_uia_request;
-                flush = g_flush_pending;
-                flush_pt = g_flush_pt;
-                g_flush_pending = FALSE;
                 LeaveCriticalSection(&g_uia_cs);
-                if (flush)
-                    flush_at(&engine, flush_pt);
                 if (!request.scan_id || !request.mon ||
                     request.scan_id == last_scan)
                     continue;
@@ -4405,6 +4499,8 @@ BOOL uia_start(void)
 
     if (WaitForSingleObject(g_uia_ready, 5000) != WAIT_OBJECT_0)
         goto fail_running;
+    if (g_uia_available)
+        flush_worker_start();
     return g_uia_available != 0;
 
 fail_running:
@@ -4430,6 +4526,7 @@ void uia_stop(void)
 
     uia_scroll_stop();
     uia_focus_stop();
+    flush_worker_stop();
     if (!g_uia_thread)
         return;
 
@@ -4477,15 +4574,22 @@ void uia_scan(HMONITOR mon, UINT scan_id, BOOL detail)
     SetEvent(g_uia_wake);
 }
 
-void uia_flush(POINT pt)
+void uia_flush(POINT pt, UINT seq)
 {
-    if (!g_uia_thread || !g_uia_available || !g_uia_cs_ready)
+    // No flush thread (or it died at its start): answer "not reached", so
+    // the wait falls back to its time limit.
+    if (!g_fl_thread || !g_fl_cs_ready ||
+        WaitForSingleObject(g_fl_thread, 0) == WAIT_OBJECT_0) {
+        if (g_main_wnd)
+            PostMessageW(g_main_wnd, WM_APP_FLUSH_DONE, 0, (LPARAM)seq);
         return;
-    EnterCriticalSection(&g_uia_cs);
-    g_flush_pt = pt;
-    g_flush_pending = TRUE;
-    LeaveCriticalSection(&g_uia_cs);
-    SetEvent(g_uia_wake);
+    }
+    EnterCriticalSection(&g_fl_cs);
+    g_fl_pt = pt;
+    g_fl_seq = seq;
+    g_fl_pending = TRUE;
+    LeaveCriticalSection(&g_fl_cs);
+    SetEvent(g_fl_wake);
 }
 
 void uia_cancel(void)

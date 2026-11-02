@@ -623,6 +623,7 @@ void config_set_defaults(Config *c)
     c->scan_split = 1;
     c->scan_settle = 650;
     c->scan_flush = 1;
+    c->scan_early = 1;
     c->scan_focusable = 1;
     c->browser_first = 1;
 }
@@ -983,6 +984,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->scan_settle, line, key, val, 0, 2000);
     else if (_wcsicmp(key, L"scan_flush") == 0)
         apply_bool(&c->scan_flush, line, key, val);
+    else if (_wcsicmp(key, L"scan_early") == 0)
+        apply_int_range(&c->scan_early, line, key, val, 0, 2);
     else if (_wcsicmp(key, L"scan_focusable") == 0)
         apply_bool(&c->scan_focusable, line, key, val);
     else if (_wcsicmp(key, L"browser_first") == 0)
@@ -1667,11 +1670,20 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; click opened gets its own (0-2000, default 650; 0 = scan at once).\r\n");
     appendf(buf, cch, L"scan_settle = %d\r\n", d.scan_settle);
     appendf(buf, cch, L"; 1 = during that wait, ask the browser to send its changes at once and\r\n");
-    appendf(buf, cch, L"; end it as soon as they are in (about a third of a second after a\r\n");
-    appendf(buf, cch, L"; scroll instead of two thirds); also wait like this after scrolls the\r\n");
-    appendf(buf, cch, L"; browser reports itself (mouse wheel, touchpad, keys). 0 = wait out\r\n");
-    appendf(buf, cch, L"; scan_settle after this program's own scrolls and clicks only.\r\n");
+    appendf(buf, cch, L"; end it as soon as they are in (a few dozen ms after a scroll where the\r\n");
+    appendf(buf, cch, L"; browser does not animate scrolling, else once its animation is over);\r\n");
+    appendf(buf, cch, L"; also wait like this after scrolls the browser reports itself (mouse\r\n");
+    appendf(buf, cch, L"; wheel, touchpad, keys). 0 = wait out scan_settle after this program's\r\n");
+    appendf(buf, cch, L"; own scrolls and clicks only.\r\n");
     appendf(buf, cch, L"scan_flush = %d\r\n", d.scan_flush ? 1 : 0);
+    appendf(buf, cch, L"; After a scroll, the first time the browser is asked it usually has the\r\n");
+    appendf(buf, cch, L"; page in already, and a second question only confirms it. 1 = search\r\n");
+    appendf(buf, cch, L"; for the elements from the first answer on while that confirmation\r\n");
+    appendf(buf, cch, L"; runs, when Windows' animation effects are off (Chrome and Edge then\r\n");
+    appendf(buf, cch, L"; scroll without animating, so the page is in at once); 2 = always,\r\n");
+    appendf(buf, cch, L"; for a browser whose smooth scrolling is off some other way; 0 = never\r\n");
+    appendf(buf, cch, L"; (search only once the page is confirmed still). Default 1.\r\n");
+    appendf(buf, cch, L"scan_early = %d\r\n", d.scan_early);
     appendf(buf, cch, L"; 1 = in a browser, also label elements that only say they can take the\r\n");
     appendf(buf, cch, L"; keyboard focus (a div with tabindex whose click handler sits on an\r\n");
     appendf(buf, cch, L"; ancestor, a range slider), unless they are text, scroll areas, lie\r\n");

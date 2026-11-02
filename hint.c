@@ -40,6 +40,9 @@
 #ifndef MONITOR_DEFAULTTONULL
 #define MONITOR_DEFAULTTONULL 0x00000000
 #endif
+#ifndef SPI_GETCLIENTAREAANIMATION
+#define SPI_GETCLIENTAREAANIMATION 0x1042
+#endif
 
 #define HINT_CLASS      L"VimMouseHintOverlay"
 #define KEY_COLOR       RGB(255, 0, 255)
@@ -73,20 +76,26 @@
 #define AHEAD_DELAY_MS   300
 #define AHEAD_SWITCH_MS  700
 #define FONT_REF_PX     64
-// The wait for a Chromium page to catch up (settle_begin). Chrome animates a
-// wheel scroll for 100 to 200 ms after the last wheel event (6 to 12 frames,
-// cc/animation/scroll_offset_animation_curve.cc): after our scroll the first
-// flush goes out once that is surely over. Edge can animate longer, which a
-// further flush catches.
-#define SETTLE_QUIET_MS   230
+// The wait for a Chromium page to catch up (settle_begin). After our scroll
+// the first flush goes out once the last wheel event has surely reached the
+// page and been applied (a frame). With Windows' animation effects off,
+// Chrome scrolls at once and that flush already brings the page where it
+// stopped (measured 2026-11-03: the report came 2 ms after the wheel, and
+// flushes 40 ms apart found nothing more). With them on, Chrome animates a
+// wheel scroll for 100 to 200 ms more (6 to 12 frames,
+// cc/animation/scroll_offset_animation_curve.cc; Edge can take longer),
+// which the flushes that follow cover: one that finds nothing new a couple
+// of frames after one that found movement proves the page stopped.
+#define SETTLE_INPUT_MS   30
 // What a click opens (a menu, a panel) often slides in for a moment.
 #define SETTLE_CLICK_MS   300
 // After a flush that moved the page, the next one waits this long: Blink
 // takes a new scroll offset once per frame, so a flush at once could find
 // nothing new while the page still moves.
 #define SETTLE_GAP_MS     35
-// How long a flush gets to come back with a scroll report.
-#define SETTLE_ANSWER_MS  70
+// A flush's scroll report is fired before the browser answers the hit test
+// (measured: within 1 ms of the answer); this much longer is allowed for it.
+#define SETTLE_GRACE_MS   15
 // A scroll we did not cause has stopped by the time the hotkey is pressed,
 // or it is the page's own and keeps going: either way, wait at most this.
 #define SETTLE_SEEN_MS    300
@@ -237,18 +246,22 @@ static DWORD     g_settle_t0;        // the action or report waited for
 static DWORD     g_settle_acted;     // our page action's tick, 0 = none
 static int       g_settle_kind;      // its PAGE_* kind
 static DWORD     g_settle_floor;     // no flush before this tick
-static DWORD     g_settle_quiet;     // our scroll's animation is over by then
-static BOOL      g_settle_due;       // the next timer sends a flush
 static HWND      g_restless_root;    // kept scrolling by itself (SETTLE_RESTLESS_MS)
 static DWORD     g_restless_until;
 static HWND      g_backoff_root;     // no wait ahead of the hotkey before g_backoff_until
 static DWORD     g_backoff_until;
 static DWORD     g_settle_deadline;  // the scan starts by then whatever happens
-static DWORD     g_settle_flush;     // tick of the last flush, 0 = none yet
 static int       g_settle_flushes;   // flushes sent
-static int       g_settle_moves;     // scroll reports after a flush
-static BOOL      g_settle_strict;    // our own scroll: a report must prove it arrived
+static int       g_settle_moves;     // flushes (or reports between them) that found the page moved
+static int       g_settle_still;     // flushes in a row that found nothing new
+static UINT      g_settle_seq;       // the flush in flight (hint_flush_done)
+static BOOL      g_settle_inflight;  // a flush was sent and has not come back
+static BOOL      g_settle_grace;     // it came back; its reports get SETTLE_GRACE_MS more
+static BOOL      g_settle_moved;     // a report came during the flush or its grace
 static BOOL      g_settle_fallback;  // no proof possible: wait out the deadline
+static BOOL      g_settle_early_ok;  // scan_early applies to this wait (settle_early_allowed)
+static BOOL      g_settle_early;     // the scan already started on the first flush (settle_early_start)
+static BOOL      g_settle_stale;     // ... and the page moved after it: scan again at the end
 
 // Labels that were shown and then went away. They are kept for the rest of
 // this open so they are never handed to a different element (see alloc_labels).
@@ -297,6 +310,8 @@ static void ahead_forget(void);
 static void ahead_schedule(DWORD ms);
 static HMONITOR cursor_monitor(void);
 static BOOL settle_needed(void);
+static BOOL settle_blocks(void);
+static void ahead_start_now(void);
 static void paint_blank(void);
 static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
@@ -2185,7 +2200,9 @@ static void cancel_scan(void)
     g_scan_wait_first = FALSE;
     g_scan_retry = FALSE;
     // A running wait for the page goes on by itself (it records when the
-    // page was in); only this open no longer waits for it.
+    // page was in); only this open no longer waits for it, and a scan it
+    // started early for this open ends with it.
+    if (g_settle_wait) g_settle_early = FALSE;
     g_settle_wait = FALSE;
     if (g_scanning || g_refresh_on)
         uia_cancel();  // drops the first scan or a background refresh
@@ -2395,6 +2412,9 @@ static const WCHAR *settle_cause(void)
 static void settle_done(const WCHAR *why)
 {
     DWORD now = GetTickCount();
+    // The scan this wait is for already ran, or runs, since its first flush
+    // (settle_early_start) and nothing moved after that: no second one.
+    BOOL scanned = g_settle_early && !g_settle_stale;
 
     // Waiting only on the page's own scrolling, and it never stopped. The
     // hints were waiting: leave the page alone for a while. Ahead of the
@@ -2411,41 +2431,143 @@ static void settle_done(const WCHAR *why)
         }
     }
     g_settle_on = FALSE;
+    g_settle_inflight = FALSE;
+    g_settle_grace = FALSE;
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SETTLE_ID);
     // What happened before now is in the tree: the next open scans at once.
     fresh_set(g_settle_root, now ? now : 1);
     app_log(L"hint: the page caught up %lu ms after %ls (%ls; %d flushes, "
-            L"%d moved%ls)", (unsigned long)(now - g_settle_t0),
+            L"%d moved%ls%ls)", (unsigned long)(now - g_settle_t0),
             settle_cause(), why, g_settle_flushes, g_settle_moves,
-            g_settle_wait ? L"" : L", ahead of the hotkey");
+            g_settle_wait ? L"" : L", ahead of the hotkey",
+            g_settle_early ? (g_settle_stale ? L"; the early scan was stale"
+                                             : L"; scanned on the first flush")
+                           : L"");
     if (g_settle_wait) {
         g_settle_wait = FALSE;
+        if (g_open && g_mode == HINT_MODE_ELEMENTS && !scanned) {
+            if (g_scanning)
+                begin_scan();
+            else if (g_refresh_on && g_hint_wnd)
+                // The labels shown came from the early scan of a page that
+                // moved on: catch up now, not in scan_refresh ms.
+                SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+        }
+    } else if (!g_open && !scanned) {
+        // Ahead of the hotkey: scan now, so it finds its labels ready.
+        if (g_settle_stale) ahead_forget();
+        ahead_start();
+    }
+    g_settle_early = FALSE;
+    g_settle_stale = FALSE;
+}
+
+// Whether the first flush that reaches the page may start the scan at once
+// (scan_early), before a second flush has confirmed that the page stopped:
+// where the browser has no scroll animation to wait for. Chromium takes
+// smooth scrolling from Windows' animation effects
+// (gfx::Animation::ScrollAnimationsEnabledBySystem reads
+// SPI_GETCLIENTAREAANIMATION), and with them off a wheel scroll is applied at
+// once. What a click opens may animate on its own, so only scrolls qualify.
+static BOOL settle_early_allowed(DWORD acted, int kind)
+{
+    BOOL anim = TRUE;
+
+    if (acted && kind != PAGE_SCROLL) return FALSE;
+    if (g_cfg.scan_early >= 2) return TRUE;
+    if (g_cfg.scan_early != 1) return FALSE;
+    if (!SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &anim, 0))
+        return FALSE;
+    return !anim;
+}
+
+// The page has not caught up, and no scan of it is trusted yet: an open must
+// wait (settle_begin), a prescan cannot be adopted. A scan started on the
+// first flush (settle_early_start) counts as the page's own while nothing
+// moved after it.
+static BOOL settle_blocks(void)
+{
+    if (g_settle_on && g_settle_early && !g_settle_stale) return FALSE;
+    return settle_needed();
+}
+
+// Starts the scan the wait is for now: the open's, or one ahead of the
+// hotkey. settle_done starts no second one unless a later flush found the
+// page moving (g_settle_stale).
+static void settle_early_start(void)
+{
+    g_settle_early = TRUE;
+    g_settle_stale = FALSE;
+    if (g_settle_wait) {
         if (g_open && g_scanning && g_mode == HINT_MODE_ELEMENTS)
             begin_scan();
     } else if (!g_open) {
-        // Ahead of the hotkey: scan now, so it finds its labels ready.
-        ahead_start();
+        ahead_start_now();
     }
 }
 
-static void settle_flush(DWORD now)
+static void settle_send_flush(DWORD left)
 {
-    uia_flush(g_settle_pt);
-    g_settle_flush = now ? now : 1;
     ++g_settle_flushes;
+    ++g_settle_seq;
+    g_settle_inflight = TRUE;
+    g_settle_grace = FALSE;
+    g_settle_moved = FALSE;
+    uia_flush(g_settle_pt, g_settle_seq);
+    // The answer comes as WM_APP_FLUSH_DONE; the deadline still counts.
+    settle_timer(left);
+}
+
+// The page moved since the last flush: ask again a couple of frames later.
+static void settle_moved(DWORD now, DWORD left)
+{
+    ++g_settle_moves;
+    g_settle_still = 0;
+    g_settle_floor = now + SETTLE_GAP_MS;
+    settle_timer(left < SETTLE_GAP_MS ? left : SETTLE_GAP_MS);
+}
+
+// The grace after a flush came back is over: its reports, if any, are in.
+static void settle_answered(DWORD now, DWORD left)
+{
+    g_settle_grace = FALSE;
+    if (g_settle_moved) {
+        // The first flush's report is of what happened before the early
+        // scan started; movement found by a later one makes it stale.
+        if (g_settle_early && g_settle_flushes > 1)
+            g_settle_stale = TRUE;
+        settle_moved(now, left);
+        return;
+    }
+    ++g_settle_still;
+    // Nothing new since the flush before: the page stopped where that one
+    // found it. With no movement seen at all, two flushes a couple of
+    // frames apart say the same (one alone could fall between the frames
+    // of an animation that has only just started).
+    if (g_settle_moves > 0) {
+        settle_done(L"stopped");
+        return;
+    }
+    if (g_settle_still >= 2) {
+        settle_done(L"asked");
+        return;
+    }
+    g_settle_floor = now + SETTLE_GAP_MS;
+    settle_timer(left < SETTLE_GAP_MS ? left : SETTLE_GAP_MS);
 }
 
 // Instead of waiting out the 500 ms, the window is asked to send what it
-// holds back (uia_flush) and answers with a scroll report when that moved
-// the page. A flush that comes back with nothing new means the tree is
-// current. report: Chromium reported a scroll of g_settle_root; otherwise
-// TIMER_SETTLE_ID. Runs with the hints closed too.
+// holds back (uia_flush, a hit test on a thread of its own) and answers with
+// a scroll report when that moved the page. A flush that comes back with
+// nothing new means the tree is current. report: Chromium reported a scroll
+// of g_settle_root; otherwise TIMER_SETTLE_ID. Runs with the hints closed
+// too.
 static BOOL settle_rebase(void);
 
 static void settle_step(BOOL report)
 {
     DWORD now = GetTickCount();
-    DWORD left, seen, at;
+    DWORD left;
 
     if (!g_settle_on) return;
     if (!report) settle_rebase();
@@ -2460,16 +2582,23 @@ static void settle_step(BOOL report)
     }
     if (report) {
         // Before the first flush a report only says the page is on its way.
-        // After one, the page moved since the flush before: ask again a
-        // couple of frames later, and after our scroll not before its
-        // animation is over.
-        if (g_settle_flush == 0 || g_settle_due) return;
-        ++g_settle_moves;
-        at = now + SETTLE_GAP_MS;
-        if (g_settle_strict && !tick_reached(at, g_settle_quiet))
-            at = g_settle_quiet;
-        g_settle_due = TRUE;
-        settle_timer(at - now < left ? at - now : left);
+        if (g_settle_flushes == 0) return;
+        // During a flush or its grace: that flush moved the page.
+        if (g_settle_inflight || g_settle_grace) {
+            g_settle_moved = TRUE;
+            return;
+        }
+        // Between flushes: the page moved by itself since the last one.
+        if (g_settle_early) g_settle_stale = TRUE;
+        settle_moved(now, left);
+        return;
+    }
+    if (g_settle_inflight) {
+        settle_timer(left);
+        return;
+    }
+    if (g_settle_grace) {
+        settle_answered(now, left);
         return;
     }
     if (!tick_reached(now, g_settle_floor)) {
@@ -2477,35 +2606,38 @@ static void settle_step(BOOL report)
         settle_timer(wait < left ? wait : left);
         return;
     }
-    if (g_settle_flush == 0 || g_settle_due) {
-        g_settle_due = FALSE;
-        settle_flush(now);
-        settle_timer(left < SETTLE_ANSWER_MS ? left : SETTLE_ANSWER_MS);
+    settle_send_flush(left);
+}
+
+// The hit test for the page (uia_flush) came back. reached: it reached the
+// page (the element under the point is the browser's), so what the page had
+// to send went out before the answer; its scroll report, if any, is queued
+// ahead of this message, and a short grace covers the rest. Otherwise
+// something covers the page, or it did not answer: no proof is possible and
+// the wait runs out as before.
+void hint_flush_done(BOOL reached, UINT seq)
+{
+    DWORD now = GetTickCount();
+    DWORD left;
+
+    if (!g_settle_on || !g_settle_inflight || seq != g_settle_seq) return;
+    g_settle_inflight = FALSE;
+    if (tick_reached(now, g_settle_deadline)) {
+        settle_done(L"time limit");
         return;
     }
-    // The last flush had its time and brought no report: nothing moved
-    // since the flush before it.
-    if (g_settle_moves > 0) {
-        settle_done(L"stopped");
+    left = g_settle_deadline - now;
+    if (!reached) {
+        g_settle_fallback = TRUE;
+        settle_timer(left);
         return;
     }
-    if (!g_settle_strict) {
-        settle_done(L"asked");
-        return;
-    }
-    // After our scroll, a flush sent once its animation was over found
-    // nothing new: the tree has the page where it stopped if the browser
-    // reported the scroll after that point.
-    seen = scroll_seen_tick(g_settle_root);
-    if (seen && tick_reached(seen, g_settle_quiet)) {
-        settle_done(L"reported");
-        return;
-    }
-    // No report since the animation ended: the flush may not have reached
-    // the page, or the page did not move (already at its end). Without
-    // proof, wait as before.
-    g_settle_fallback = TRUE;
-    settle_timer(left);
+    // The first flush found the page in, and it has no animation to wait
+    // for: scan now; the next flush only confirms it.
+    if (g_settle_flushes == 1 && g_settle_early_ok && !g_settle_early)
+        settle_early_start();
+    g_settle_grace = TRUE;
+    settle_timer(left < SETTLE_GRACE_MS ? left : SETTLE_GRACE_MS);
 }
 
 // Sets the wait up for root: our action at acted (kind, where it happened),
@@ -2528,28 +2660,31 @@ static void settle_arm(HWND root, DWORD acted, int kind, const POINT *act_pt,
             deadline = now + SETTLE_SEEN_MS;
     }
 
+    // A scan started early for the action before this one is of the old
+    // page.
+    g_settle_stale = g_settle_on && g_settle_early;
+    g_settle_early = FALSE;
     g_settle_on = TRUE;
     g_settle_root = root;
     g_settle_t0 = acted ? acted : seen;
     g_settle_deadline = deadline;
-    g_settle_flush = 0;
     g_settle_flushes = 0;
     g_settle_moves = 0;
-    g_settle_due = FALSE;
+    g_settle_still = 0;
+    g_settle_inflight = FALSE;
+    g_settle_grace = FALSE;
+    g_settle_moved = FALSE;
     g_settle_fallback = FALSE;
     g_settle_acted = acted;
     g_settle_kind = kind;
+    g_settle_early_ok = settle_early_allowed(acted, kind);
     if (acted) {
-        g_settle_quiet = acted + SETTLE_QUIET_MS;
-        g_settle_floor = kind == PAGE_SCROLL ? g_settle_quiet
-                                             : acted + SETTLE_CLICK_MS;
-        g_settle_strict = kind == PAGE_SCROLL;
+        g_settle_floor = acted + (kind == PAGE_SCROLL ? SETTLE_INPUT_MS
+                                                      : SETTLE_CLICK_MS);
     } else {
         // Scrolled by something else: when its input ended is unknown;
         // flushes until one brings nothing new cover the animation.
         g_settle_floor = now;
-        g_settle_quiet = now;
-        g_settle_strict = FALSE;
     }
     // scan_flush = 0, back / forward (the page may still be loading, and a
     // loading page sends no positions), or something covers the page so no
@@ -2705,12 +2840,19 @@ static void ahead_schedule(DWORD ms)
 // (settle_done or the timer come back), or an Alt prescan is already on.
 static void ahead_start(void)
 {
+    if (settle_needed()) return;
+    ahead_start_now();
+}
+
+// The same during a wait whose first flush found the page in
+// (settle_early_start).
+static void ahead_start_now(void)
+{
     if (g_open || !g_hint_wnd || !g_cfg.scan_ahead ||
         g_cfg.hint_mode != HINT_MODE_ELEMENTS || !uia_available() ||
         g_cfg.log >= 2)
         return;
     if (g_pre_kind == PRE_ALT) return;
-    if (settle_needed()) return;
     discard_prescan();
     ++g_scan_id;
     g_pre_id = g_scan_id;
@@ -2757,7 +2899,7 @@ static BOOL adopt_prescan(void)
         return FALSE;
     age = GetTickCount() - g_pre_t0;
     if (g_pre_id != g_scan_id || g_pre_mon != g_mon ||
-        age > AHEAD_MAX_AGE_MS || settle_needed()) {
+        age > AHEAD_MAX_AGE_MS || settle_blocks()) {
         discard_prescan();
         return FALSE;
     }
@@ -2772,7 +2914,10 @@ static BOOL adopt_prescan(void)
     }
     g_scanning = TRUE;
     g_scan_wait_first = FALSE;
-    g_settle_wait = FALSE;
+    // A scan started on a wait's first flush is adopted while the wait still
+    // runs; should a later flush find the page moving, settle_done scans
+    // again for this open.
+    g_settle_wait = g_settle_on && g_settle_early;
     g_scan_t0 = g_pre_t0;
     g_scan_browser = active_browser_here();
     g_scan_list = g_pre_list;   // ownership moves
@@ -2841,8 +2986,15 @@ static void start_scan(BOOL repaint)
     ++g_scan_id;            // an older scan's posts no longer count
     uia_cancel();
     g_scan_t0 = GetTickCount();
-    if (!settle_begin())
+    // A wait whose first flush found the page in (settle_early_start) has
+    // a scan of its own; this one replaces it and is trusted the same.
+    if (g_settle_on && g_settle_early && !g_settle_stale &&
+        settle_root() == g_settle_root) {
+        g_settle_wait = TRUE;
         begin_scan();
+    } else if (!settle_begin()) {
+        begin_scan();
+    }
     if (repaint) {
         invalidate();
         if (g_hint_wnd) UpdateWindow(g_hint_wnd);
@@ -3404,7 +3556,7 @@ void hint_prepare(int what)
 
     // A scan ahead young enough serves the hotkey as it is, done or not.
     if (g_pre_kind == PRE_AHEAD &&
-        GetTickCount() - g_pre_t0 <= AHEAD_MAX_AGE_MS && !settle_needed())
+        GetTickCount() - g_pre_t0 <= AHEAD_MAX_AGE_MS && !settle_blocks())
         return;
     discard_prescan();
     // Right after a scroll or click a browser still reports the old page:
@@ -3412,7 +3564,7 @@ void hint_prepare(int what)
     // that wait is normally running already (settle_poke); make sure.
     // log = 2 skips the early scan too: every Alt press would log one, and
     // the open's own scan is the one to report.
-    if (settle_needed()) {
+    if (settle_blocks()) {
         settle_poke();
         return;
     }

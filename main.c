@@ -399,6 +399,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_PAGE_ACTED:
         hint_page_acted();
         return 0;
+    case WM_APP_FLUSH_DONE:
+        hint_flush_done(wp != 0, (UINT)lp);
+        return 0;
     case WM_APP_ELEMENTS:
         hint_on_elements((ClickList *)lp);
         return 0;

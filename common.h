@@ -68,6 +68,8 @@
 #define WM_APP_UPDATE_DONE      (WM_APP + 14) // wParam = result from the update worker; -> update_on_done
 #define WM_APP_PAGE_ACTED       (WM_APP + 15) // wParam = PAGE_* kind: this program scrolled, clicked or went
                                               // back / forward (once per burst); -> hint_page_acted
+#define WM_APP_FLUSH_DONE       (WM_APP + 16) // wParam = the hit test reached the page, lParam = seq of the
+                                              // uia_flush request; -> hint_flush_done
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -207,6 +209,12 @@ typedef struct {
                                // wait like that after scrolls the browser reports itself
                                // (mouse wheel, touchpad, keys) too, up to 300 ms; default 1.
                                // 0 = wait out scan_settle after our own actions only.
+    int   scan_early;          // after a scroll, start the scan on the first flush that finds
+                               // the page in and let the next flush only confirm it, instead
+                               // of scanning after that confirmation: 1 = when Windows'
+                               // animation effects are off (Chrome then scrolls at once and
+                               // the first flush has the page where it stopped), default;
+                               // 2 = always; 0 = never.
     int   scan_focusable;      // 1 = in a browser window, elements that UI Automation calls
                                // keyboard-focusable but that have no clickable control type
                                // or pattern (a div with tabindex whose click handler sits on
@@ -320,6 +328,7 @@ void hint_on_key(UINT vk, UINT mods);
 void hint_on_elements(struct ClickList *list);  // WM_APP_ELEMENTS; always frees list
 void hint_hotkey_again(void);           // reload: rescan the elements, or reset the grid
 void hint_page_acted(void);             // WM_APP_PAGE_ACTED: start waiting for the page now
+void hint_flush_done(BOOL reached, UINT seq);  // WM_APP_FLUSH_DONE: a flush came back
 
 // ---------------------------------------------------------------------------
 // Clickable elements (uia.c). UI Automation runs on its own MTA worker thread;
@@ -404,9 +413,11 @@ BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out);
 // Automation now: a UI Automation hit test there has its page send every
 // pending tree, position and scroll change at once (Blink serializes
 // immediately for an action), instead of up to 500 ms later. Asynchronous, on
-// the scan worker; returns at once. The page's scroll updates arrive as
-// EVENT_SYSTEM_SCROLLINGEND from Chromium (hint.c listens).
-void uia_flush(POINT pt);
+// a thread of its own; returns at once and posts WM_APP_FLUSH_DONE (wParam =
+// the hit test reached the page, lParam = seq) when the hit test is back. The
+// page's scroll updates arrive as EVENT_SYSTEM_SCROLLINGEND from Chromium
+// (hint.c listens), ahead of that message.
+void uia_flush(POINT pt, UINT seq);
 int  uia_focus_state(void);
 int  uia_focus_wait(DWORD max_ms);
 void uia_focus_stop(void);
