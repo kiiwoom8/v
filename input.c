@@ -19,6 +19,60 @@
 #ifndef WTS_CONSOLE_DISCONNECT
 #define WTS_CONSOLE_DISCONNECT 0x2
 #endif
+// The mouse hook's "this event came from SendInput" flag, and the system
+// cursor ids SetSystemCursor takes (winuser.h declares them only with
+// OEMRESOURCE defined, and MinGW.org lacks the newer ones).
+#ifndef LLMHF_INJECTED
+#define LLMHF_INJECTED 0x00000001
+#endif
+#ifndef OCR_NORMAL
+#define OCR_NORMAL      32512
+#endif
+#ifndef OCR_IBEAM
+#define OCR_IBEAM       32513
+#endif
+#ifndef OCR_WAIT
+#define OCR_WAIT        32514
+#endif
+#ifndef OCR_CROSS
+#define OCR_CROSS       32515
+#endif
+#ifndef OCR_UP
+#define OCR_UP          32516
+#endif
+#ifndef OCR_SIZENWSE
+#define OCR_SIZENWSE    32642
+#endif
+#ifndef OCR_SIZENESW
+#define OCR_SIZENESW    32643
+#endif
+#ifndef OCR_SIZEWE
+#define OCR_SIZEWE      32644
+#endif
+#ifndef OCR_SIZENS
+#define OCR_SIZENS      32645
+#endif
+#ifndef OCR_SIZEALL
+#define OCR_SIZEALL     32646
+#endif
+#ifndef OCR_NO
+#define OCR_NO          32648
+#endif
+#ifndef OCR_HAND
+#define OCR_HAND        32649
+#endif
+#ifndef OCR_APPSTARTING
+#define OCR_APPSTARTING 32650
+#endif
+#ifndef OCR_HELP
+#define OCR_HELP        32651
+#endif
+#ifndef OCR_PIN
+#define OCR_PIN         32671
+#endif
+#ifndef OCR_PERSON
+#define OCR_PERSON      32672
+#endif
 #ifndef WTS_REMOTE_CONNECT
 #define WTS_REMOTE_CONNECT 0x3
 #endif
@@ -87,6 +141,12 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // A tap that left CapsLock on (an administrator window has the focus, so
 // Windows dropped it) is retried after 0.5 s, then 1, 2, 4 and 8 s.
 #define CAPS_RETRY_MS    500
+// hide_pointer: the power window's timer that hides the pointer again once
+// the real mouse has been still for hide_pointer ms. The largest value
+// config.c accepts; leaving mouse mode or a hint click backdates the last
+// mouse event by it so the pointer hides at once.
+#define PTR_TIMER        3
+#define PTR_IDLE_MAX_MS  60000
 
 #define IND_KEY_COLOR RGB(255, 0, 255)
 #define IND_BLUE      RGB(0x2D, 0x7F, 0xF9)
@@ -100,6 +160,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_IND_UPDATE  (WM_APP + 24)
 #define WM_INPUT_SET_LOCKED  (WM_APP + 25)
 #define WM_INPUT_CAPS_CHECK  (WM_APP + 26)  // to s_power_wnd; wParam = key just released
+#define WM_INPUT_PTR_UPDATE  (WM_APP + 27)  // decide again whether the pointer is hidden
 
 #define MOVE_LEFT  0x01
 #define MOVE_DOWN  0x02
@@ -286,6 +347,26 @@ static int   s_caps_fix_fails = 0;
 static HWND  s_caps_fix_fg = NULL;
 static BOOL  s_caps_timer_on = FALSE;
 static BOOL  s_caps_shiftlock_logged = FALSE;
+// hide_pointer. The input thread decides (ptr_update) and a pointer thread
+// of its own swaps the system cursors, so neither the hook thread nor the
+// UI waits on SetSystemCursor or SPI_SETCURSORS (the latter reads the
+// cursor files). s_ptr_want is the decision, s_ptr_hidden what is in
+// effect; the mouse hook notes the real mouse in s_ptr_phys_tick and asks
+// for a new decision while the pointer is hidden (one post in flight).
+// s_own_x / s_own_y is where our last SetCursorPos put the pointer: that
+// move is not flagged injected, but lands exactly there.
+static HHOOK  s_mouse_hook = NULL;
+static HANDLE s_ptr_thread = NULL;
+static HANDLE s_ptr_event = NULL;
+static volatile LONG s_ptr_want = 0;
+static volatile LONG s_ptr_hidden = 0;
+static volatile LONG s_ptr_exit = 0;
+static volatile LONG s_ptr_posted = 0;
+static volatile LONG s_ptr_phys_tick = 0;
+static volatile LONG s_own_x = -1;
+static volatile LONG s_own_y = -1;
+static BOOL   s_ptr_away = FALSE;      // session locked or asleep: pointer shown
+static BOOL   s_ptr_timer_on = FALSE;
 
 #ifdef INPUT_TEST
 static BOOL s_test_mods_on = FALSE;
@@ -304,6 +385,8 @@ static void suspend_input(void);
 static void resume_input(void);
 static BOOL handle_up(UINT vk);
 static void prescan_cancel(void);
+static void ptr_schedule(void);
+static void ptr_forget_mouse(void);
 
 static BOOL flag_get(volatile LONG *p)
 {
@@ -345,6 +428,8 @@ static void post_main(UINT msg, WPARAM wp, LPARAM lp)
 static void notify_state(void)
 {
     post_main(WM_APP_STATE_CHANGED, 0, 0);
+    // Mouse mode and pause decide whether the pointer is hidden.
+    ptr_schedule();
 }
 
 // A burst of actions (a scroll stream sends a wheel event every frame) tells
@@ -416,9 +501,9 @@ static void send_absolute_move(int x, int y, int vx, int vy, int vw, int vh)
 
 // A click of ours may move the focus into or out of a text field, and open,
 // close or move something on the page.
-static void focus_clicked(void)
+static void focus_clicked_at(const POINT *at)
 {
-    page_acted(PAGE_CLICK);
+    page_acted_at(PAGE_CLICK, at);
     if (g_cfg.bare_keys)
         uia_focus_changed(FOCUS_CLICK_DELAY_MS);
 }
@@ -426,7 +511,7 @@ static void focus_clicked(void)
 static void send_button(int button, BOOL down)
 {
     INPUT in;
-    focus_clicked();
+    focus_clicked_at(NULL);
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
     if (button == BTN_LEFT)
@@ -441,7 +526,7 @@ static void send_button(int button, BOOL down)
 static void click_button(int button)
 {
     INPUT in[2];
-    focus_clicked();
+    focus_clicked_at(NULL);
     ZeroMemory(in, sizeof(in));
     in[0].type = INPUT_MOUSE;
     in[1].type = INPUT_MOUSE;
@@ -594,6 +679,9 @@ static void leave_mouse_mode(void)
     InterlockedExchange(&s_scroll_flags, 0);
     if (flag_get(&s_mouse_mode)) {
         InterlockedExchange(&s_mouse_mode, 0);
+        // Back to the keyboard: the pointer hides at once, not after the
+        // idle time the real mouse gets.
+        ptr_forget_mouse();
         notify_state();
         indicator_schedule();
     }
@@ -624,19 +712,36 @@ static void apply_paused(BOOL paused)
     notify_state();
 }
 
+// Every pointer move of ours through SetCursorPos goes through here, so the
+// mouse hook can tell it from the real mouse (see s_own_x).
+static void own_move(POINT pt)
+{
+    InterlockedExchange(&s_own_x, pt.x);
+    InterlockedExchange(&s_own_y, pt.y);
+    SetCursorPos(pt.x, pt.y);
+}
+
 void mouse_move_to(POINT pt)
 {
-    SetCursorPos(pt.x, pt.y);
+    own_move(pt);
 }
 
 void mouse_click_at(POINT pt, int button, int count)
 {
     INPUT in[4];
+    POINT was;
+    BOOL back;
     int n;
     int i;
 
-    focus_clicked();
-    SetCursorPos(pt.x, pt.y);
+    // click_return: once the click is in, the pointer goes back to where it
+    // was, so it is not left on what was clicked (the move after the click
+    // enters the same input queue, so the app sees the click there first).
+    // Not in mouse mode, where the pointer is being driven and carries on
+    // from the element.
+    back = g_cfg.click_return && !flag_get(&s_mouse_mode) && GetCursorPos(&was);
+    focus_clicked_at(&pt);
+    own_move(pt);
     if (count == 2)
         n = 4;
     else
@@ -657,6 +762,14 @@ void mouse_click_at(POINT pt, int button, int count)
         }
     }
     SendInput((UINT)n, in, sizeof(INPUT));
+    if (back)
+        own_move(was);
+    // A click off the keyboard: the pointer hides at once if it was shown
+    // for the real mouse.
+    if (!flag_get(&s_mouse_mode)) {
+        ptr_forget_mouse();
+        ptr_schedule();
+    }
 }
 
 // Menus and flyouts are title-less popups owned by the app's window. The owner
@@ -2101,11 +2214,193 @@ static void focus_hooks_update(void)
         uia_focus_changed(0);
 }
 
+// ---------------------------------------------------------------------------
+// hide_pointer
+
+// The real mouse shows the pointer again. Only the real one: moves and
+// clicks of ours carry LLMHF_INJECTED (SendInput), and a move of ours
+// through SetCursorPos lands exactly where own_move said. Runs on the input
+// thread for every mouse event, so it only notes the time and posts.
+static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION) {
+        const MSLLHOOKSTRUCT *m = (const MSLLHOOKSTRUCT *)lParam;
+        if (!(m->flags & LLMHF_INJECTED) &&
+            !(wParam == WM_MOUSEMOVE &&
+              m->pt.x == InterlockedCompareExchange(&s_own_x, 0, 0) &&
+              m->pt.y == InterlockedCompareExchange(&s_own_y, 0, 0))) {
+            InterlockedExchange(&s_ptr_phys_tick, (LONG)m->time);
+            if (flag_get(&s_ptr_want))
+                ptr_schedule();
+        }
+    }
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+// The mouse hook exists while the pointer can be hidden.
+static void ptr_hook_update(void)
+{
+    BOOL want = g_cfg.hide_pointer > 0 && !s_ptr_away;
+
+    if (want && !s_mouse_hook) {
+        s_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse_proc,
+                                         GetModuleHandleW(NULL), 0);
+        if (!s_mouse_hook)
+            app_log(L"input: mouse hook install failed");
+    } else if (!want && s_mouse_hook) {
+        UnhookWindowsHookEx(s_mouse_hook);
+        s_mouse_hook = NULL;
+    }
+}
+
+// Every system cursor becomes a blank one. SetSystemCursor takes the cursor
+// over (and frees it), so each id gets a fresh one. Session-wide, like
+// SPI_SETCURSORS, which brings the user's scheme back from the registry:
+// the pointer thread restores it before it ends, and a crash leaves the
+// pointer blank until vim mouse runs again or the user signs in again.
+static void ptr_cursors_blank(void)
+{
+    static const DWORD ids[] = {
+        OCR_NORMAL, OCR_IBEAM, OCR_WAIT, OCR_CROSS, OCR_UP, OCR_SIZENWSE,
+        OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL, OCR_NO, OCR_HAND,
+        OCR_APPSTARTING, OCR_HELP, OCR_PIN, OCR_PERSON
+    };
+    BYTE and_mask[128];
+    BYTE xor_mask[128];
+    size_t i;
+
+    FillMemory(and_mask, sizeof(and_mask), 0xFF);
+    ZeroMemory(xor_mask, sizeof(xor_mask));
+    for (i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        HCURSOR cur = CreateCursor(GetModuleHandleW(NULL), 0, 0, 32, 32,
+                                   and_mask, xor_mask);
+        if (cur && !SetSystemCursor(cur, ids[i]))
+            DestroyCursor(cur);
+    }
+}
+
+static void ptr_cursors_restore(void)
+{
+    SystemParametersInfoW(SPI_SETCURSORS, 0, NULL, 0);
+}
+
+static DWORD WINAPI ptr_thread_proc(LPVOID param)
+{
+    (void)param;
+    for (;;) {
+        BOOL want;
+
+        if (WaitForSingleObject(s_ptr_event, INFINITE) != WAIT_OBJECT_0)
+            break;
+        if (flag_get(&s_ptr_exit))
+            break;
+        want = flag_get(&s_ptr_want);
+        if (want == flag_get(&s_ptr_hidden))
+            continue;
+        if (want)
+            ptr_cursors_blank();
+        else
+            ptr_cursors_restore();
+        flag_set(&s_ptr_hidden, want);
+    }
+    if (flag_get(&s_ptr_hidden)) {
+        ptr_cursors_restore();
+        flag_set(&s_ptr_hidden, FALSE);
+    }
+    return 0;
+}
+
+static void ptr_thread_start(void)
+{
+    if (s_ptr_thread)
+        return;
+    s_ptr_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!s_ptr_event)
+        return;
+    flag_set(&s_ptr_exit, FALSE);
+    s_ptr_thread = CreateThread(NULL, 0, ptr_thread_proc, NULL, 0, NULL);
+    if (!s_ptr_thread) {
+        CloseHandle(s_ptr_event);
+        s_ptr_event = NULL;
+    }
+}
+
+// Ends the pointer thread, which puts the user's cursors back first.
+static void ptr_thread_stop(void)
+{
+    if (s_ptr_thread) {
+        flag_set(&s_ptr_exit, TRUE);
+        SetEvent(s_ptr_event);
+        WaitForSingleObject(s_ptr_thread, 3000);
+        CloseHandle(s_ptr_thread);
+        s_ptr_thread = NULL;
+    }
+    if (s_ptr_event) {
+        CloseHandle(s_ptr_event);
+        s_ptr_event = NULL;
+    }
+}
+
+// Decides on the input thread whether the pointer is hidden now: never in
+// mouse mode, while paused, while the session is locked or asleep, or with
+// hide_pointer off; otherwise once the real mouse has been still for
+// hide_pointer ms (the power window's timer calls back when it has been).
+static void ptr_update(void)
+{
+    BOOL want = FALSE;
+    DWORD arm_ms = 0;
+
+    InterlockedExchange(&s_ptr_posted, 0);
+    if (s_ptr_thread && g_cfg.hide_pointer > 0 && !s_ptr_away &&
+        !flag_get(&s_paused) && !flag_get(&s_mouse_mode)) {
+        DWORD last = (DWORD)InterlockedCompareExchange(&s_ptr_phys_tick, 0, 0);
+        DWORD idle = GetTickCount() - last;
+
+        if (idle >= (DWORD)g_cfg.hide_pointer)
+            want = TRUE;
+        else
+            arm_ms = (DWORD)g_cfg.hide_pointer - idle + 1;
+    }
+    if (arm_ms && s_power_wnd) {
+        SetTimer(s_power_wnd, PTR_TIMER, arm_ms, NULL);
+        s_ptr_timer_on = TRUE;
+    } else if (s_ptr_timer_on) {
+        KillTimer(s_power_wnd, PTR_TIMER);
+        s_ptr_timer_on = FALSE;
+    }
+    flag_set(&s_ptr_want, want);
+    if (s_ptr_event)
+        SetEvent(s_ptr_event);
+}
+
+// Asks the input thread for a new decision; one post in flight at a time.
+// Called from the hooks and from the UI thread, so it never swaps cursors
+// itself.
+static void ptr_schedule(void)
+{
+    if (!s_input_tid || !s_ptr_thread)
+        return;
+    if (InterlockedCompareExchange(&s_ptr_posted, 1, 0) == 0)
+        PostThreadMessageW(s_input_tid, WM_INPUT_PTR_UPDATE, 0, 0);
+}
+
+// The keyboard is in use: the real mouse's last event counts as long ago,
+// so the next decision hides the pointer at once.
+static void ptr_forget_mouse(void)
+{
+    InterlockedExchange(&s_ptr_phys_tick,
+                        (LONG)(GetTickCount() - PTR_IDLE_MAX_MS - 1));
+}
+
 static void suspend_input(void)
 {
     leave_mouse_mode();
     reset_key_state();
     uninstall_hook();
+    // The lock screen and the next session get the user's own pointer.
+    s_ptr_away = TRUE;
+    ptr_hook_update();
+    ptr_update();
 }
 
 static void resume_input(void)
@@ -2114,6 +2409,9 @@ static void resume_input(void)
     uninstall_hook();
     if (!install_hook())
         app_log(L"input: keyboard hook reinstall failed");
+    s_ptr_away = FALSE;
+    ptr_hook_update();
+    ptr_update();
 }
 
 static int round_i(double value)
@@ -3292,6 +3590,10 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             caps_check(0);
             return 0;
         }
+        if (wp == PTR_TIMER) {
+            ptr_update();
+            return 0;
+        }
         break;
     case WM_INPUT_CAPS_CHECK:
         caps_check((UINT)wp);
@@ -3346,6 +3648,15 @@ static void cleanup_input(void)
 
     leave_mouse_mode();
     uninstall_hook();
+    if (s_mouse_hook) {
+        UnhookWindowsHookEx(s_mouse_hook);
+        s_mouse_hook = NULL;
+    }
+    if (s_ptr_timer_on) {
+        KillTimer(s_power_wnd, PTR_TIMER);
+        s_ptr_timer_on = FALSE;
+    }
+    ptr_thread_stop();
     for (i = 0; i < 2; i++) {
         if (s_focus_hooks[i]) {
             UnhookWinEvent(s_focus_hooks[i]);
@@ -3426,6 +3737,9 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
     }
     focus_hooks_update();
     caps_timer_update();
+    ptr_thread_start();
+    ptr_hook_update();
+    ptr_update();
 
     while ((result = GetMessageW(&msg, NULL, 0, 0)) > 0) {
         if (msg.hwnd == NULL) {
@@ -3448,10 +3762,16 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 focus_hooks_update();
                 caps_timer_update();
                 indicator_update();
+                ptr_hook_update();
+                ptr_update();
                 continue;
             }
             if (msg.message == WM_INPUT_IND_UPDATE) {
                 indicator_update();
+                continue;
+            }
+            if (msg.message == WM_INPUT_PTR_UPDATE) {
+                ptr_update();
                 continue;
             }
             continue;

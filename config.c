@@ -562,6 +562,7 @@ void config_set_defaults(Config *c)
     c->mouse_mode_key = VK_CAPITAL;
     c->capslock_off = 1;
     c->indicator = INDICATOR_CURSOR;
+    c->hide_pointer = 2000;
     c->log = 0;
     c->shutdown_at = -1;
     c->shutdown_warning = 60;
@@ -618,6 +619,7 @@ void config_set_defaults(Config *c)
     c->scan_timeout = 400;
     c->scan_refresh = 500;
     c->keep_labels = 1;
+    c->click_return = 1;
     c->prescan = 1;
     c->scan_ahead = 1;
     c->scan_split = 1;
@@ -812,6 +814,8 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_key(&c->mouse_mode_key, line, key, val);
     else if (_wcsicmp(key, L"capslock_off") == 0)
         apply_bool(&c->capslock_off, line, key, val);
+    else if (_wcsicmp(key, L"hide_pointer") == 0)
+        apply_int_range(&c->hide_pointer, line, key, val, 0, 60000);
     else if (_wcsicmp(key, L"indicator") == 0) {
         if (_wcsicmp(val, L"cursor") == 0)
             c->indicator = INDICATOR_CURSOR;
@@ -974,6 +978,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->scan_refresh, line, key, val, 0, 5000);
     else if (_wcsicmp(key, L"keep_labels") == 0)
         apply_bool(&c->keep_labels, line, key, val);
+    else if (_wcsicmp(key, L"click_return") == 0)
+        apply_bool(&c->click_return, line, key, val);
     else if (_wcsicmp(key, L"prescan") == 0)
         apply_bool(&c->prescan, line, key, val);
     else if (_wcsicmp(key, L"scan_ahead") == 0)
@@ -1488,6 +1494,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
         appendf(buf, cch, L"indicator = cursor\r\n");
         break;
     }
+    appendf(buf, cch, L"; Outside mouse mode the pointer is hidden, so it is not in the way of\r\n");
+    appendf(buf, cch, L"; what you read. Moving or clicking the real mouse shows it, and it hides\r\n");
+    appendf(buf, cch, L"; again this many ms after the mouse was last used (0-60000, default\r\n");
+    appendf(buf, cch, L"; 2000; 0 = never hide it). It shows while paused, locked or asleep.\r\n");
+    appendf(buf, cch, L"hide_pointer = %d\r\n", d.hide_pointer);
     appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to this file.\r\n");
     appendf(buf, cch, L"; 2 = also log what each hint open found in the active window, element by\r\n");
     appendf(buf, cch, L"; element, and why any was left out (for a window or panel without labels).\r\n");
@@ -1649,6 +1660,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; free space. The hotkey again relabels everything. 0 = labels follow\r\n");
     appendf(buf, cch, L"; their elements and disappear when the element goes away.\r\n");
     appendf(buf, cch, L"keep_labels = %d\r\n", d.keep_labels ? 1 : 0);
+    appendf(buf, cch, L"; 1 = after a click through the hints the pointer goes back to where it\r\n");
+    appendf(buf, cch, L"; was, so it is not left on what you clicked (not in mouse mode; Alt +\r\n");
+    appendf(buf, cch, L"; label and a drag's drop still move it). 0 = it stays on the element.\r\n");
+    appendf(buf, cch, L"click_return = %d\r\n", d.click_return ? 1 : 0);
     appendf(buf, cch, L"; 1 = start finding clickable elements (and, for Alt scrolling, the\r\n");
     appendf(buf, cch, L"; scrollable areas) as soon as Alt goes down, so the labels and the\r\n");
     appendf(buf, cch, L"; first scroll come sooner. 0 = wait for the whole key combination.\r\n");

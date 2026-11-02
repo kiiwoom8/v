@@ -857,6 +857,8 @@ static void build_help_rows(void)
         buf[127] = L'\0';
         help_add_row(buf, L"Real CapsLock (passes through)");
     }
+    if (g_cfg.hide_pointer > 0)
+        help_add_row(L"Pointer", L"Hidden outside mouse mode; the real mouse shows it");
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.lock_hotkey.vk)
         help_add_hotkey(&g_cfg.lock_hotkey,
@@ -935,7 +937,9 @@ static void build_help_rows(void)
     help_add_row(buf, L"Leave mouse mode");
 
     help_add_header(L"Hint mode");
-    help_add_row(L"type the label", L"Click the element showing it");
+    help_add_row(L"type the label", g_cfg.click_return
+                 ? L"Click the element (the pointer stays where it was)"
+                 : L"Click the element showing it");
     help_add_row(L"Shift / Ctrl + label", L"Right click / double click");
     help_add_row(L"Ctrl+Shift + label", L"Middle click");
     help_add_row(L"Alt + label", L"Move the pointer there, no click");

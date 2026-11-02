@@ -33,7 +33,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `common.h` | 480 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
-| `input.c` | 3535 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `input_thread_proc` |
+| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `input_thread_proc` |
 | `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
 | `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
@@ -54,6 +54,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 |---|---|---|
 | Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`), the scheduled shutdown's timer and windows (`shutdown.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here, and so do Chromium's scroll reports (`EVENT_SYSTEM_SCROLLINGSTART`/`END`, an out-of-context WinEvent hook in `hint.c`). |
 | Input (highest priority) | `input.c` `input_thread_proc` | Installs the low-level hook (`kb_proc`), WinEvent focus hooks, raw keyboard input (hook-loss check) and the power/session window; owns the mode indicator window. |
+| Pointer | `input.c` `ptr_thread_proc` | `hide_pointer`: swaps the system cursors for blank ones and back (`SetSystemCursor`, `SPI_SETCURSORS`) when the input thread signals. |
 | Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Polls `uia_scroll_aim` (never waits) and calls `uia_scroll_end`; moves the mode indicator with each pointer move (`indicator_moved`). |
 | UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel (a classic window's parts too: one queue of work items per scan), merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
 | UIA scroll worker | `uia.c` `scroll_worker` | Per-window cache (8 windows, LRU) of scrollable areas for Alt and bare scrolling, kept warm after a press. |
@@ -390,6 +391,29 @@ Invariants stated in `common.h` and enforced by history:
   in 110 to 160 ms with the scan already running; after our own scroll
   the labels are ready about 50 ms plus the search after the last wheel
   tick, before a fast `f` arrives.
+- "While not activating CapsLock, disable the mouse pointer so I'm not
+  interrupted reading articles; also don't move the pointer to the point I
+  clicked with the navigator." Two settings. `hide_pointer` (default 2000
+  ms): outside mouse mode every system cursor is swapped for a blank one
+  (`SetSystemCursor`, session-wide; `SPI_SETCURSORS` brings the user's
+  scheme back), from a pointer thread of its own (`ptr_thread_proc`), so
+  neither the hook thread nor the UI waits on the swap or on the cursor
+  files; the input thread decides (`ptr_update`, posted through
+  `ptr_schedule`, `WM_INPUT_PTR_UPDATE`): never in mouse mode, paused,
+  locked or asleep (`s_ptr_away`, restored on suspend and session lock),
+  otherwise once the real mouse has been still for `hide_pointer` ms
+  (`PTR_TIMER` on the power window). A `WH_MOUSE_LL` hook (`mouse_proc`)
+  tells the real mouse from our own input: `SendInput` carries
+  `LLMHF_INJECTED`, and a `SetCursorPos` of ours (`own_move`) lands exactly
+  on `s_own_x` / `s_own_y`. Leaving mouse mode and a hint click backdate
+  the mouse (`ptr_forget_mouse`) so the pointer hides at once. The thread
+  restores the cursors before it ends; a crash leaves them blank until the
+  next run. `click_return` (default 1): `mouse_click_at` puts the pointer
+  back where it was once the clicks are in (same input queue, so the app
+  sees the click first), unless mouse mode is on, where the user carries
+  on from the element; `Alt` + label and a drag's drop still move it.
+  `page_acted_at(PAGE_CLICK, &pt)` now records the click point rather than
+  the cursor before the move (the flush asks the browser there).
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -545,6 +569,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
   only while an ask is already pending and recent. Never add blocking I/O,
   UIA calls or `SendMessage` to the hook path. Post to the main window or a
   worker instead.
+- **The mouse hook (`mouse_proc`) is as fast as the keyboard one, and the
+  cursor swap never runs on it.** `hide_pointer` adds a `WH_MOUSE_LL` hook
+  on the input thread, called for every mouse event (a gaming mouse: 1000 a
+  second): it writes a tick and posts at most one message. `SetSystemCursor`
+  (16 calls) and `SPI_SETCURSORS` (reads the cursor files) run on the
+  pointer thread; the input thread only sets `s_ptr_want` and signals.
+  Anything of ours that moves the pointer with `SetCursorPos` goes through
+  `own_move`, or the hook takes it for the real mouse and shows the pointer.
 - **Never inject modifier key events.** `ba62724`: an injected Shift up/down
   pair races the physical keys and can leave Shift stuck. To act "after
   Shift", remember the action in the hook and run it from the key-up path
@@ -1150,6 +1182,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 |---|---|---|
 | `Alt+F` opens hints | `8f5d19c` | `Shift+F` |
 | Hotkeys are matched in the low-level hook | `fe00e2b`, `0ebf562` | `RegisterHotKey` in `vim.c` |
+| Outside mouse mode the pointer is hidden; the real mouse shows it for `hide_pointer` ms (2000; `hide_pointer = 0` restores) | phase 9 | Always visible |
+| A hint click puts the pointer back where it was, except in mouse mode (`click_return = 0` restores) | phase 9 | The pointer stayed on the clicked element |
 | CapsLock tap toggles mouse mode, hold is momentary | phase 1, `0bb6577` | CapsLock *state* meant mouse mode |
 | The CapsLock state stays off while vim mouse runs; `Shift+CapsLock` does nothing (`capslock_off = 0` restores it as the real CapsLock) | `12502dc` | `Shift+CapsLock` was the real CapsLock, and the state stayed on after an administrator window or the lock screen until turned off by hand |
 | Hints label UIA elements; the grid opens only with `hint_mode = grid` | `64a5805`, `e51fecb` | Grid only (phase 0 and 1); grid as automatic fallback (`64a5805` to `1e8677d`) |
@@ -1293,6 +1327,15 @@ warning on bad values), and `build_default_ini`. Then the `README.md`
 Settings section. If a running thread caches the value, react in
 `input_config_changed` (input) or on `WM_APP_RELOAD_CONFIG`. Reload is live:
 the watcher thread notices the file change.
+
+### Change when the pointer is hidden
+
+`input.c`: `ptr_update` is the one decision (mouse mode, pause, away,
+idle time); `ptr_schedule` asks for it from any thread; `mouse_proc` is
+what counts as the real mouse; `ptr_cursors_blank` lists the cursor ids.
+Anything new that moves the pointer with `SetCursorPos` must use
+`own_move`. The README's "The pointer stays out of the way" paragraph and
+the "pointer is gone" troubleshooting entry describe it.
 
 ### Change hint scanning or filtering
 

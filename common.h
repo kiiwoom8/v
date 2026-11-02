@@ -104,6 +104,11 @@ typedef struct {
                                // comes on (Shift+CapsLock, an admin window, the lock
                                // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
+    int    hide_pointer;       // outside mouse mode the pointer is hidden (every system
+                               // cursor is swapped for a blank one, session-wide, and put
+                               // back on exit, pause, lock and sleep); the real mouse shows
+                               // it, and it hides again this many ms after the mouse last
+                               // moved or clicked (0-60000). Default 2000; 0 = never hidden.
     int    log;                // 1 = also write log lines to vim.log; 2 = also what each
                                // hint open's scan made of every element of the active
                                // window (and no early scan); default 0
@@ -185,6 +190,10 @@ typedef struct {
                                // as many as fit. The hotkey again relabels everything.
                                // Default 1; 0 = labels follow their elements and disappear
                                // with them.
+    int   click_return;        // 1 = after a click through the hints the pointer goes back to
+                               // where it was, unless mouse mode is on (Alt + label and a
+                               // drag's drop still move it there); default 1. 0 = the pointer
+                               // stays on the element it clicked.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
     int   scan_ahead;          // 1 = scan for the hints as soon as the screen changed (after our
                                // scroll, click or back / forward once the page caught up, after a

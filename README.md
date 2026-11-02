@@ -50,6 +50,17 @@ administrator, the lock screen, while paused), vim mouse turns it off again
 within a quarter of a second (once you are back in a normal window, or no
 longer paused). Hotkeys are configurable in `vim.ini`.
 
+**The pointer stays out of the way.** Outside mouse mode the pointer is
+hidden (`hide_pointer`, default 2000), so it does not sit on what you are
+reading. Moving or clicking the real mouse shows it again, and it hides
+once the mouse has been still for that many milliseconds; leaving mouse
+mode or clicking through the hints hides it at once. It shows while vim
+mouse is paused, while the session is locked and while the computer
+sleeps, and comes back when vim mouse quits. `hide_pointer = 0` never hides
+it. (Every program sees the same blank pointer: vim mouse swaps the system
+cursors. If vim mouse crashes while they are blank, start it again or sign
+out and in.)
+
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
 Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
@@ -170,7 +181,7 @@ hotkey's Alt, so the menu stays open.
 
 | Key | Action |
 |---|---|
-| label | Click the element showing that label |
+| label | Click the element showing that label (the pointer then goes back to where it was, `click_return`) |
 | `Shift` + label | Right click instead of left click |
 | `Ctrl` + label | Double click |
 | `Ctrl+Shift` + label | Middle click (a link opens in a new browser tab) |
@@ -185,6 +196,14 @@ hotkey's Alt, so the menu stays open.
 A right, double or middle click is sent once Shift and Ctrl are released, so
 the app sees a plain click (with Ctrl still down, Explorer would only toggle
 the selection and a browser would open the link in a new tab).
+
+After a click the pointer goes back to where it was before (`click_return`,
+default 1), so it is not left on the link or button you clicked while you
+read on; with the pointer hidden outside mouse mode (`hide_pointer`) that
+also means nothing shows up there. `Alt` + label and the drop of a drag
+still move the pointer, and in mouse mode (hints opened with `f`) the
+pointer stays on the element, so `hjkl` carry on from there.
+`click_return = 0` leaves the pointer on the element after every click.
 
 If an app does not expose UI Automation (some games, remote desktops,
 custom-drawn apps) the scan finds nothing and the hints close again; the grid
@@ -355,6 +374,9 @@ ones:
   while the hints refresh; new elements get labels in free space, and the
   hotkey again relabels everything. 0 = labels follow their elements and
   disappear when the element goes away. Default 1),
+  `click_return` (1 = after a click through the hints the pointer goes back
+  to where it was, unless mouse mode is on, default; 0 = it stays on the
+  element),
   `prescan` (1 = start finding elements and scrollable areas as soon as Alt
   goes down, so labels and Alt scrolling respond sooner; 0 = wait for the
   whole key combination),
@@ -397,6 +419,9 @@ ones:
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_scroll_end`
   (`g`: tap twice for the top, with Shift for the bottom), `key_hints`,
   `key_exit`, `key_help` remaps
+- `hide_pointer` (0-60000 ms, default 2000: outside mouse mode the pointer is
+  hidden; the real mouse shows it, and it hides again this long after the
+  mouse was last used. 0 = never hidden)
 - `indicator`, `log` (1 = write `vim.log`; 2 = also write, for every hint
   open, each element of the active window with where it is and whether it
   got a label or why not, and turn the early scan off)
@@ -531,6 +556,15 @@ when GitHub cannot be reached.
   mouse (`f h j k l u d g` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either
   (see above).
+- **The mouse pointer is gone.** Outside mouse mode vim mouse hides it
+  (`hide_pointer`); move the real mouse, tap CapsLock, or set
+  `hide_pointer = 0`. If it stays blank after vim mouse was killed or
+  crashed, start vim mouse again (it puts the cursors back when it quits)
+  or sign out and in.
+- **A hover menu closes after a hint click.** The pointer goes back to where
+  it was after the click, so a menu that stays open only while the pointer
+  is over it closes. `Alt` + label moves the pointer there without clicking,
+  or set `click_return = 0`.
 - **I need the real CapsLock.** vim mouse keeps the CapsLock state off. Set
   `capslock_off = 0`, then `Shift+CapsLock` turns the real CapsLock on and
   off. If Windows is set to turn Caps Lock off with the Shift key (Settings,
