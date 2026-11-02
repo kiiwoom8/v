@@ -62,8 +62,9 @@
 #define WM_APP_HINT_AGAIN       (WM_APP + 10) // hint hotkey pressed while hints are open; -> hint_hotkey_again
 #define WM_APP_ELEMENTS         (WM_APP + 11) // lParam = ClickList* from uia.c; -> hint_on_elements (takes ownership)
 #define WM_APP_TYPE_TEXT        (WM_APP + 12) // lParam = malloc'd WCHAR* from input.c; -> snippet_insert, then free
-#define WM_APP_HINT_PREPARE     (WM_APP + 13) // wParam 1 = the hint hotkey's modifiers went down, start scanning early;
-                                              // 0 = the hotkey will not follow; -> hint_prepare
+#define WM_APP_HINT_PREPARE     (WM_APP + 13) // wParam = HINT_PREPARE_*: the hint hotkey's modifiers went down
+                                              // (start scanning early), the hotkey will not follow, or keys
+                                              // reached the app (what was scanned ahead is old); -> hint_prepare
 #define WM_APP_UPDATE_DONE      (WM_APP + 14) // wParam = result from the update worker; -> update_on_done
 #define WM_APP_PAGE_ACTED       (WM_APP + 15) // wParam = PAGE_* kind: this program scrolled, clicked or went
                                               // back / forward (once per burst); -> hint_page_acted
@@ -183,6 +184,11 @@ typedef struct {
                                // Default 1; 0 = labels follow their elements and disappear
                                // with them.
     int   prescan;             // 1 = scan (hints, Alt scroll targets) once Alt is held, default 1
+    int   scan_ahead;          // 1 = scan for the hints as soon as the screen changed (after our
+                               // scroll, click or back / forward once the page caught up, after a
+                               // scroll the browser reported, after another window came to the
+                               // front), so the hotkey finds its labels ready; keys that reach the
+                               // app drop that scan. Default 1; 0 = scan on the hotkey only.
     int   scan_split;          // 1 = search the parts of a classic window (its title bar,
                                // list, tree, panes) at the same time, and skip the title
                                // bar's system menu; default 1. 0 = one search per window as
@@ -304,7 +310,10 @@ struct ClickList;
 void hint_init(HINSTANCE inst);
 void hint_shutdown(void);
 void hint_open(void);                   // on the monitor under the cursor
-void hint_prepare(BOOL on);             // WM_APP_HINT_PREPARE: scan before the hotkey completes
+// WM_APP_HINT_PREPARE: ALT = the hotkey's modifiers went down, scan before
+// it completes; CANCEL = it will not follow; FORGET = keys reached the app.
+enum { HINT_PREPARE_CANCEL = 0, HINT_PREPARE_ALT = 1, HINT_PREPARE_FORGET = 2 };
+void hint_prepare(int what);
 void hint_close(void);
 BOOL hint_is_open(void);
 void hint_on_key(UINT vk, UINT mods);

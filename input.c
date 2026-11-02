@@ -150,6 +150,9 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // Waiting inside the hook keeps key order intact: no other key is processed
 // meanwhile.
 #define BARE_WAIT_MS 100
+// Keys that reach the app tell the hints their scan ahead is old, at most
+// this often.
+#define AHEAD_FORGET_POST_MS 200
 
 enum {
     ACT_NONE = 0,
@@ -1456,6 +1459,22 @@ static void focus_key_passed(UINT vk)
         uia_focus_changed(FOCUS_KEY_DELAY_MS);
 }
 
+// A key reached the app: typing and shortcuts open and move things, so what
+// the hints scanned ahead (scan_ahead) is old. Once per burst; a post only,
+// the hook must not wait.
+static void ahead_key_passed(void)
+{
+    static DWORD last;
+    DWORD now = GetTickCount();
+
+    if (!g_cfg.scan_ahead || flag_get(&s_capture))
+        return;
+    if (last && now - last < AHEAD_FORGET_POST_MS)
+        return;
+    last = now ? now : 1;
+    post_main(WM_APP_HINT_PREPARE, HINT_PREPARE_FORGET, 0);
+}
+
 static BOOL alt_hotkey_configured(void)
 {
     return (g_cfg.hint_hotkey.mods & KMOD_ALT) ||
@@ -1561,6 +1580,7 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
         }
     }
     send_alt_replay(vk, scan, flags);
+    ahead_key_passed();
     s_owner[vk] = OWN_PASS;
     s_owner[VK_LMENU] = OWN_PASS;
     s_alt_pending = FALSE;
@@ -1646,6 +1666,7 @@ static BOOL handle_down(UINT vk)
     if (flag_get(&s_mouse_mode)) {
         if (mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN)) {
             s_owner[vk] = OWN_PASS;
+            ahead_key_passed();
             return FALSE;
         }
         if (vk == VK_ESCAPE) {
@@ -1683,6 +1704,7 @@ static BOOL handle_down(UINT vk)
         }
     }
     focus_key_passed(vk);
+    ahead_key_passed();
     s_owner[vk] = OWN_PASS;
     return FALSE;
 }

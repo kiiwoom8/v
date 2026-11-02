@@ -48,6 +48,7 @@
 #define TIMER_REFRESH_ID 3
 #define TIMER_SETTLE_ID 4
 #define TIMER_ACT_ID    5
+#define TIMER_AHEAD_ID  6
 #define ACT_POLL_MS     10
 #define ACT_WAIT_MAX_MS 3000
 #define REFRESH_RETRY_MS 200
@@ -59,6 +60,18 @@
 #define DOT             L"\x00B7"
 #define SCAN_DEFAULT_MS 400
 #define SCAN_HARD_LIMIT_MS 3000
+// A scan made before the hotkey (Alt held, or ahead of it after the screen
+// changed) serves an open this long after it started; older, the open scans
+// afresh. One older than AHEAD_REFRESH_MS when adopted is refreshed at once
+// rather than in scan_refresh ms.
+#define AHEAD_MAX_AGE_MS 3000
+#define AHEAD_REFRESH_MS 300
+// After our scroll or click in a window that needs no catch-up wait (a
+// classic window), the scan ahead waits this long for what the action
+// opened or moved; after another window came to the front, this long for
+// its tree (a browser builds it only once asked: warm_foreground).
+#define AHEAD_DELAY_MS   300
+#define AHEAD_SWITCH_MS  700
 #define FONT_REF_PX     64
 // The wait for a Chromium page to catch up (settle_begin). Chrome animates a
 // wheel scroll for 100 to 200 ms after the last wheel event (6 to 12 frames,
@@ -251,6 +264,13 @@ static UINT      g_pre_id;
 static HMONITOR  g_pre_mon;
 static DWORD     g_pre_t0;
 static ClickList *g_pre_list;
+// What the prescan is: PRE_ALT serves the hotkey whose Alt is held and is
+// dropped when another key follows; PRE_AHEAD (scan_ahead) was made because
+// the screen changed and stays until it is old or the screen changes again.
+enum { PRE_NONE = 0, PRE_ALT = 1, PRE_AHEAD = 2 };
+static int       g_pre_kind;
+static HWINEVENTHOOK g_fg_hook;      // foreground and focus changes (scan_ahead)
+static HWINEVENTHOOK g_focus_hook;
 
 static MonInfo   g_mons[MAX_MONITORS];
 static int       g_mon_count;
@@ -272,6 +292,11 @@ static void invalidate(void);
 static void cycle_monitor(UINT mods);
 static void clear_prescan(void);
 static BOOL adopt_prescan(void);
+static void ahead_start(void);
+static void ahead_forget(void);
+static void ahead_schedule(DWORD ms);
+static HMONITOR cursor_monitor(void);
+static BOOL settle_needed(void);
 static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
 static void schedule_refresh(void);
@@ -1947,6 +1972,16 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (wp == TIMER_SETTLE_ID) {
             KillTimer(hwnd, TIMER_SETTLE_ID);
             settle_step(FALSE);
+        } else if (wp == TIMER_AHEAD_ID) {
+            KillTimer(hwnd, TIMER_AHEAD_ID);
+            if (g_settle_on) return 0;       // settle_done starts it
+            if (settle_needed()) {
+                // A report with no wait for it (a page backed off from):
+                // look again when it has aged.
+                ahead_schedule(AHEAD_DELAY_MS);
+                return 0;
+            }
+            ahead_start();
         } else if (wp == TIMER_ACT_ID) {
             if (!g_act_pending)
                 KillTimer(hwnd, TIMER_ACT_ID);
@@ -2251,10 +2286,15 @@ static void CALLBACK scroll_event_proc(HWINEVENTHOOK hook, DWORD event,
     if (!root) return;
     now = GetTickCount();
     scroll_seen_set(root, now ? now : 1);
-    if (g_settle_on && root == g_settle_root)
+    if (g_settle_on && root == g_settle_root) {
         settle_step(TRUE);
-    else if (g_cfg.scan_flush && g_cfg.scan_settle > 0 &&
-             root == settle_root())
+        return;
+    }
+    if (root != settle_root()) return;
+    // The page moved (a mouse wheel, a key, its own script): what was
+    // scanned ahead is old; settle_done starts a new one once it is in.
+    ahead_forget();
+    if (g_cfg.scan_flush && g_cfg.scan_settle > 0)
         settle_poke();
 }
 
@@ -2381,6 +2421,9 @@ static void settle_done(const WCHAR *why)
         g_settle_wait = FALSE;
         if (g_open && g_scanning && g_mode == HINT_MODE_ELEMENTS)
             begin_scan();
+    } else if (!g_open) {
+        // Ahead of the hotkey: scan now, so it finds its labels ready.
+        ahead_start();
     }
 }
 
@@ -2622,6 +2665,7 @@ static void clear_prescan(void)
     g_pre_id = 0;
     g_pre_mon = NULL;
     g_pre_t0 = 0;
+    g_pre_kind = PRE_NONE;
 }
 
 // Drops a prescan that will not be adopted, stopping its worker.
@@ -2632,14 +2676,87 @@ static void discard_prescan(void)
     clear_prescan();
 }
 
+// ---------------------------------------------------------------------------
+// Scan ahead (scan_ahead). The scan the hotkey would start runs as soon as
+// something changed the screen and the page has caught up, so the hotkey
+// finds its labels ready instead of waiting 100 to 400 ms for them. It is
+// kept as the prescan (g_pre_*, kind PRE_AHEAD) until it is adopted, too old
+// (AHEAD_MAX_AGE_MS) or the screen changes again: our scroll, click or back
+// / forward and a scroll the browser reported drop it and start a new one
+// once the page has caught up (hint_page_acted, settle_done); another window
+// in front drops it and starts a new one after AHEAD_SWITCH_MS; a focus
+// change in the front window, or keys that reached the app (typing opens
+// and moves things), only drop it, and the hotkey then scans as before.
+
+static void ahead_forget(void)
+{
+    if (g_pre_kind == PRE_AHEAD)
+        discard_prescan();
+}
+
+static void ahead_schedule(DWORD ms)
+{
+    if (!g_hint_wnd || !g_cfg.scan_ahead) return;
+    SetTimer(g_hint_wnd, TIMER_AHEAD_ID, ms ? (UINT)ms : 1, NULL);
+}
+
+// Starts one now, unless the hints are open, the page is still catching up
+// (settle_done or the timer come back), or an Alt prescan is already on.
+static void ahead_start(void)
+{
+    if (g_open || !g_hint_wnd || !g_cfg.scan_ahead ||
+        g_cfg.hint_mode != HINT_MODE_ELEMENTS || !uia_available() ||
+        g_cfg.log >= 2)
+        return;
+    if (g_pre_kind == PRE_ALT) return;
+    if (settle_needed()) return;
+    discard_prescan();
+    ++g_scan_id;
+    g_pre_id = g_scan_id;
+    g_pre_kind = PRE_AHEAD;
+    g_pre_mon = cursor_monitor();
+    g_pre_t0 = GetTickCount();
+    uia_scan(g_pre_mon, g_pre_id, FALSE);
+}
+
+// Another window came to the front: the scan ahead was of the old one.
+static void CALLBACK fg_event_proc(HWINEVENTHOOK hook, DWORD event,
+                                   HWND hwnd, LONG id_object, LONG id_child,
+                                   DWORD thread, DWORD time)
+{
+    HWND fg, root;
+
+    (void)hook;
+    (void)id_object;
+    (void)id_child;
+    (void)thread;
+    (void)time;
+    if (!hwnd) return;
+    if (event == EVENT_OBJECT_FOCUS) {
+        // The focus moved inside the front window (a field, a menu, a
+        // dropdown): something may have opened or moved. Background apps
+        // report focus too; only the front window's counts.
+        fg = GetForegroundWindow();
+        root = GetAncestor(hwnd, GA_ROOT);
+        if (fg && root == GetAncestor(fg, GA_ROOT))
+            ahead_forget();
+        return;
+    }
+    ahead_forget();
+    ahead_schedule(AHEAD_SWITCH_MS);
+}
+
 // Adopts the prescan as the open session's scan. Returns FALSE when it is not
 // adoptable (any prescan is then dropped) and a normal scan must start.
 static BOOL adopt_prescan(void)
 {
+    DWORD age;
+
     if (g_pre_id == 0)
         return FALSE;
+    age = GetTickCount() - g_pre_t0;
     if (g_pre_id != g_scan_id || g_pre_mon != g_mon ||
-        GetTickCount() - g_pre_t0 > 2000 || settle_needed()) {
+        age > AHEAD_MAX_AGE_MS || settle_needed()) {
         discard_prescan();
         return FALSE;
     }
@@ -2662,9 +2779,17 @@ static BOOL adopt_prescan(void)
     g_pre_id = 0;
     g_pre_mon = NULL;
     g_pre_t0 = 0;
+    g_pre_kind = PRE_NONE;
 
     if (g_scan_list && scan_ready(g_scan_list)) {
+        BOOL done = g_scan_list->done;
+
         finalize_scan();
+        // Scanned a while ago: what appeared since gets its labels now, not
+        // in scan_refresh ms. (A list still coming in refreshes by itself.)
+        if (done && age > AHEAD_REFRESH_MS && g_open && g_refresh_on &&
+            g_hint_wnd)
+            SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
         return TRUE;
     }
     if (g_hint_wnd)
@@ -3083,6 +3208,23 @@ void hint_init(HINSTANCE inst)
         if (!g_scroll_hook)
             app_log(L"hint: scroll event hook failed (%lu)", GetLastError());
     }
+    // Foreground and focus changes drop the scan ahead (fg_event_proc).
+    if (!g_fg_hook) {
+        g_fg_hook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
+            fg_event_proc, 0, 0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        if (!g_fg_hook)
+            app_log(L"hint: foreground event hook failed (%lu)",
+                    GetLastError());
+    }
+    if (!g_focus_hook) {
+        g_focus_hook = SetWinEventHook(
+            EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS, NULL, fg_event_proc,
+            0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        if (!g_focus_hook)
+            app_log(L"hint: focus event hook failed (%lu)", GetLastError());
+    }
 
     exstyle = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST |
               WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
@@ -3103,6 +3245,15 @@ void hint_shutdown(void)
         UnhookWinEvent(g_scroll_hook);
         g_scroll_hook = NULL;
     }
+    if (g_fg_hook) {
+        UnhookWinEvent(g_fg_hook);
+        g_fg_hook = NULL;
+    }
+    if (g_focus_hook) {
+        UnhookWinEvent(g_focus_hook);
+        g_focus_hook = NULL;
+    }
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_AHEAD_ID);
     g_settle_on = FALSE;
     g_settle_wait = FALSE;
     if (g_hint_wnd) {
@@ -3231,11 +3382,16 @@ void hint_open(void)
     }
 }
 
-void hint_prepare(BOOL on)
+void hint_prepare(int what)
 {
-    if (!on) {
-        if (!g_open && g_pre_id != 0)
+    if (what == HINT_PREPARE_CANCEL) {
+        // The Alt prescan has no hotkey to serve; a scan ahead stays.
+        if (!g_open && g_pre_kind == PRE_ALT)
             discard_prescan();
+        return;
+    }
+    if (what == HINT_PREPARE_FORGET) {
+        if (!g_open) ahead_forget();
         return;
     }
 
@@ -3243,6 +3399,10 @@ void hint_prepare(BOOL on)
         !uia_available())
         return;
 
+    // A scan ahead young enough serves the hotkey as it is, done or not.
+    if (g_pre_kind == PRE_AHEAD &&
+        GetTickCount() - g_pre_t0 <= AHEAD_MAX_AGE_MS && !settle_needed())
+        return;
     discard_prescan();
     // Right after a scroll or click a browser still reports the old page:
     // hint_open starts the scan once it has caught up (settle_begin), and
@@ -3257,6 +3417,7 @@ void hint_prepare(BOOL on)
         return;
     ++g_scan_id;
     g_pre_id = g_scan_id;
+    g_pre_kind = PRE_ALT;
     g_pre_mon = cursor_monitor();
     g_pre_t0 = GetTickCount();
     uia_scan(g_pre_mon, g_pre_id, FALSE);
@@ -3264,10 +3425,15 @@ void hint_prepare(BOOL on)
 
 // This program scrolled, clicked or went back or forward (WM_APP_PAGE_ACTED,
 // at most once per burst): a Chromium page needs time to report the result,
-// so the wait for it starts now rather than when the hotkey comes.
+// so the wait for it starts now rather than when the hotkey comes. What was
+// scanned ahead is old; a new scan follows once the page has caught up
+// (settle_done), or after a moment where no wait applies.
 void hint_page_acted(void)
 {
+    ahead_forget();
     settle_poke();
+    if (!g_settle_on)
+        ahead_schedule(AHEAD_DELAY_MS);
 }
 
 void hint_close(void)

@@ -71,7 +71,10 @@ overlay clicks through `mouse_click_at`. Every scroll, click or back /
 forward of ours posts `WM_APP_PAGE_ACTED` (once per burst), and a Chromium
 window's own scroll report arrives through the WinEvent hook: either starts
 the wait for that page to catch up right then (`settle_poke`), hints open
-or not, so an open that follows usually scans at once.
+or not, and when it ends the scan runs ahead of the hotkey (`scan_ahead`,
+`ahead_start`), so an open that follows adopts a finished scan and shows
+its labels at once. A foreground change runs the scan ahead too; a focus
+change in the front window or keys that reached the app drop it.
 
 Invariants stated in `common.h` and enforced by history:
 - `g_cfg` is written only by the main thread (load and reload); other threads
@@ -333,6 +336,25 @@ Invariants stated in `common.h` and enforced by history:
   the per-frame wheel. Still waiting somewhere: `uia_scroll_end` (300 ms,
   `Shift+g` only) and the hook's `uia_focus_wait` (100 ms, only while a
   focus answer is pending).
+- "Better, but not satisfied, especially on the navigator (f)." The scan
+  itself is quick here (`uia_probe`: a Chrome window of 75 targets in 93
+  to 141 ms), so the cost of `f` was everything that only started with the
+  key: the wait for the page to catch up after a scroll (about 330 ms),
+  then the scan. `scan_ahead` (default 1) runs that scan when the screen
+  changes instead: after our scroll, click or back / forward once the page
+  has caught up (`settle_done`, `hint_page_acted`), after a scroll the
+  browser reported, and 700 ms after another window came to the front
+  (`fg_event_proc`, a WinEvent hook of its own, since the input thread's
+  focus hooks exist only with `bare_keys`). The result is the prescan of a
+  new kind (`PRE_AHEAD`) and is adopted like the Alt prescan, up to 3 s
+  old; a list adopted more than 300 ms after its scan is refreshed at once.
+  It is dropped, with no new scan, by a focus change inside the front
+  window and by keys that reached the app (`ahead_key_passed`, at most one
+  post per 200 ms): typing opens and moves things, and the hotkey then
+  scans as before. A page action drops it too and a new one follows the
+  catch-up wait (or 300 ms later where none applies). The Alt prescan's
+  cancel (`HINT_PREPARE_CANCEL`) leaves a scan ahead alone, and an Alt
+  press with a young scan ahead starts no second scan.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -917,6 +939,18 @@ last ten are all `worktree-agent-*` into `element-hints`.
   once known (`scrOwed`): a redirect means the pointer's spot does not
   scroll that way, so nothing was lost there. `uia_scroll_end` (`Shift+g`)
   still waits up to 300 ms: one shot, rare.
+- **Do the scan before the key, not after it.** UI Automation needs 100 to
+  400 ms for a window, and after a scroll a Chromium page another 330 ms
+  to report where things are; nothing makes that faster once the hotkey
+  is down. `scan_ahead` (phase 9) runs the scan when the screen changes,
+  so the hotkey adopts it. What must hold: a scan ahead is dropped by
+  every sign of change this program can see (its own actions, browser
+  scroll reports, foreground and focus changes, keys that reached the
+  app), it is never older than `AHEAD_MAX_AGE_MS` when adopted, and an
+  adopted one older than `AHEAD_REFRESH_MS` is refreshed at once. Signs
+  it cannot see: physical mouse clicks and wheel scrolls outside
+  Chromium, and a page changing by itself; `keep_labels` holds a label
+  where it was drawn, so those cost at most 3 s of staleness.
 - **Anything that follows the pointer moves with it, not on a timer.** The
   `MOUSE` pill on a 15 ms timer trailed a pointer that moves every
   millisecond and stepped after it. `indicator_moved` posts an update from
@@ -1212,7 +1246,11 @@ page for those). Overlay timing lives in `hint.c` (`settle_poke`,
 `settle_done`, `scan_ready`, `start_scan`, `begin_scan`, `adopt_prescan`,
 `finalize_scan`, `scan_limit_ms`, `SCAN_HARD_LIMIT_MS`); the wait's
 triggers are `hint_page_acted` (from `input.c` `page_acted_at`) and
-`scroll_event_proc`.
+`scroll_event_proc`. The scan ahead of the hotkey (`scan_ahead`):
+`ahead_start`, `ahead_forget`, `ahead_schedule`, `fg_event_proc`,
+`TIMER_AHEAD_ID`, the `AHEAD_*` constants, `g_pre_kind`; what drops it is
+listed above `ahead_forget`. The hook tells it about keys that reached the
+app (`input.c` `ahead_key_passed`, `HINT_PREPARE_FORGET`).
 
 ### Change scrolling or movement
 

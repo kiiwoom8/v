@@ -619,6 +619,7 @@ void config_set_defaults(Config *c)
     c->scan_refresh = 500;
     c->keep_labels = 1;
     c->prescan = 1;
+    c->scan_ahead = 1;
     c->scan_split = 1;
     c->scan_settle = 650;
     c->scan_flush = 1;
@@ -974,6 +975,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_bool(&c->keep_labels, line, key, val);
     else if (_wcsicmp(key, L"prescan") == 0)
         apply_bool(&c->prescan, line, key, val);
+    else if (_wcsicmp(key, L"scan_ahead") == 0)
+        apply_bool(&c->scan_ahead, line, key, val);
     else if (_wcsicmp(key, L"scan_split") == 0)
         apply_bool(&c->scan_split, line, key, val);
     else if (_wcsicmp(key, L"scan_settle") == 0)
@@ -1647,6 +1650,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; scrollable areas) as soon as Alt goes down, so the labels and the\r\n");
     appendf(buf, cch, L"; first scroll come sooner. 0 = wait for the whole key combination.\r\n");
     appendf(buf, cch, L"prescan = %d\r\n", d.prescan ? 1 : 0);
+    appendf(buf, cch, L"; 1 = find the clickable elements as soon as the screen changed (a\r\n");
+    appendf(buf, cch, L"; scroll, a click, another window in front), so the labels are ready\r\n");
+    appendf(buf, cch, L"; when the hint key comes. 0 = search only when it is pressed.\r\n");
+    appendf(buf, cch, L"scan_ahead = %d\r\n", d.scan_ahead ? 1 : 0);
     appendf(buf, cch, L"; 1 = search the parts of a classic window (title bar, list, tree,\r\n");
     appendf(buf, cch, L"; panes) at the same time, which is about twice as fast, and skip\r\n");
     appendf(buf, cch, L"; the window icon's system menu (Alt+Space opens it anyway).\r\n");

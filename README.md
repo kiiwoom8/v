@@ -119,7 +119,9 @@ A transparent, click-through overlay opens on the monitor under the cursor.
 By default it finds the clickable elements of the visible windows through UI
 Automation and labels each one. Type the label shown on the element to click
 it; labels are short (usually one letter) and never a prefix of another. The
-status bar says "Finding clickable elements" while the scan runs. While the
+status bar says "Finding clickable elements" while the scan runs; usually it
+does not show at all, because the scan already ran when the screen last
+changed (`scan_ahead`, see Settings) and the labels appear at once. While the
 hints stay open the monitor is scanned again every `scan_refresh` ms (default
 500), so elements that appear get labels by themselves. A label already on
 screen stays put and keeps its letters (`keep_labels`, default 1): a label you
@@ -352,6 +354,11 @@ ones:
   `prescan` (1 = start finding elements and scrollable areas as soon as Alt
   goes down, so labels and Alt scrolling respond sooner; 0 = wait for the
   whole key combination),
+  `scan_ahead` (1 = find the clickable elements as soon as the screen
+  changed, after a scroll or click of vim mouse once the page has caught
+  up, a scroll the browser reported, or another window coming to the
+  front, so the labels are ready when the hint key comes; keys typed into
+  the app drop that scan. 0 = search only when the key is pressed),
   `scan_split` (1 = ask for the parts of a classic window, such as File
   Explorer's file list, folder tree and title bar, all at the same time,
   which finds its elements about twice as fast, and leave out the window

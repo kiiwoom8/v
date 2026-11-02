@@ -385,7 +385,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         hint_open();
         return 0;
     case WM_APP_HINT_PREPARE:
-        hint_prepare(wp != 0);
+        hint_prepare((int)wp);
         return 0;
     case WM_APP_HINT_CLOSE:
         hint_close();
