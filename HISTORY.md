@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `14883fb` (2026-11-03): 123
-commits, 109 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `709bcb9` (2026-11-03): 124
+commits, 110 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -31,11 +31,12 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | File | Lines | Responsibility | Names worth knowing |
 |---|---|---|---|
 | `common.h` | 480 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
+| `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the Enter Enter jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `center_pointer`, `input_thread_proc` |
-| `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
-| `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
+| `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -434,6 +435,33 @@ Invariants stated in `common.h` and enforced by history:
   considered and not taken: the user asked for Enter, and a bare letter
   would take a key from apps.
 
+### Phase 10: labels the page hides (2026-11-03)
+
+- "The navigator is not appearing on the `<h3>`" of a Google result (the
+  namu.wiki title). `tools/hint_check.mjs --scroll` on the user's query
+  showed the link found and labelled, and its label "covered by Group":
+  every result block on Google is a target of its own (Invoke through
+  `jsaction`), the title link starts at the block's corner, and the two
+  labels sat on one spot, the block's on top. What the user saw was one
+  label, which clicked the block. `labels_apart`: a label's box is found
+  once (`place_labels`, `labelbox.h`), smallest element first, and a box
+  that would cover a placed one moves right of it, or below it at the
+  monitor's edge. The checker's own layout runs the same code.
+- "The navigator doesn't appear on `<label for="selection_all">`" in
+  Naver Mail. The browser extension refuses webmail, so Naver's `.blind`
+  pattern was rebuilt on a mock page and Chromium's tree read with a
+  managed UI Automation dump: the input is a CheckBox of 1x2 px (so "too
+  small"), the `<label>` a nameless Group of 25x25 that is not a control
+  element, `LabeledBy` null, and a label with plain text is not in the
+  tree at all (Chromium prunes it as redundant). `scan_hidden_checkbox`:
+  such a box takes the Group next to it (next sibling, previous sibling,
+  then the parent for a wrapping label; `label_stand_in`). The walks
+  need elements with full references, which the scan cache does not
+  carry (section 5), and full references cost about a fifth more per
+  scan, so `find_all_window` fetches them only for a window whose last
+  scan saw such a box (`full_memory`), and once more at the first sight
+  of one, in the same scan.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -577,7 +605,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 104 | `207505f` | 11-03 | 9 | Commit-log row for `a630c0f`; `tools/flush_probe.c` kept (`make flushprobe`) | |
 | 105 | `9d1a3e6` | 11-03 | 9 | `hide_pointer` (default 2000 ms): outside mouse mode the system cursors are blank (`SetSystemCursor` from `ptr_thread_proc`, `SPI_SETCURSORS` back), decided by `ptr_update` on the input thread (`ptr_schedule`, `WM_INPUT_PTR_UPDATE`, `PTR_TIMER`, `s_ptr_away` on lock and sleep); a `WH_MOUSE_LL` hook (`mouse_proc`) shows it for the real mouse (`LLMHF_INJECTED`, `own_move` with `s_own_x` / `s_own_y`); `ptr_forget_mouse` on leaving mouse mode and after a hint click. `click_return` (default 1): `mouse_click_at` puts the pointer back after the clicks unless mouse mode is on; `focus_clicked_at` records the click point | "While not activating CapsLock, disable the mouse pointer so I am not interrupted reading articles; and do not move the pointer to the point I clicked with the navigator". Checked here: blank arrow while running, the real one back after a graceful close, blank again after a restart |
 | 106 | `14883fb` | 11-03 | 9 | `key_center` (default Enter) twice within `center_tap_ms` (300 ms): the pointer to the middle of the active window's monitor (`center_key_down` on the pass-through paths of `handle_down`, `s_center_ok` read at the first press, `WM_INPUT_CENTER`, `center_pointer` on the input thread); both presses still reach the app; shows the hidden pointer like the real mouse | "Enter twice for moving mouse cursor to the center": Enter cannot be swallowed, so the jump is a side effect of the second press, outside text fields or in mouse mode |
-| 107 | | 11-03 | 9 | Commit-log row for `14883fb` | |
+| 107 | `709bcb9` | 11-03 | 9 | Commit-log row for `14883fb` | |
+| 108 | | 11-03 | 10 | `labels_apart` (default 1): `place_labels` finds each label's box once, smallest element first, and `labelbox_apart` (`labelbox.h`, shared with `tools/hint_check.c`) moves a box that would cover a placed one right of it or below it (`HintLabel.box`, `placed`, `g_labels_replace`); `scan_hidden_checkbox` (default 1): a 1 px checkbox or radio button in a browser takes its label's box (`label_stand_in`: next sibling, previous sibling, parent Group within 64 px, `STAND_IN_MAX` 40), which needs elements with full references, so `find_all_window` fetches them (`full_cache`) for a window `full_memory` remembers and once more at the first sight of such a box (`tiny_boxes_listed`); the log = 2 cache is full too; `hint_check.mjs` counts a `<label>` whose control is hidden and the tools run with the app's browser settings | "The navigator is not appearing" on a Google result's title (the result block's label painted over the link's at the same corner) and on Naver Mail's "select all" label (the input is 1 px, the label a nameless Group that is not a control) |
 
 ## 5. Lessons learned: rules not to break
 
@@ -1029,6 +1058,49 @@ last ten are all `worktree-agent-*` into `element-hints`.
   one of the few codes left over (0 to 21 with the default alphabet) or
   none. `build_labels` now plans for a quarter more elements, at least an
   alphabet's worth.
+- **Two labels at one corner hide each other.** Labels were drawn at
+  their element's top-left in target order, so where a card and the link
+  at its corner were both targets (Google: every result block exposes
+  Invoke through its `jsaction`, and the title link starts at its corner;
+  `tools/hint_check` on the user's query showed the link's label "covered
+  by Group"), the later label painted over the earlier one and the user
+  saw a single label that clicked the block, "no navigator on the
+  title". Now `place_labels` (`hint.c`) finds every label's box once,
+  smallest element first, and `labelbox_apart` (`labelbox.h`) moves a
+  box that would cover more than a quarter of a placed one (or be
+  covered that much) right of it, or below it at the monitor's edge. A
+  box is found when the label is first painted and then stays, so with
+  `keep_labels` nothing the user reads moves: a merge's new labels go
+  around the shown ones. The box is found again only when its element
+  moved (`keep_labels = 0`), its text grew (`make_room`) or the fonts
+  changed (`g_labels_replace`). `tools/hint_check.c` `layout_labels`
+  runs the same code, so its "hidden" count means what the overlay
+  draws; its DOM list also counts a `<label>` whose control is hidden.
+- **An element from the scan cache cannot walk the tree.** The scan's
+  cache request uses `AutomationElementMode_None` (the elements carry
+  only their cached properties, no reference to the app), and the tree
+  walker's `GetNextSiblingElementBuildCache` and friends find nothing
+  from such an element: `label_stand_in` labelled none of the mock
+  page's hidden checkboxes until the same scan ran with
+  `AutomationElementMode_Full` (`tools/hint_check.mjs`, 2026-11-03).
+  Full references are not free: Wikipedia's Vim page (116 targets)
+  scanned in 141 ms with the plain cache and 140 to 235 ms (mostly
+  about 172) with full ones, six runs each. So `full_cache` is used
+  only where it pays: a window whose last scan listed a hidden checkbox
+  (`full_memory`, per window like the slow memory), the first scan that
+  lists one (fetched again at once, `find_all_window`), and `log = 2`.
+  Anything new that needs to walk, search or ask current properties from
+  a scanned element must come from `full_cache`, `detail_cache` or
+  `kids_cache` (full for the split scan), never from `cache`.
+- **A page can hide a control behind its label.** Chromium exposes a
+  `<label>` that holds more than text as a Group that is not a control
+  element, with no name and no `LabeledBy` from the input (null on the
+  mock page), and prunes a plain-text label whose text names the input.
+  The 1 px input is the only target, so the label's box is found by
+  walking from it, within 64 px, and only a Group counts: the hidden
+  `.blind` text next to it is a Text of 14x101 px whose centre lies
+  below the square. A visible control (`opacity: 0` over the label, 24
+  px) needs nothing and gets nothing.
 
 ### Scrolling and movement
 
@@ -1233,6 +1305,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Text shortcuts are pasted through the clipboard (`shortcut_method = type` restores) | `5b3d7e4` | Typed with `KEYEVENTF_UNICODE` |
 | Settings next to the exe, else `%APPDATA%\vim mouse` | `e04d6a0` | Exe folder only |
 | Defaults: movement 600 to 2400 px/s over 0.45 s; scroll 10 to 40 notches/s; `scan_timeout` 400 ms | `f6cb7d4` | 500 to 1500 over 0.65 s; 5 to 20 notches/s; 1000 ms |
+| Two labels never sit on one spot: the smaller element keeps its corner, the other label moves right of it, or below it at the screen's edge (`labels_apart = 0` restores) | phase 10 | Every label at its element's top-left corner, so a card's label hid the label of the link at its corner (Google's result title) |
+| In a browser, a checkbox or radio button hidden behind its label (a 1 px input) gets the label's box (`scan_hidden_checkbox = 0` restores) | phase 10 | The input was too small for a label and the label itself is never a target |
 
 ## 7. Open threads
 
@@ -1317,6 +1391,32 @@ last ten are all `worktree-agent-*` into `element-hints`.
   (expect "Shutdown skipped" on waking); `shutdown_at` a few minutes ahead,
   then cancelling that day from the tray. `log = 1` writes a "shutdown:"
   line for each step.
+- **Hidden checkboxes** (`label_stand_in`, phase 10) were seen working on
+  a mock page (`tools/hint_check.mjs` on `tools/ax_sim/pages/label.html`,
+  Naver's `.blind` pattern: the four variants that leave a 1 px input in
+  the tree get their label's box), not on `mail.naver.com` itself, which this
+  session could not open (the browser extension refuses webmail). To
+  check: open the mail list, press `f`, expect a label on the "select
+  all" square and on each row's box; `log = 2` says "hidden behind its
+  label, which stands in" for each. If a page has more than
+  `STAND_IN_MAX` (40) such boxes on screen, the rest stay unlabelled. A
+  `<label>` with plain text for a 1 px input ("Remember me") stays
+  unlabelled by design: Chromium prunes that label as redundant and
+  nothing in the tree holds the text's place. A question this raised:
+  `rescue_offscreen` (`b7871de`) asks `FindAllBuildCache` under an
+  element from the plain scan cache, which carries no reference to the
+  app (section 5: the tree walks from such an element find nothing). If
+  Google's account menu still has no labels, that FindAll may be failing
+  for the same reason; `log = 2` would then never say "offscreen per
+  Chromium, taken back", and the fix is to take the dialog or menu from
+  `full_cache` (or ask again under the root with `kids_cache`).
+- **Labels apart** (`labelbox_apart`) was checked with `tools/hint_check`
+  on a mock card (an `onclick` div holding a title link at its corner: both
+  labelled, none hidden), not on Google itself: the checker's fresh
+  Chrome profile got Google's bot check (`sei=` page) after a few runs.
+  On the user's query the earlier run showed the cause (the link's label
+  "covered by Group"), so expect two labels at a result's corner now: the
+  link's at the corner, the block's to its right.
 - **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet.
 
 ## 8. How to change things efficiently
@@ -1364,6 +1464,12 @@ the "pointer is gone" troubleshooting entry describe it.
 
 ### Change hint scanning or filtering
 
+Where a label's box is drawn: `labelbox.h` (`labelbox_natural`,
+`labelbox_apart`), used by `hint.c` `place_labels` (once per label, before
+the paint that first shows it; `HintLabel.placed`) and by
+`tools/hint_check.c` `layout_labels`, which must stay the same code.
+Change both when the box geometry changes.
+
 `uia.c`: `scan_root_item`, `scan_split_item`, `scan_titlebar_item` and
 `scan_window_finish` (how a window is split into parts on the helper pool
 and put back in tree order; `scan_can_split` says which windows),
@@ -1377,9 +1483,18 @@ taken back into a dialog or menu), `filter_containers` and
 `choose_outer_click_point` (containers and click points), `cover_overlays`
 (elements under a web dialog, menu or frame), `slow_check` and
 `lazy_tree_window` (skip rules), `uia_scan_monitor` (window list and
-merging). Verify with `make probe` (`tools/uia_probe.exe -v`) and, for web
+merging), `find_all_window` (a window's FindAll: full references through
+`full_cache` for a window `full_memory` remembers, fetched once more when
+`tiny_boxes_listed` first sees a hidden checkbox) and `label_stand_in`
+(that checkbox's label, from `scan_filter`; `STAND_IN_MAX`,
+`STAND_IN_NEAR_PX`). Verify with `make probe` (`tools/uia_probe.exe -v`) and, for web
 pages, `make check` then `node tools/hint_check.mjs <url>`, which reports
-misses with the drop reason. `tools/uia_probe.exe -1` scans with one
+misses with the drop reason (`tools/ax_sim/pages/label.html` is the mock
+page for hidden checkboxes and a card holding a link at its corner).
+`powershell -File tools/uia_dump.ps1 -TitlePart <part> -All` prints a
+window's raw UI Automation tree (type, rect, offscreen, patterns,
+`LabeledBy`) without bringing it to the front; `-Match` (or `-MatchB64`
+for Korean) prints the chain around a named element. `tools/uia_probe.exe -1` scans with one
 search per window, to compare with the split. `tools/uia_probe.exe -d` writes the
 `log = 2` lines for the active window without a key press (`-w 5` to
 bring it to the front first). Without Windows, run `tools/ax_sim/run.sh` on a mock page (add one to

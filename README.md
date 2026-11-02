@@ -177,7 +177,14 @@ on the monitor get theirs a moment later (`browser_first`). In a browser an
 element that only says it can take the keyboard focus gets a label too (a
 `div` with `tabindex` whose click handler sits on an ancestor, as React
 attaches them; a range slider), unless it is text, a scroll area, lies
-outside the page or covers over a quarter of it (`scan_focusable`). A menu, dialog or embedded frame drawn over a web page
+outside the page or covers over a quarter of it (`scan_focusable`). A
+checkbox or radio button that a page hides behind its own label (Naver
+Mail's "select all": the input is one pixel, the label is drawn as the box)
+gets the label's box and is clicked there (`scan_hidden_checkbox`). When
+two labels would sit on one spot (a Google result's title link and the
+result block around it both start at that corner), the smaller element
+keeps its corner and the other label is drawn to the right of it, or below
+it at the screen's edge (`labels_apart`), so both can be read and typed. A menu, dialog or embedded frame drawn over a web page
 (Google's account menu, a Zendesk menu or modal) gets its own labels; page
 links partly under it get their label and click on the part that shows, and
 links entirely under a menu or dialog get none. Chrome sometimes reports
@@ -425,7 +432,14 @@ ones:
   `tabindex` whose click handler sits on an ancestor or a range slider,
   unless they are text, scroll areas, lie outside the page or cover over a
   quarter of it, default; 0 = only elements with a clickable control type
-  or pattern)
+  or pattern), `scan_hidden_checkbox` (1 = in a browser, a checkbox or
+  radio button that a page hides behind its own label, the input one pixel
+  and the label drawn as the box, gets the label's box and is clicked
+  there, default; 0 = such inputs are too small for a label),
+  `labels_apart` (1 = a label that would sit on another label is drawn to
+  the right of it, or below it at the screen's edge, the smaller element
+  keeping its corner, default; 0 = every label at its element's top-left
+  corner, one over the other)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,

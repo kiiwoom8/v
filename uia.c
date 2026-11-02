@@ -422,11 +422,19 @@ typedef struct IUIAutomationTreeWalkerVtbl {
     void *GetNextSiblingElement;
     void *GetPreviousSiblingElement;
     void *NormalizeElement;
-    void *GetParentElementBuildCache;
+    // The cached walks of label_stand_in (a hidden checkbox's label).
+    HRESULT (STDMETHODCALLTYPE *GetParentElementBuildCache)(
+        IUIAutomationTreeWalker *This, IUIAutomationElement *element,
+        IUIAutomationCacheRequest *cacheRequest, IUIAutomationElement **parent);
     void *GetFirstChildElementBuildCache;
     void *GetLastChildElementBuildCache;
-    void *GetNextSiblingElementBuildCache;
-    void *GetPreviousSiblingElementBuildCache;
+    HRESULT (STDMETHODCALLTYPE *GetNextSiblingElementBuildCache)(
+        IUIAutomationTreeWalker *This, IUIAutomationElement *element,
+        IUIAutomationCacheRequest *cacheRequest, IUIAutomationElement **next);
+    HRESULT (STDMETHODCALLTYPE *GetPreviousSiblingElementBuildCache)(
+        IUIAutomationTreeWalker *This, IUIAutomationElement *element,
+        IUIAutomationCacheRequest *cacheRequest,
+        IUIAutomationElement **previous);
     void *NormalizeElementBuildCache;
     void *get_Condition;
 } IUIAutomationTreeWalkerVtbl;
@@ -506,6 +514,11 @@ typedef struct {
     IUIAutomation *automation;
     IUIAutomationCondition *condition;
     IUIAutomationCacheRequest *cache;
+    // The same properties with full element references, which only
+    // label_stand_in's walks need and which cost about a fifth more per
+    // scan: used for a window whose last scan saw a hidden checkbox
+    // (find_all_window). NULL when it could not be built: cache then.
+    IUIAutomationCacheRequest *full_cache;
     // Browser windows (scan_web_window): the same plus keyboard-focusable
     // elements, which a page can make clickable without any pattern (the
     // click handler of a div with tabindex often sits on an ancestor, as
@@ -1678,6 +1691,90 @@ scan_window(UiaEngine *engine, HWND hwnd, const RECT *zrects,
         slow_check(hwnd, pid, TRUE);
 }
 
+// A checkbox or radio button a page hides behind its own label (Naver Mail's
+// "select all": the input is a 1 px box, the <label> next to it is drawn as
+// the square). The label is what shows and what a click must land on.
+// Chromium lists such a <label> as a Group without a name, next to the box
+// or around it when it wraps the input, so the box's stand-in is the next
+// sibling, else the previous one, else the parent: a Group on screen, at
+// least 4 px each way, under a 32nd of the monitor and within
+// STAND_IN_NEAR_PX of the box. Each try is one call into the app, so a
+// scan makes at most STAND_IN_MAX of them (scan_hidden_checkbox).
+#define STAND_IN_MAX 40
+#define STAND_IN_NEAR_PX 64
+
+static BOOL stand_in_wanted(int control_type, const RECT *rc)
+{
+    return (control_type == UIA_CheckBoxControlTypeId ||
+            control_type == UIA_RadioButtonControlTypeId) &&
+           (rc->right - rc->left < 4 || rc->bottom - rc->top < 4);
+}
+
+// The gap between two rects in pixels (0 when they touch or overlap).
+static LONG rect_gap(const RECT *a, const RECT *b)
+{
+    LONG dx = 0, dy = 0;
+
+    if (b->left > a->right)
+        dx = b->left - a->right;
+    else if (a->left > b->right)
+        dx = a->left - b->right;
+    if (b->top > a->bottom)
+        dy = b->top - a->bottom;
+    else if (a->top > b->bottom)
+        dy = a->top - b->bottom;
+    return dx > dy ? dx : dy;
+}
+
+// TRUE when candidate (cached with kids_cache: rect, type, offscreen) is a
+// label worth standing in for the box at rc; *out is then its rect.
+// Releases candidate (NULL is allowed: nothing there).
+static BOOL stand_in_take(IUIAutomationElement *candidate, const RECT *rc,
+                          const RECT *monitor, RECT *out)
+{
+    int control_type = 0;
+    RECT lab;
+    BOOL ok;
+
+    if (!candidate)
+        return FALSE;
+    ok = SUCCEEDED(candidate->lpVtbl->get_CachedControlType(candidate,
+                                                            &control_type)) &&
+         control_type == UIA_GroupControlTypeId &&
+         !cached_bool_property(candidate, UIA_IsOffscreenPropertyId) &&
+         SUCCEEDED(candidate->lpVtbl->get_CachedBoundingRectangle(candidate,
+                                                                  &lab)) &&
+         lab.right - lab.left >= 4 && lab.bottom - lab.top >= 4 &&
+         rect_area(&lab) * 32 <= rect_area(monitor) &&
+         rect_gap(rc, &lab) <= STAND_IN_NEAR_PX;
+    candidate->lpVtbl->Release(candidate);
+    if (ok)
+        *out = lab;
+    return ok;
+}
+
+static BOOL label_stand_in(IUIAutomationTreeWalker *walker,
+                           IUIAutomationCacheRequest *cache,
+                           IUIAutomationElement *el, const RECT *rc,
+                           const RECT *monitor, RECT *out)
+{
+    IUIAutomationElement *c = NULL;
+
+    if (SUCCEEDED(walker->lpVtbl->GetNextSiblingElementBuildCache(
+            walker, el, cache, &c)) &&
+        stand_in_take(c, rc, monitor, out))
+        return TRUE;
+    c = NULL;
+    if (SUCCEEDED(walker->lpVtbl->GetPreviousSiblingElementBuildCache(
+            walker, el, cache, &c)) &&
+        stand_in_take(c, rc, monitor, out))
+        return TRUE;
+    c = NULL;
+    return SUCCEEDED(walker->lpVtbl->GetParentElementBuildCache(
+               walker, el, cache, &c)) &&
+           stand_in_take(c, rc, monitor, out);
+}
+
 // An element the scan passes over. log = 2 writes why, with its name.
 static void scan_reject(IUIAutomationElement *el, ScanResult *out,
                         BOOL detail, const RECT *rc, int control_type,
@@ -2170,7 +2267,7 @@ static BOOL cached_matches_condition(IUIAutomationElement *el, BOOL detail)
 static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
                         int z, const RECT *monitor,
                         IUIAutomationElement **els, RECT *rescued,
-                        int length, ScanResult *out, BOOL detail)
+                        int length, ScanResult *out, BOOL detail, BOOL full)
 {
     // Scroll bars and their arrow/page buttons are not worth a label.
     ScanLayout lay;
@@ -2189,6 +2286,9 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
     int el_count = length;      // entries in els (each holds a reference)
     int page = -1;              // the page Document (focusable_left_out)
     LONG64 page_area = 0;
+    BOOL web = scan_web_window(hwnd);
+    IUIAutomationTreeWalker *walker = NULL;     // label_stand_in, on demand
+    int stand_ins = 0;
     int i;
 
     if (length > 0) {
@@ -2277,6 +2377,31 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
                 continue;
             }
             focusable_only = TRUE;
+        }
+
+        // A checkbox or radio button hidden behind its label: its label's
+        // box stands in (label_stand_in), or the 1 px box is too small.
+        // The walks need elements with full references (find_all_window).
+        if (web && full && g_cfg.scan_hidden_checkbox && !taken &&
+            stand_in_wanted(control_type, &rc) && stand_ins < STAND_IN_MAX) {
+            RECT lab;
+
+            ++stand_ins;
+            if (!walker)
+                engine->automation->lpVtbl->get_RawViewWalker(
+                    engine->automation, &walker);
+            if (walker && engine->kids_cache &&
+                label_stand_in(walker, engine->kids_cache, el, &rc, monitor,
+                               &lab)) {
+                if (detail) {
+                    WCHAR name[128];
+                    cached_name(el, name, 128);
+                    detail_element(&out->detail, name, &rc, control_type,
+                                   L"hidden behind its label, which stands in",
+                                   NULL);
+                }
+                rc = lab;
+            }
         }
 
         orig_area = rect_area(&rc);
@@ -2478,6 +2603,8 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
                        ovs[i].rc.right - ovs[i].rc.left,
                        ovs[i].rc.bottom - ovs[i].rc.top, ovs[i].order,
                        ovs[i].end);
+    if (walker)
+        walker->lpVtbl->Release(walker);
     free(fate);
     free(raw);
     out->items = cands;
@@ -2490,7 +2617,7 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
 // ones (scan_web_window). Returns FALSE when UI Automation could not answer
 // (the caller then falls back or drops the piece).
 static BOOL find_all_under(UiaEngine *engine, IUIAutomationElement *el,
-                           int scope, BOOL detail, BOOL web,
+                           int scope, BOOL detail, BOOL web, BOOL full,
                            IUIAutomationElement ***els_out,
                            RECT **rescued_out, int *count_out)
 {
@@ -2504,6 +2631,8 @@ static BOOL find_all_under(UiaEngine *engine, IUIAutomationElement *el,
     *count_out = 0;
     if (web && engine->web_condition)
         condition = engine->web_condition;
+    if (full && engine->full_cache)
+        cache = engine->full_cache;
     if (detail) {
         if (engine->detail_condition && engine->detail_cache) {
             condition = web && engine->web_detail_condition
@@ -2523,6 +2652,130 @@ static BOOL find_all_under(UiaEngine *engine, IUIAutomationElement *el,
     return TRUE;
 }
 
+// Windows whose last scan listed a checkbox or radio button hidden behind
+// its label (stand_in_wanted), so the next scan fetches full references
+// (full_cache) for label_stand_in's walks at once. Per window, as the slow
+// memory (HISTORY section 5); an entry goes when a scan finds no such box,
+// or after FULL_KEEP_MS. op: -1 asks, 1 remembers, 0 forgets.
+#define FULL_MAX     8
+#define FULL_KEEP_MS (10 * 60 * 1000)
+
+static struct { HWND hwnd; DWORD pid; DWORD since; } g_full[FULL_MAX];
+static volatile LONG g_full_lock;
+
+static BOOL full_memory(HWND hwnd, DWORD pid, int op)
+{
+    DWORD now = GetTickCount();
+    BOOL hit = FALSE;
+    int i, found = -1, free_slot = -1, oldest = 0;
+
+    if (!hwnd || !pid)
+        return FALSE;
+    while (InterlockedExchange(&g_full_lock, 1))
+        Sleep(0);
+    for (i = 0; i < FULL_MAX; ++i) {
+        if (g_full[i].hwnd && now - g_full[i].since > FULL_KEEP_MS)
+            g_full[i].hwnd = NULL;
+        if (g_full[i].hwnd == hwnd && g_full[i].pid == pid) {
+            hit = TRUE;
+            found = i;
+        } else if (!g_full[i].hwnd && free_slot < 0) {
+            free_slot = i;
+        }
+        if (now - g_full[i].since > now - g_full[oldest].since)
+            oldest = i;
+    }
+    if (op == 1) {
+        i = found >= 0 ? found : (free_slot >= 0 ? free_slot : oldest);
+        g_full[i].hwnd = hwnd;
+        g_full[i].pid = pid;
+        g_full[i].since = now;
+    } else if (op == 0 && found >= 0) {
+        g_full[found].hwnd = NULL;
+    }
+    InterlockedExchange(&g_full_lock, 0);
+    return hit;
+}
+
+// TRUE when the listed elements hold a checkbox or radio button hidden
+// behind its label (cached properties only: no call into the app).
+static BOOL tiny_boxes_listed(IUIAutomationElement **els, int count)
+{
+    int i;
+
+    for (i = 0; i < count; ++i) {
+        int control_type = 0;
+        RECT rc;
+
+        if (els[i] &&
+            SUCCEEDED(els[i]->lpVtbl->get_CachedControlType(els[i],
+                                                            &control_type)) &&
+            (control_type == UIA_CheckBoxControlTypeId ||
+             control_type == UIA_RadioButtonControlTypeId) &&
+            SUCCEEDED(els[i]->lpVtbl->get_CachedBoundingRectangle(els[i],
+                                                                  &rc)) &&
+            stand_in_wanted(control_type, &rc))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static void release_elements(IUIAutomationElement **els, RECT *rescued,
+                             int count)
+{
+    int i;
+
+    for (i = 0; i < count; ++i)
+        if (els[i])
+            els[i]->lpVtbl->Release(els[i]);
+    free(els);
+    free(rescued);
+}
+
+// The FindAll of a whole window from its root. An element the scan cache
+// lists carries no reference to the app (AutomationElementMode_None), and
+// the tree walks of label_stand_in find nothing from such an element
+// (measured 2026-11-03); elements with full references cost about a fifth
+// more per scan (Wikipedia, 116 targets: 141 to 172 ms). So a browser
+// window gets them only when its last scan saw a hidden checkbox
+// (full_memory), and the first scan that sees one fetches again with them,
+// once. log = 2 (detail) always has them. *full says what els carry.
+static BOOL find_all_window(UiaEngine *engine, IUIAutomationElement *root,
+                            HWND hwnd, BOOL detail,
+                            IUIAutomationElement ***els, RECT **rescued,
+                            int *length, BOOL *full)
+{
+    BOOL web = scan_web_window(hwnd);
+    BOOL want = web && g_cfg.scan_hidden_checkbox;
+    DWORD pid = 0;
+    BOOL tiny;
+
+    GetWindowThreadProcessId(hwnd, &pid);
+    *full = detail || (want && full_memory(hwnd, pid, -1));
+    if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS, detail, web,
+                        *full, els, rescued, length))
+        return FALSE;
+    if (!want)
+        return TRUE;
+    tiny = tiny_boxes_listed(*els, *length);
+    full_memory(hwnd, pid, tiny ? 1 : 0);
+    if (tiny && !*full) {
+        IUIAutomationElement **els2 = NULL;
+        RECT *rescued2 = NULL;
+        int length2 = 0;
+
+        if (find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS, detail,
+                           web, TRUE, &els2, &rescued2, &length2)) {
+            release_elements(*els, *rescued, *length);
+            *els = els2;
+            *rescued = rescued2;
+            *length = length2;
+            *full = TRUE;
+        }
+    }
+    return TRUE;
+}
+
 // The single FindAll of the whole window (and what the split falls back to).
 static void scan_window_uia(UiaEngine *engine, HWND hwnd,
                             const RECT *zrects, int z, const RECT *monitor,
@@ -2532,6 +2785,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     IUIAutomationElement **els = NULL;
     RECT *rescued = NULL;
     int length = 0;
+    BOOL full = FALSE;
 
     out->items = NULL;
     out->count = 0;
@@ -2546,8 +2800,8 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
             detail_add(&out->detail, L"scan:   no UI Automation element");
         return;
     }
-    if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS, detail,
-                        scan_web_window(hwnd), &els, &rescued, &length)) {
+    if (!find_all_window(engine, root, hwnd, detail, &els, &rescued, &length,
+                         &full)) {
         if (detail)
             detail_add(&out->detail, L"scan:   FindAll failed");
         root->lpVtbl->Release(root);
@@ -2556,7 +2810,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
     root->lpVtbl->Release(root);
     *answered = length;
     scan_filter(engine, hwnd, zrects, z, monitor, els, rescued, length, out,
-                detail);
+                detail, full);
 }
 
 typedef struct {
@@ -2758,6 +3012,7 @@ struct ScanTask {
     int z;
     int win_index;              // caller-only; index into the enumerated WinInfo
     BOOL detail;                // this is the active window's log = 2 scan
+    BOOL full;                  // its elements carry full references (find_all_window)
     volatile LONG finished;     // set by the scanning thread before signaling
     LONG merged;                // caller-only
     DWORD elapsed_ms;
@@ -3164,9 +3419,8 @@ static void scan_root_item(ScanJob *job, ScanItem *item)
         free(kids);
         kids = NULL;
         count = 0;
-        if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS,
-                            win->detail, scan_web_window(win->hwnd), &els,
-                            &rescued, &length)) {
+        if (!find_all_window(engine, root, win->hwnd, win->detail, &els,
+                             &rescued, &length, &win->full)) {
             if (win->detail)
                 detail_add(&win->found.detail, L"scan:   FindAll failed");
         } else {
@@ -3208,7 +3462,7 @@ static void scan_split_item(ScanJob *job, ScanItem *item,
     if (!find_children(engine, el, win->detail, &kids, &count)) {
         free(kids);
         if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
-                           FALSE, &els, &rescued, &length)) {
+                           FALSE, FALSE, &els, &rescued, &length)) {
             node->kind = SN_PART;
             node->els = els;
             node->rescued = rescued;
@@ -3223,7 +3477,7 @@ static void scan_split_item(ScanJob *job, ScanItem *item,
 
     if (count > SCAN_SPLIT_MAX_CHILDREN) {
         if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
-                           FALSE, &els, &rescued, &length)) {
+                           FALSE, FALSE, &els, &rescued, &length)) {
             node->kind = SN_PART;
             node->els = els;
             node->rescued = rescued;
@@ -3272,7 +3526,7 @@ static void scan_titlebar_item(ScanJob *job, ScanItem *item,
     if (!find_children(engine, el, win->detail, &kids, &count)) {
         free(kids);
         if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
-                           FALSE, &els, &rescued, &length)) {
+                           FALSE, FALSE, &els, &rescued, &length)) {
             node->kind = SN_PART;
             node->els = els;
             node->rescued = rescued;
@@ -3347,7 +3601,7 @@ static void scan_item_run(ScanJob *job, ScanItem *item)
         int count = 0;
         // Parts are split off classic windows only (scan_can_split).
         if (find_all_under(engine, el, item->scope, item->win->detail, FALSE,
-                           &els, &rescued, &count)) {
+                           FALSE, &els, &rescued, &count)) {
             node->els = els;
             node->rescued = rescued;
             node->count = count;
@@ -3378,7 +3632,8 @@ static void scan_window_finish(ScanJob *job, ScanTask *win, BOOL cancelled)
         win->cancelled = TRUE;
     if (!win->cancelled && !win->skipped) {
         scan_filter(engine, win->hwnd, job->zrects, win->z, &job->monitor,
-                    els, rescued, length, &win->found, win->detail);
+                    els, rescued, length, &win->found, win->detail,
+                    win->full);
     } else {
         int i;
         for (i = 0; i < length; ++i)
@@ -4004,7 +4259,7 @@ static BOOL uia_build_condition(UiaEngine *engine)
 // be searched under.
 static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
                                                 BOOL with_names, BOOL detail,
-                                                BOOL kids)
+                                                BOOL kids, BOOL full)
 {
     static const int props[] = {
         UIA_BoundingRectanglePropertyId,
@@ -4035,9 +4290,12 @@ static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
                  cache, UIA_IsOffscreenPropertyId)) &&
              SUCCEEDED(cache->lpVtbl->AddProperty(
                  cache, UIA_IsEnabledPropertyId));
+    // Full references: the children call searches under its elements, the
+    // log = 2 scan and full_cache walk from theirs (label_stand_in).
     if (ok)
         ok = SUCCEEDED(cache->lpVtbl->put_AutomationElementMode(
-                 cache, kids ? UIA_MODE_FULL : UIA_MODE_NONE));
+                 cache, kids || detail || full ? UIA_MODE_FULL
+                                               : UIA_MODE_NONE));
     if (!ok) {
         cache->lpVtbl->Release(cache);
         return NULL;
@@ -4048,16 +4306,19 @@ static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
 static BOOL uia_build_cache(UiaEngine *engine, BOOL with_names)
 {
     engine->cache = uia_new_cache(engine->automation, with_names, FALSE,
-                                  FALSE);
+                                  FALSE, FALSE);
     if (!engine->cache)
         return FALSE;
+    // Without it a hidden checkbox stays unlabelled (find_all_window).
+    engine->full_cache = uia_new_cache(engine->automation, with_names, FALSE,
+                                       FALSE, TRUE);
     // Without it log = 2 only says that it could not add the details.
     engine->detail_cache = uia_new_cache(engine->automation, with_names,
-                                         TRUE, FALSE);
+                                         TRUE, FALSE, FALSE);
     engine->kids_cache = uia_new_cache(engine->automation, with_names, FALSE,
-                                       TRUE);
+                                       TRUE, FALSE);
     engine->detail_kids_cache = uia_new_cache(engine->automation, with_names,
-                                              TRUE, TRUE);
+                                              TRUE, TRUE, FALSE);
     // A split without the children cache falls back to the single FindAll.
     return TRUE;
 }
@@ -4075,6 +4336,8 @@ static void uia_engine_cleanup(UiaEngine *engine)
 {
     if (engine->cache)
         engine->cache->lpVtbl->Release(engine->cache);
+    if (engine->full_cache)
+        engine->full_cache->lpVtbl->Release(engine->full_cache);
     if (engine->kids_cache)
         engine->kids_cache->lpVtbl->Release(engine->kids_cache);
     if (engine->detail_kids_cache)

@@ -2,6 +2,7 @@
 // Read-only: it never sends input, clicks or moves the mouse.
 
 #include "../uia.c"
+#include "../labelbox.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1198,6 +1199,21 @@ static void build_labels(int n, LabelBox *boxes)
     free(pool);
 }
 
+typedef struct {
+    LONG64 area;
+    int index;
+} PlaceOrder;
+
+static int __cdecl place_order_cmp(const void *pa, const void *pb)
+{
+    const PlaceOrder *a = (const PlaceOrder *)pa;
+    const PlaceOrder *b = (const PlaceOrder *)pb;
+
+    if (a->area != b->area)
+        return a->area < b->area ? -1 : 1;
+    return a->index < b->index ? -1 : (a->index > b->index ? 1 : 0);
+}
+
 static void layout_labels(LabelBox *boxes, int n, int dpi,
                           const RECT *monitor)
 {
@@ -1244,36 +1260,38 @@ static void layout_labels(LabelBox *boxes, int n, int dpi,
     for (i = 0; i < n; ++i) {
         SIZE sz;
         int len = (int)wcslen(boxes[i].label);
-        int bw, bh, left, top;
 
         if (!GetTextExtentPoint32W(dc, boxes[i].label, len, &sz))
             sz.cx = 0;
-        bw = sz.cx + 2 * pad;
-        bh = maxh + 2 * pad;
-        left = boxes[i].target.rc.left - monitor->left;
-        top = boxes[i].target.rc.top - monitor->top;
-        if (left + bw > mon_w)
-            left = mon_w - bw;
-        if (top + bh > mon_h)
-            top = mon_h - bh;
-        if (left < 0)
-            left = 0;
-        if (top < 0)
-            top = 0;
-        if (bw > mon_w)
-            bw = mon_w;
-        if (bh > mon_h)
-            bh = mon_h;
-        if (bw < 1)
-            bw = 1;
-        if (bh < 1)
-            bh = 1;
-        boxes[i].box.left = left;
-        boxes[i].box.top = top;
-        boxes[i].box.right = left + bw;
-        boxes[i].box.bottom = top + bh;
-        boxes[i].box_area = (LONG64)bw * bh;
+        labelbox_natural(&boxes[i].box, boxes[i].target.rc.left - monitor->left,
+                         boxes[i].target.rc.top - monitor->top,
+                         sz.cx + 2 * pad, maxh + 2 * pad, mon_w, mon_h);
     }
+
+    // As hint.c place_labels: smallest element first, each box clear of
+    // the ones placed before it (labels_apart).
+    if (g_cfg.labels_apart && n > 0) {
+        RECT *placed = (RECT *)malloc((size_t)n * sizeof(*placed));
+        PlaceOrder *order = (PlaceOrder *)malloc((size_t)n * sizeof(*order));
+        int placed_count = 0;
+
+        if (placed && order) {
+            for (i = 0; i < n; ++i) {
+                order[i].area = labelbox_area(&boxes[i].target.rc);
+                order[i].index = i;
+            }
+            qsort(order, (size_t)n, sizeof(*order), place_order_cmp);
+            for (i = 0; i < n; ++i) {
+                RECT *box = &boxes[order[i].index].box;
+                labelbox_apart(box, placed, placed_count, mon_w, mon_h);
+                placed[placed_count++] = *box;
+            }
+        }
+        free(placed);
+        free(order);
+    }
+    for (i = 0; i < n; ++i)
+        boxes[i].box_area = labelbox_area(&boxes[i].box);
 
     SelectObject(dc, old);
     DeleteObject(font);
@@ -1674,6 +1692,10 @@ int main(int argc, char **argv)
     memset(&final, 0, sizeof(final));
     memset(&scan_run, 0, sizeof(scan_run));
     lstrcpynW(g_cfg.alphabet, L"abcdefhjklmnopqrstuvwxz", 64);
+    // The app's defaults for what the scan and the labels do in a browser.
+    g_cfg.scan_focusable = 1;
+    g_cfg.scan_hidden_checkbox = 1;
+    g_cfg.labels_apart = 1;
     set_dpi_awareness();
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (hr != S_OK && hr != S_FALSE) {

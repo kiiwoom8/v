@@ -253,6 +253,8 @@ int main(int argc, char **argv)
     set_dpi_awareness();
     g_cfg.scan_scope = scope;
     g_cfg.scan_split = split;
+    g_cfg.scan_focusable = 1;       // as the app: the web condition
+    g_cfg.scan_hidden_checkbox = 1;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (hr != S_OK && hr != S_FALSE) {

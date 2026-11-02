@@ -1,6 +1,7 @@
 // hint.c - click-hint overlay (main/UI thread).
 
 #include "common.h"
+#include "labelbox.h"
 #include <stdlib.h>
 #include <wchar.h>
 
@@ -116,8 +117,13 @@ typedef struct {
     RECT     rect;
 } MonInfo;
 
+// A label and where its box is drawn (labelbox.h). placed is cleared when
+// the box must be found again: the label is new, its element moved
+// (keep_labels = 0), its text grew (make_room) or the fonts changed.
 typedef struct {
     WCHAR s[MAX_LABEL_LEN];
+    RECT  box;                  // monitor-relative, valid when placed
+    BOOL  placed;
 } HintLabel;
 
 // A label that is no longer shown. It is never given to another element; making
@@ -270,6 +276,7 @@ static int       g_retired_count;
 static int       g_retired_cap;
 
 static BOOL      g_alloc_relabeled;  // make_room lengthened a shown label
+static BOOL      g_labels_replace;   // fonts changed: every label box is found again
 
 // Early scan started when the hint hotkey's modifier goes down. g_pre_id 0 =
 // none; the newest result for it is owned in g_pre_list.
@@ -742,6 +749,7 @@ static BOOL create_resources(void)
                       g_cfg.alphabet, alen, &g_lw);
     cache_font_widths(dc, g_font_sub, g_font_sub_px, subchars, sn, &g_sw);
     ReleaseDC(NULL, dc);
+    g_labels_replace = TRUE;    // label boxes were measured with the old font
 
     fill_res_key(&key);
     g_res_key = key;
@@ -868,36 +876,93 @@ static void draw_label_box(HDC dc, RECT cell, const WCHAR *text, int len,
                   w, tw, th);
 }
 
-// A label pinned at the target's top-left, nudged inside the monitor.
-static void draw_element_label(HDC dc, const ClickTarget *t,
-                               const WCHAR *text, int len, int typed)
+// The size of a label's box in the label font: the text plus a pad.
+static void label_box_size(const WCHAR *text, int len, int *bw, int *bh)
 {
     int w[MAX_LABEL_LEN];
-    int tw, th, pad, bw, bh, left, top;
+    int tw, th, pad;
+
+    measure_label(&g_lw, text, len, w, &tw, &th);
+    pad = g_font_label_px / 4;
+    if (pad < 2) pad = 2;
+    *bw = tw + 2 * pad;
+    *bh = th + 2 * pad;
+}
+
+// A label drawn in the box place_labels found for it.
+static void draw_element_label(HDC dc, const RECT *box, const WCHAR *text,
+                               int len, int typed)
+{
+    int w[MAX_LABEL_LEN];
+    int tw, th;
 
     if (len <= 0) return;
     if (len > MAX_LABEL_LEN) len = MAX_LABEL_LEN;
-
     measure_label(&g_lw, text, len, w, &tw, &th);
-
-    pad = g_font_label_px / 4;
-    if (pad < 2) pad = 2;
-    bw = tw + 2 * pad;
-    bh = th + 2 * pad;
-
-    left = t->rc.left - g_mon_rect.left;
-    top = t->rc.top - g_mon_rect.top;
-    if (left + bw > g_mon_w) left = g_mon_w - bw;
-    if (top + bh > g_mon_h) top = g_mon_h - bh;
-    if (left < 0) left = 0;
-    if (top < 0) top = 0;
-    if (bw > g_mon_w) bw = g_mon_w;
-    if (bh > g_mon_h) bh = g_mon_h;
-    if (bw < 1) bw = 1;
-    if (bh < 1) bh = 1;
-
-    draw_box_text(dc, left, top, bw, bh, text, len, typed, g_match,
+    draw_box_text(dc, box->left, box->top, box->right - box->left,
+                  box->bottom - box->top, text, len, typed, g_match,
                   w, tw, th);
+}
+
+// place_labels orders the labels still to place: smallest element first,
+// so an element keeps its corner and a card around it moves (labelbox.h).
+static int __cdecl place_cmp(const void *pa, const void *pb)
+{
+    int a = *(const int *)pa, b = *(const int *)pb;
+    LONG64 aa = labelbox_area(&g_targets[a].rc);
+    LONG64 ab = labelbox_area(&g_targets[b].rc);
+
+    if (aa != ab) return aa < ab ? -1 : 1;
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+// Finds the box of every label not placed yet (HintLabel.placed): at its
+// element's top-left corner, inside the monitor, and with labels_apart
+// clear of the boxes already placed. A box is found once and then stays,
+// whatever arrives later: with keep_labels nothing the user is reading may
+// move, so a merge's new labels go around the shown ones. Done on the UI
+// thread before a paint, when the fonts are known.
+static void place_labels(void)
+{
+    RECT *placed;
+    int *order;
+    int n_placed = 0, n_new = 0, i, k;
+
+    if (g_target_count <= 0 || !g_labels || !g_targets || g_lw.count <= 0)
+        return;
+    if (g_labels_replace) {
+        for (i = 0; i < g_target_count; ++i) g_labels[i].placed = FALSE;
+        g_labels_replace = FALSE;
+    }
+    placed = (RECT *)malloc((size_t)g_target_count * sizeof(*placed));
+    order = (int *)malloc((size_t)g_target_count * sizeof(*order));
+    if (!placed || !order) {
+        free(placed);
+        free(order);
+        return;
+    }
+    for (i = 0; i < g_target_count; ++i) {
+        if (g_labels[i].placed) placed[n_placed++] = g_labels[i].box;
+        else order[n_new++] = i;
+    }
+    if (n_new > 1) qsort(order, (size_t)n_new, sizeof(*order), place_cmp);
+    for (k = 0; k < n_new; ++k) {
+        int bw, bh;
+
+        i = order[k];
+        label_box_size(g_labels[i].s, (int)wcslen(g_labels[i].s), &bw, &bh);
+        labelbox_natural(&g_labels[i].box,
+                         g_targets[i].rc.left - g_mon_rect.left,
+                         g_targets[i].rc.top - g_mon_rect.top,
+                         bw, bh, g_mon_w, g_mon_h);
+        if (g_cfg.labels_apart)
+            labelbox_apart(&g_labels[i].box, placed, n_placed, g_mon_w,
+                           g_mon_h);
+        placed[n_placed++] = g_labels[i].box;
+        g_labels[i].placed = TRUE;
+    }
+    free(placed);
+    free(order);
 }
 
 static void draw_target_outline(HDC dc, RECT rc)
@@ -1247,6 +1312,7 @@ static BOOL make_room(BOOL may_lengthen)
         g_retired[g_retired_count - 1].expanded = TRUE;
         g_labels[best].s[bestlen] = lower_ascii(g_cfg.alphabet[hit]);
         g_labels[best].s[bestlen + 1] = 0;
+        g_labels[best].placed = FALSE;  // a longer text needs a wider box
     }
     g_alloc_relabeled = TRUE;   // the caller must repaint
     return TRUE;
@@ -1382,6 +1448,7 @@ static void merge_scan(ClickList *list)
                  g_targets[i].click.y != list->items[match].click.y)) {
                 g_targets[i].rc = list->items[match].rc;
                 g_targets[i].click = list->items[match].click;
+                g_labels[i].placed = FALSE;     // the box follows the element
                 changed = TRUE;
             }
         } else if (!keep && list->done && retire_label(g_labels[i].s)) {
@@ -1413,7 +1480,7 @@ static void merge_scan(ClickList *list)
     for (i = 0; i < g_target_count; ++i) {
         if (gone[i]) continue;
         nt[survivors] = g_targets[i];
-        wcscpy(nl[survivors].s, g_labels[i].s);
+        nl[survivors] = g_labels[i];    // text, and the box it was given
         ++survivors;
     }
     free(g_targets);
@@ -1873,11 +1940,12 @@ static void paint_overlay(HWND hwnd)
 
         if (!g_scanning) {
             LabelPass pass;
+            place_labels();
             labels_begin(dc, g_font_label, &pass);
             for (i = 0; i < g_target_count; ++i) {
                 RECT trc;
-                if (!element_matches(i)) continue;
-                draw_element_label(dc, &g_targets[i], g_labels[i].s,
+                if (!element_matches(i) || !g_labels[i].placed) continue;
+                draw_element_label(dc, &g_labels[i].box, g_labels[i].s,
                                    (int)wcslen(g_labels[i].s), g_prefix_len);
                 if (g_prefix_len > 0) {
                     trc.left = g_targets[i].rc.left - g_mon_rect.left;

@@ -629,6 +629,8 @@ void config_set_defaults(Config *c)
     c->scan_flush = 1;
     c->scan_early = 1;
     c->scan_focusable = 1;
+    c->scan_hidden_checkbox = 1;
+    c->labels_apart = 1;
     c->browser_first = 1;
 }
 
@@ -1000,6 +1002,10 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->scan_early, line, key, val, 0, 2);
     else if (_wcsicmp(key, L"scan_focusable") == 0)
         apply_bool(&c->scan_focusable, line, key, val);
+    else if (_wcsicmp(key, L"scan_hidden_checkbox") == 0)
+        apply_bool(&c->scan_hidden_checkbox, line, key, val);
+    else if (_wcsicmp(key, L"labels_apart") == 0)
+        apply_bool(&c->labels_apart, line, key, val);
     else if (_wcsicmp(key, L"browser_first") == 0)
         apply_bool(&c->browser_first, line, key, val);
     else
@@ -1718,6 +1724,16 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; outside the page or cover over a quarter of it. 0 = only elements\r\n");
     appendf(buf, cch, L"; with a clickable control type or pattern.\r\n");
     appendf(buf, cch, L"scan_focusable = %d\r\n", d.scan_focusable ? 1 : 0);
+    appendf(buf, cch, L"; 1 = in a browser, a checkbox or radio button that a page hides behind\r\n");
+    appendf(buf, cch, L"; its own label (the input is 1 px, the label is drawn as the box, as\r\n");
+    appendf(buf, cch, L"; Naver Mail's \"select all\") gets the label's box and is clicked there.\r\n");
+    appendf(buf, cch, L"; 0 = such inputs are too small for a label.\r\n");
+    appendf(buf, cch, L"scan_hidden_checkbox = %d\r\n", d.scan_hidden_checkbox ? 1 : 0);
+    appendf(buf, cch, L"; 1 = a label that would sit on another label (a link and the card\r\n");
+    appendf(buf, cch, L"; around it start at the same corner) is drawn to the right of it, or\r\n");
+    appendf(buf, cch, L"; below it at the screen's edge; the smaller element keeps its corner.\r\n");
+    appendf(buf, cch, L"; 0 = every label at its element's top-left corner, one over the other.\r\n");
+    appendf(buf, cch, L"labels_apart = %d\r\n", d.labels_apart ? 1 : 0);
 
     appendf(buf, cch, L"\r\n[shortcuts]\r\n%ls", SHORTCUTS_COMMENT);
     appendf(buf, cch, L"; Example:\r\n");

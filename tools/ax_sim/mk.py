@@ -6,6 +6,9 @@
 # log = 2) and its overlay collection on conv.py's input instead of UI
 # Automation, and the focusable-only test of scan_filter (focusable_left_out,
 # for an actionable flag of 2; the scroll-area part cannot be simulated).
+# Not simulated: label_stand_in (a hidden checkbox taking its label's box),
+# which walks to the element's siblings and parent, and conv.py's flat list
+# has no tree; such a box is "too small" here.
 # Keep that main() in step with scan_window_uia. A function that moved or
 # was renamed in uia.c makes this fail loudly.
 import sys

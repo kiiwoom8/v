@@ -1,0 +1,44 @@
+<!doctype html>
+<!-- label.html: inputs hidden behind their <label> (Naver Mail's .blind pattern and
+     its neighbours) and a card holding a link at its corner (a Google result block).
+     Checked on Windows with: node tools/hint_check.mjs file:///<path>/label.html
+     Expect 10 of 15 DOM items hit (cases 2, 3, 4 and 6 have no on-screen input in
+     the tree, and case 10's plain-text label is pruned by Chromium), none hidden. -->
+<html lang="ko"><head><meta charset="utf-8"><title>label mock</title>
+<style>
+body { font: 14px sans-serif; margin: 40px; }
+.row { margin: 18px 0; display: flex; align-items: center; gap: 12px; height: 28px; }
+.blind { position: absolute; clip: rect(0 0 0 0); width: 1px; height: 1px; margin: -1px; overflow: hidden; }
+.box { display: inline-block; width: 20px; height: 20px; border: 2px solid #555; border-radius: 3px; vertical-align: middle; cursor: pointer; background: #fff; }
+input:checked + .box { background: #2a7; }
+/* 1: clipped 1px input (Naver .blind style on the input) */
+.in1 { position: absolute; clip: rect(0 0 0 0); width: 1px; height: 1px; margin: -1px; overflow: hidden; }
+/* 2: zero size, opacity 0 */
+.in2 { position: absolute; width: 0; height: 0; opacity: 0; }
+/* 3: display none */
+.in3 { display: none; }
+/* 4: moved off screen */
+.in4 { position: absolute; left: -9999px; }
+/* 5: opacity 0 over the label (full size) */
+.in5 { position: absolute; width: 24px; height: 24px; opacity: 0; margin: 0; z-index: 2; }
+/* 6: visibility hidden */
+.in6 { visibility: hidden; position: absolute; }
+/* 7: appearance none, 1px */
+.in7 { appearance: none; -webkit-appearance: none; width: 1px; height: 1px; opacity: 0; position: absolute; margin: 0; }
+</style></head>
+<body>
+<h1>label mock</h1>
+<div class="row">1 clip<input type="checkbox" id="c1" class="in1"><label for="c1" class="box"><span class="blind">전체 메일 1</span></label></div>
+<div class="row">2 zero<input type="checkbox" id="c2" class="in2"><label for="c2" class="box"><span class="blind">전체 메일 2</span></label></div>
+<div class="row">3 none<input type="checkbox" id="c3" class="in3"><label for="c3" class="box"><span class="blind">전체 메일 3</span></label></div>
+<div class="row">4 off<input type="checkbox" id="c4" class="in4"><label for="c4" class="box"><span class="blind">전체 메일 4</span></label></div>
+<div class="row">5 over<span style="position:relative;display:inline-block;width:24px;height:24px"><input type="checkbox" id="c5" class="in5"><label for="c5" class="box"><span class="blind">전체 메일 5</span></label></span></div>
+<div class="row">6 vis<input type="checkbox" id="c6" class="in6"><label for="c6" class="box"><span class="blind">전체 메일 6</span></label></div>
+<div class="row">7 app<input type="checkbox" id="c7" class="in7"><label for="c7" class="box"><span class="blind">전체 메일 7</span></label></div>
+<div class="row">8 wrap<label class="box"><input type="checkbox" id="c8" class="in1"><span class="blind">전체 메일 8</span></label></div>
+<div class="row">9 radio<input type="radio" name="r" id="r1" class="in1"><label for="r1" class="box"><span class="blind">라디오 9</span></label></div>
+<div class="row">10 visible text label<input type="checkbox" id="c10" class="in1"><label for="c10">보이는 글 10</label></div>
+<div class="row">11 plain<input type="checkbox" id="c11"><label for="c11">plain 11</label></div>
+<div class="row" style="height:auto"><div onclick="void 0" style="width:420px;height:90px;border:1px solid #ccc;padding:0;line-height:1.3"><a href="https://example.com/t">Title link in a card</a><br>Some card text under the title, as a search result block.</div></div>
+<p><a href="https://example.com/">a link</a> <button>a button</button></p>
+</body></html>

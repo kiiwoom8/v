@@ -236,6 +236,14 @@ typedef struct {
                                // an ancestor, a range input) get labels too, unless they are
                                // text, scroll, cover over a quarter of the page or lie
                                // outside it; default 1. 0 = only control types and patterns.
+    int   scan_hidden_checkbox; // 1 = in a browser window, a checkbox or radio button a page
+                               // hides behind its own label (a 1 px input, the label drawn as
+                               // the box) gets the label's box and is clicked there; default 1.
+                               // 0 = such inputs are too small for a label.
+    int   labels_apart;        // 1 = a label whose box would cover another label's, or sit
+                               // under it, is drawn to the right of that one (below it at
+                               // the screen's edge); the smaller element keeps its corner.
+                               // Default 1; 0 = every label at its element's top-left corner.
 } Config;
 
 extern Config g_cfg;

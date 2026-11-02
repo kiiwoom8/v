@@ -219,6 +219,7 @@ function collectInPage() {
     'area[href]',
     'button',
     'input:not([type="hidden"])',
+    'label',
     'select',
     'textarea',
     'summary',
@@ -355,6 +356,23 @@ function collectInPage() {
   for (const el of all) {
     let semantic = false;
     try { semantic = el.matches(SEMANTIC); } catch {}
+    // A label counts only where it stands in for its control: the input is
+    // hidden (display none, 1 px, moved off screen), as the custom checkboxes
+    // of Naver Mail and many forms are built. A visible control is the item.
+    if (semantic && tagOf(el) === 'label') {
+      let ctl = null;
+      try { ctl = el.control; } catch {}
+      if (!ctl) continue;
+      let shown = false;
+      try {
+        const cr = ctl.getBoundingClientRect();
+        const ccs = window.getComputedStyle(ctl);
+        shown = cr.width >= 4 && cr.height >= 4 && cr.right > 0 && cr.bottom > 0 &&
+                ccs.visibility !== 'hidden' && ccs.display !== 'none' &&
+                Number(ccs.opacity) > 0;
+      } catch {}
+      if (shown) continue;
+    }
     let pointer = false;
     if (!semantic && !hasSemanticAncestor(el)) {
       let cs = null;
