@@ -96,7 +96,11 @@ typedef struct {
     // [general]
     Hotkey hint_hotkey;        // default Alt+F
     Hotkey quit_hotkey;        // default Ctrl+Alt+Q
-    Hotkey pause_hotkey;       // default unbound
+    Hotkey pause_hotkey;       // default Alt+P; twice within pause_tap_ms pauses / resumes
+                               // everything (every key passes through while paused, except
+                               // this hotkey and quit_hotkey)
+    int    pause_tap_ms;       // two presses of pause_hotkey within this many ms (0-1000,
+                               // default 300) pause or resume; 0 = one press does
     Hotkey lock_hotkey;        // default Ctrl+Alt+L; locks / unlocks the keyboard
     UINT   mouse_mode_key;     // default VK_CAPITAL; tap toggles, hold = momentary
     int    capslock_off;       // 1 = the CapsLock state is kept off while the program runs

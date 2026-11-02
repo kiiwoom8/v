@@ -41,7 +41,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Shift+CapsLock` | Nothing: the CapsLock state stays off (with `capslock_off = 0`, the real CapsLock) |
 | `Ctrl+Alt+Q` | Quit |
 | `Ctrl+Alt+L` | Lock the keyboard: every key is ignored until `Ctrl+Alt+L` is pressed again |
-| pause hotkey (unbound by default) | Pause / resume everything |
+| `Alt+p p` | Pause / resume vim mouse (two quick taps): while paused every key passes through, except this and `Ctrl+Alt+Q` |
 
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. While vim mouse runs the CapsLock state is kept off
@@ -276,8 +276,9 @@ text works, including Korean and other non-Latin scripts, and several lines.
 - While Alt is held, `Backspace` removes the last typed letter and `Esc` (or
   any key that is not a letter or digit) cancels; nothing is typed then.
 - A shortcut only starts when its first letter is not already an Alt key of
-  vim mouse: `Alt+F` (hints) and the Alt scroll keys (`h j k l u d g`) keep
-  their meaning, so abbreviations should not start with those letters. Letters
+  vim mouse: `Alt+F` (hints), `Alt+p` (pause) and the Alt scroll keys
+  (`h j k l u d g`) keep their meaning, so abbreviations should not start
+  with those letters. Letters
   after the first can be anything.
 - Alt plus a letter that starts no abbreviation reaches the app as usual (menu
   accelerators keep working).
@@ -357,7 +358,9 @@ the settings automatically (a balloon confirms, or shows any problems). The file
 created on first run documents every option with a comment. The most useful
 ones:
 
-- `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `lock_hotkey`, `mouse_mode_key`
+- `hint_hotkey`, `quit_hotkey`, `pause_hotkey`, `lock_hotkey`, `mouse_mode_key`,
+  `pause_tap_ms` (two presses of the pause hotkey within this many ms pause
+  or resume, 0-1000, default 300; 0 = one press)
 - `capslock_off` (1 = keep the CapsLock state off while vim mouse runs, not
   while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
   off)

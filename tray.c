@@ -87,6 +87,7 @@ static int     g_help_hint_y;
 
 static void help_close(void);
 static void startup_repair(void);
+static void pause_label(WCHAR *buf, int cch);
 
 // ---------------------------------------------------------------------------
 // Small string helpers
@@ -678,7 +679,7 @@ static void show_menu(void)
     append_item(menu, IDM_MOUSE, L"Mouse mode", hk,
                 input_mouse_mode_active());
 
-    format_hotkey(&g_cfg.pause_hotkey, hk, 64);
+    pause_label(hk, 64);
     append_item(menu, IDM_PAUSE, L"Pause", hk, input_is_paused());
 
     format_hotkey(&g_cfg.lock_hotkey, hk, 64);
@@ -829,6 +830,24 @@ static void help_add_hotkey(const Hotkey *hk, const WCHAR *desc)
     help_add_row(buf, desc);
 }
 
+// The pause hotkey as the help and the menu show it: "Alt+P P" when it takes
+// two taps (pause_tap_ms), else the hotkey alone.
+static void pause_label(WCHAR *buf, int cch)
+{
+    WCHAR key[64];
+
+    format_hotkey(&g_cfg.pause_hotkey, buf, cch);
+    if (!g_cfg.pause_hotkey.vk || g_cfg.pause_tap_ms <= 0)
+        return;
+    format_key(g_cfg.pause_hotkey.vk, key, 64);
+    if (key[0] >= L'a' && key[0] <= L'z' && key[1] == 0)
+        key[0] = (WCHAR)(key[0] - 32);
+    if ((int)(wcslen(buf) + 1 + wcslen(key)) < cch) {
+        wcscat(buf, L" ");
+        wcscat(buf, key);
+    }
+}
+
 static void help_add_key(UINT vk, const WCHAR *desc)
 {
     WCHAR buf[64];
@@ -870,8 +889,12 @@ static void build_help_rows(void)
     if (g_cfg.lock_hotkey.vk)
         help_add_hotkey(&g_cfg.lock_hotkey,
                         L"Lock / unlock the keyboard (all keys ignored)");
-    if (g_cfg.pause_hotkey.vk)
-        help_add_hotkey(&g_cfg.pause_hotkey, L"Pause / resume everything");
+    if (g_cfg.pause_hotkey.vk) {
+        pause_label(buf, 128);
+        help_add_row(buf, g_cfg.pause_tap_ms > 0
+                     ? L"Pause / resume everything (two quick taps)"
+                     : L"Pause / resume everything");
+    }
     if (g_cfg.alt_scroll) {
         WCHAR k1[16], k2[16], k3[16], k4[16];
         format_key(g_cfg.key_left, k1, 16);

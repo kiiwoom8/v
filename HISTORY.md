@@ -3,8 +3,8 @@
 Read this before changing the code. It records how the program got to its
 current shape, which mistakes were already made and fixed, which behaviour
 was changed on purpose, and where to make common changes. It covers every
-commit on `master` from `0964d95` (2026-03-02) to `f536827` (2026-11-03): 125
-commits, 111 of them non-merge. It also covers the 7 commits of the unrelated
+commit on `master` from `0964d95` (2026-03-02) to `8bca056` (2026-11-03): 126
+commits, 112 of them non-merge. It also covers the 7 commits of the unrelated
 `bakup` branch (2026-02-10 to 2026-02-23), where the program started. Hashes in
 backticks are short commit ids; `git show <hash>` gives the full story, and
 most commit bodies explain the measured symptom and the root cause.
@@ -34,7 +34,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
-| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the Enter Enter jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `center_pointer`, `input_thread_proc` |
+| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the Enter Enter jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `center_pointer`, `input_thread_proc` |
 | `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
 | `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
@@ -461,6 +461,13 @@ Invariants stated in `common.h` and enforced by history:
   scan, so `find_all_window` fetches them only for a window whose last
   scan saw such a box (`full_memory`), and once more at the first sight
   of one, in the same scan.
+- "Add shortcut for pause/restart vim navigator", first as `Alt+0 0`,
+  then corrected to `Alt+p p`. The pause hotkey existed but was unbound;
+  it is now `Alt+P` and, like `g g`, takes two presses within
+  `pause_tap_ms` (300 ms), so one Alt+P hit by accident among the other
+  Alt letters does nothing. Both presses are swallowed (`Alt+P` is a
+  program key now, like `Alt+F`), the tray menu and the help show
+  "Alt+P P", and `pause_tap_ms = 0` makes it one press.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -607,7 +614,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 106 | `14883fb` | 11-03 | 9 | `key_center` (default Enter) twice within `center_tap_ms` (300 ms): the pointer to the middle of the active window's monitor (`center_key_down` on the pass-through paths of `handle_down`, `s_center_ok` read at the first press, `WM_INPUT_CENTER`, `center_pointer` on the input thread); both presses still reach the app; shows the hidden pointer like the real mouse | "Enter twice for moving mouse cursor to the center": Enter cannot be swallowed, so the jump is a side effect of the second press, outside text fields or in mouse mode |
 | 107 | `709bcb9` | 11-03 | 9 | Commit-log row for `14883fb` | |
 | 108 | `f536827` | 11-03 | 10 | `labels_apart` (default 1): `place_labels` finds each label's box once, smallest element first, and `labelbox_apart` (`labelbox.h`, shared with `tools/hint_check.c`) moves a box that would cover a placed one right of it or below it (`HintLabel.box`, `placed`, `g_labels_replace`); `scan_hidden_checkbox` (default 1): a 1 px checkbox or radio button in a browser takes its label's box (`label_stand_in`: next sibling, previous sibling, parent Group within 64 px, `STAND_IN_MAX` 40), which needs elements with full references, so `find_all_window` fetches them (`full_cache`) for a window `full_memory` remembers and once more at the first sight of such a box (`tiny_boxes_listed`); the log = 2 cache is full too; `hint_check.mjs` counts a `<label>` whose control is hidden and the tools run with the app's browser settings | "The navigator is not appearing" on a Google result's title (the result block's label painted over the link's at the same corner) and on Naver Mail's "select all" label (the input is 1 px, the label a nameless Group that is not a control) |
-| 109 | | 11-03 | 10 | Commit-log row for `f536827`; the Naver Mail "select all" label confirmed by the user | |
+| 109 | `8bca056` | 11-03 | 10 | Commit-log row for `f536827`; the Naver Mail "select all" label confirmed by the user | |
+| 110 | | 11-03 | 10 | `pause_hotkey` defaults to `Alt+P` and takes two presses within `pause_tap_ms` (0-1000, default 300; 0 = one press): `handle_hotkeys` arms `s_pause_tap` on the first and toggles on the second, both swallowed, cleared by any other key and in `reset_key_state`; `pause_label` shows "Alt+P P" in the help and the tray menu | "Add shortcut for pause/restart vim navigator", asked as `Alt+0 0` and corrected to `Alt+p p` |
 
 ## 5. Lessons learned: rules not to break
 
@@ -1308,6 +1316,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Defaults: movement 600 to 2400 px/s over 0.45 s; scroll 10 to 40 notches/s; `scan_timeout` 400 ms | `f6cb7d4` | 500 to 1500 over 0.65 s; 5 to 20 notches/s; 1000 ms |
 | Two labels never sit on one spot: the smaller element keeps its corner, the other label moves right of it, or below it at the screen's edge (`labels_apart = 0` restores) | phase 10 | Every label at its element's top-left corner, so a card's label hid the label of the link at its corner (Google's result title) |
 | In a browser, a checkbox or radio button hidden behind its label (a 1 px input) gets the label's box (`scan_hidden_checkbox = 0` restores) | phase 10 | The input was too small for a label and the label itself is never a target |
+| `Alt+P P` pauses and resumes everything (`pause_tap_ms = 0` makes it one press; `pause_hotkey = none` restores) | phase 10 | The pause hotkey was unbound; pausing only from the tray menu |
 
 ## 7. Open threads
 
@@ -1440,6 +1449,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
 5. `tray.c` `build_help_rows`: the help window.
 6. `README.md`: the Keys tables, Settings, and Troubleshooting if it takes a
    letter away from apps.
+
+A hotkey of `[general]` (a `Hotkey`: hint, quit, pause, lock) is matched in
+`handle_hotkeys`, the first call for every key down on both the normal path
+(`handle_down`) and the withheld-Alt path (`alt_resolve`); a hotkey that
+takes two presses keeps its pending state there (`s_pause_tap`), cleared by
+any other key. Its `format_hotkey` text reaches the tray menu, the help and
+`snippet.c` `first_key_taken`, which already covers an `Alt` + letter hotkey.
 
 `6622ce0` is the reference example: it touched all of these. A key of the
 hint overlay (`key_grid`) lives in `[hints]` instead: `process_hints`, the

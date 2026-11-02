@@ -556,8 +556,8 @@ void config_set_defaults(Config *c)
 
     parse_hotkey(L"Alt+F", &c->hint_hotkey);
     parse_hotkey(L"Ctrl+Alt+Q", &c->quit_hotkey);
-    c->pause_hotkey.vk = 0;
-    c->pause_hotkey.mods = 0;
+    parse_hotkey(L"Alt+P", &c->pause_hotkey);
+    c->pause_tap_ms = 300;
     parse_hotkey(L"Ctrl+Alt+L", &c->lock_hotkey);
     c->mouse_mode_key = VK_CAPITAL;
     c->capslock_off = 1;
@@ -812,6 +812,8 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_hotkey(&c->quit_hotkey, line, key, val);
     else if (_wcsicmp(key, L"pause_hotkey") == 0)
         apply_hotkey(&c->pause_hotkey, line, key, val);
+    else if (_wcsicmp(key, L"pause_tap_ms") == 0)
+        apply_int_range(&c->pause_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"lock_hotkey") == 0)
         apply_hotkey(&c->lock_hotkey, line, key, val);
     else if (_wcsicmp(key, L"mouse_mode_key") == 0)
@@ -1479,9 +1481,13 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Hotkey that quits the program.\r\n");
     format_hotkey(&d.quit_hotkey, key, (int)(sizeof(key) / sizeof(key[0])));
     appendf(buf, cch, L"quit_hotkey = %ls\r\n", key);
-    appendf(buf, cch, L"; Hotkey that pauses or resumes everything. none = disabled.\r\n");
+    appendf(buf, cch, L"; Hotkey that pauses or resumes everything: while paused every key\r\n");
+    appendf(buf, cch, L"; passes through except this hotkey and quit_hotkey. none = disabled.\r\n");
     format_hotkey(&d.pause_hotkey, key, (int)(sizeof(key) / sizeof(key[0])));
     appendf(buf, cch, L"pause_hotkey = %ls\r\n", key);
+    appendf(buf, cch, L"; The pause hotkey pressed twice within this many ms (0-1000) pauses or\r\n");
+    appendf(buf, cch, L"; resumes (Alt+P P), so one stray press does nothing; 0 = one press.\r\n");
+    appendf(buf, cch, L"pause_tap_ms = %d\r\n", d.pause_tap_ms);
     appendf(buf, cch, L"; Hotkey that locks the keyboard (every key is ignored) and, pressed\r\n");
     appendf(buf, cch, L"; again, unlocks it. The tray menu can unlock it too. none = disabled.\r\n");
     format_hotkey(&d.lock_hotkey, key, (int)(sizeof(key) / sizeof(key[0])));

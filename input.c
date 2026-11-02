@@ -266,6 +266,12 @@ static BOOL s_alt_consumed = FALSE;
 static UINT s_alt_scan = 0;
 static BOOL s_alt_extended = FALSE;
 
+// The last key was the pause hotkey (Alt+P). A second one within pause_tap_ms
+// pauses or resumes; any other key starts over. Read and cleared by
+// handle_hotkeys, the first thing every key down goes through.
+static BOOL  s_pause_tap = FALSE;
+static DWORD s_pause_tick = 0;
+
 // The last key was a lone g. A second g within scroll_end_tap_ms goes to the
 // top; any other key starts over.
 static BOOL  s_end_tap = FALSE;
@@ -1474,6 +1480,10 @@ static void hint_hotkey_fire(void)
 
 static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
 {
+    // Any key ends a pending pause tap; the pause hotkey itself reads it.
+    BOOL pause_tap = s_pause_tap;
+
+    s_pause_tap = FALSE;
     if (hotkey_match(&g_cfg.lock_hotkey, vk, mods)) {
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
@@ -1487,9 +1497,21 @@ static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
         return TRUE;
     }
     if (hotkey_match(&g_cfg.pause_hotkey, vk, mods)) {
+        DWORD now = GetTickCount();
+
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
-        apply_paused(!flag_get(&s_paused));
+        // Alt+P P: the first press only arms the second (a held key's
+        // repeats never get here), so a stray Alt+P does nothing. Both are
+        // swallowed, like the other Alt keys of the program.
+        if (g_cfg.pause_tap_ms <= 0 ||
+            (pause_tap && (DWORD)(now - s_pause_tick) <=
+                              (DWORD)g_cfg.pause_tap_ms)) {
+            apply_paused(!flag_get(&s_paused));
+        } else {
+            s_pause_tap = TRUE;
+            s_pause_tick = now;
+        }
         return TRUE;
     }
     if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
@@ -2170,6 +2192,7 @@ static void reset_key_state(void)
     s_alt_extended = FALSE;
     s_end_shift = FALSE;
     s_center_tap = FALSE;
+    s_pause_tap = FALSE;
     InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
 }
