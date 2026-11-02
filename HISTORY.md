@@ -468,6 +468,14 @@ Invariants stated in `common.h` and enforced by history:
   Alt letters does nothing. Both presses are swallowed (`Alt+P` is a
   program key now, like `Alt+F`), the tray menu and the help show
   "Alt+P P", and `pause_tap_ms = 0` makes it one press.
+- "Instead of shadowing the typed char, remove the typed char of the
+  navigators so I can view it more cleanly instead of overlapped big
+  boxes": an element label used to stay whole once a character was typed,
+  the prefix in `match_fg`, so the remaining labels kept their full boxes.
+  `draw_element_label` now drops the typed prefix and draws only what is
+  still to type, in a box that shrinks from the right (its place was found
+  for the whole label, so it stays clear of its neighbours). The grid still
+  shows its typed row letter in `match_fg`.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -615,7 +623,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 107 | `709bcb9` | 11-03 | 9 | Commit-log row for `14883fb` | |
 | 108 | `f536827` | 11-03 | 10 | `labels_apart` (default 1): `place_labels` finds each label's box once, smallest element first, and `labelbox_apart` (`labelbox.h`, shared with `tools/hint_check.c`) moves a box that would cover a placed one right of it or below it (`HintLabel.box`, `placed`, `g_labels_replace`); `scan_hidden_checkbox` (default 1): a 1 px checkbox or radio button in a browser takes its label's box (`label_stand_in`: next sibling, previous sibling, parent Group within 64 px, `STAND_IN_MAX` 40), which needs elements with full references, so `find_all_window` fetches them (`full_cache`) for a window `full_memory` remembers and once more at the first sight of such a box (`tiny_boxes_listed`); the log = 2 cache is full too; `hint_check.mjs` counts a `<label>` whose control is hidden and the tools run with the app's browser settings | "The navigator is not appearing" on a Google result's title (the result block's label painted over the link's at the same corner) and on Naver Mail's "select all" label (the input is 1 px, the label a nameless Group that is not a control) |
 | 109 | `8bca056` | 11-03 | 10 | Commit-log row for `f536827`; the Naver Mail "select all" label confirmed by the user | |
-| 110 | | 11-03 | 10 | `pause_hotkey` defaults to `Alt+P` and takes two presses within `pause_tap_ms` (0-1000, default 300; 0 = one press): `handle_hotkeys` arms `s_pause_tap` on the first and toggles on the second, both swallowed, cleared by any other key and in `reset_key_state`; `pause_label` shows "Alt+P P" in the help and the tray menu | "Add shortcut for pause/restart vim navigator", asked as `Alt+0 0` and corrected to `Alt+p p` |
+| 110 | `9ce3e54` | 11-03 | 10 | `pause_hotkey` defaults to `Alt+P` and takes two presses within `pause_tap_ms` (0-1000, default 300; 0 = one press): `handle_hotkeys` arms `s_pause_tap` on the first and toggles on the second, both swallowed, cleared by any other key and in `reset_key_state`; `pause_label` shows "Alt+P P" in the help and the tray menu | "Add shortcut for pause/restart vim navigator", asked as `Alt+0 0` and corrected to `Alt+p p` |
+| 111 | | 11-03 | 10 | `draw_element_label` drops the typed prefix: only the characters still to type are drawn, in a box shrunk from the right of the placed one (`match_fg` now colours the grid's typed row letter only) | "Instead of shadowing the typed char, remove the typed char of the navigators so I can view it more cleanly instead of overlapped big boxes" |
 
 ## 5. Lessons learned: rules not to break
 
@@ -1317,6 +1326,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Two labels never sit on one spot: the smaller element keeps its corner, the other label moves right of it, or below it at the screen's edge (`labels_apart = 0` restores) | phase 10 | Every label at its element's top-left corner, so a card's label hid the label of the link at its corner (Google's result title) |
 | In a browser, a checkbox or radio button hidden behind its label (a 1 px input) gets the label's box (`scan_hidden_checkbox = 0` restores) | phase 10 | The input was too small for a label and the label itself is never a target |
 | `Alt+P P` pauses and resumes everything (`pause_tap_ms = 0` makes it one press; `pause_hotkey = none` restores) | phase 10 | The pause hotkey was unbound; pausing only from the tray menu |
+| An element label drops its typed characters and shrinks to what is still to type | phase 10 | The whole label stayed, the typed prefix coloured `match_fg` (the grid still does that) |
 
 ## 7. Open threads
 

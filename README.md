@@ -184,7 +184,9 @@ gets the label's box and is clicked there (`scan_hidden_checkbox`). When
 two labels would sit on one spot (a Google result's title link and the
 result block around it both start at that corner), the smaller element
 keeps its corner and the other label is drawn to the right of it, or below
-it at the screen's edge (`labels_apart`), so both can be read and typed. A menu, dialog or embedded frame drawn over a web page
+it at the screen's edge (`labels_apart`), so both can be read and typed.
+Once a character is typed, the labels that match drop it and show only
+what is still to type, in a smaller box, so what is left is easy to read. A menu, dialog or embedded frame drawn over a web page
 (Google's account menu, a Zendesk menu or modal) gets its own labels; page
 links partly under it get their label and click on the part that shows, and
 links entirely under a menu or dialog get none. Chrome sometimes reports

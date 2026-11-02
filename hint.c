@@ -889,19 +889,31 @@ static void label_box_size(const WCHAR *text, int len, int *bw, int *bh)
     *bh = th + 2 * pad;
 }
 
-// A label drawn in the box place_labels found for it.
+// A label drawn in the box place_labels found for it. The typed prefix is
+// not drawn: only the characters still to type show, in a box that shrinks
+// from the right (the box was placed for the whole label, so it stays clear
+// of its neighbours), instead of the whole label with the prefix recoloured.
 static void draw_element_label(HDC dc, const RECT *box, const WCHAR *text,
                                int len, int typed)
 {
     int w[MAX_LABEL_LEN];
-    int tw, th;
+    int tw, th, pad, bw;
 
+    if (typed > 0) {
+        if (typed > len) typed = len;
+        text += typed;
+        len -= typed;
+    }
     if (len <= 0) return;
     if (len > MAX_LABEL_LEN) len = MAX_LABEL_LEN;
     measure_label(&g_lw, text, len, w, &tw, &th);
-    draw_box_text(dc, box->left, box->top, box->right - box->left,
-                  box->bottom - box->top, text, len, typed, g_match,
-                  w, tw, th);
+    pad = g_font_label_px / 4;
+    if (pad < 2) pad = 2;
+    bw = tw + 2 * pad;
+    if (bw > box->right - box->left) bw = box->right - box->left;
+    if (bw < 1) bw = 1;
+    draw_box_text(dc, box->left, box->top, bw, box->bottom - box->top,
+                  text, len, 0, 0, w, tw, th);
 }
 
 // place_labels orders the labels still to place: smallest element first,

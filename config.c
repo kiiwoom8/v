@@ -1650,7 +1650,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     _snwprintf(num, 64, L"#%02X%02X%02X", GetRValue(d.label_border),
                GetGValue(d.label_border), GetBValue(d.label_border));
     appendf(buf, cch, L"label_border = %ls\r\n", num);
-    appendf(buf, cch, L"; Colour of already typed characters as #RRGGBB.\r\n");
+    appendf(buf, cch, L"; Colour of the grid row letter already typed as #RRGGBB (an element\r\n");
+    appendf(buf, cch, L"; label drops its typed characters instead).\r\n");
     _snwprintf(num, 64, L"#%02X%02X%02X", GetRValue(d.match_fg),
                GetGValue(d.match_fg), GetBValue(d.match_fg));
     appendf(buf, cch, L"match_fg = %ls\r\n", num);
