@@ -70,6 +70,12 @@
 #ifndef UIA_IsTogglePatternAvailablePropertyId
 #define UIA_IsTogglePatternAvailablePropertyId 30041
 #endif
+#ifndef UIA_IsKeyboardFocusablePropertyId
+#define UIA_IsKeyboardFocusablePropertyId 30009
+#endif
+#ifndef UIA_IsScrollPatternAvailablePropertyId
+#define UIA_IsScrollPatternAvailablePropertyId 30034
+#endif
 
 #ifndef UIA_ScrollPatternId
 #define UIA_ScrollPatternId 10004
@@ -146,6 +152,35 @@
 #endif
 #ifndef UIA_MenuBarControlTypeId
 #define UIA_MenuBarControlTypeId 50010
+#endif
+// Types a keyboard-focusable element may have without being worth a click
+// (focusable_left_out).
+#ifndef UIA_StatusBarControlTypeId
+#define UIA_StatusBarControlTypeId 50017
+#endif
+#ifndef UIA_TabControlTypeId
+#define UIA_TabControlTypeId 50018
+#endif
+#ifndef UIA_TextControlTypeId
+#define UIA_TextControlTypeId 50020
+#endif
+#ifndef UIA_ToolBarControlTypeId
+#define UIA_ToolBarControlTypeId 50021
+#endif
+#ifndef UIA_TreeControlTypeId
+#define UIA_TreeControlTypeId 50023
+#endif
+#ifndef UIA_ThumbControlTypeId
+#define UIA_ThumbControlTypeId 50027
+#endif
+#ifndef UIA_HeaderControlTypeId
+#define UIA_HeaderControlTypeId 50034
+#endif
+#ifndef UIA_TableControlTypeId
+#define UIA_TableControlTypeId 50036
+#endif
+#ifndef UIA_SeparatorControlTypeId
+#define UIA_SeparatorControlTypeId 50038
 #endif
 
 typedef void *UIA_HWND;
@@ -470,10 +505,16 @@ typedef struct {
     IUIAutomation *automation;
     IUIAutomationCondition *condition;
     IUIAutomationCacheRequest *cache;
+    // Browser windows (scan_web_window): the same plus keyboard-focusable
+    // elements, which a page can make clickable without any pattern (the
+    // click handler of a div with tabindex often sits on an ancestor, as
+    // React attaches it). NULL when it could not be built: condition then.
+    IUIAutomationCondition *web_condition;
     // log = 2: the same element types without the offscreen and enabled
     // tests, and a cache that also holds those two and the name, so the log
     // can say what UI Automation itself left out.
     IUIAutomationCondition *detail_condition;
+    IUIAutomationCondition *web_detail_condition;
     IUIAutomationCacheRequest *detail_cache;
     // The children call that starts a split scan. It holds the same
     // properties as the cache in use plus IsEnabled and IsOffscreen (the
@@ -1448,6 +1489,14 @@ BOOL uia_browser_window(HWND hwnd)
     return uia_chromium_window(hwnd);
 }
 
+// Whether a window is searched with the web condition (scan_focusable):
+// browsers and apps built on Chromium, where a page makes elements
+// clickable that expose nothing but the keyboard focus.
+static BOOL scan_web_window(HWND hwnd)
+{
+    return g_cfg.scan_focusable && uia_browser_window(hwnd);
+}
+
 typedef struct {
     POINT cursor;
     POINT prefer;
@@ -1854,7 +1903,10 @@ static int rescue_offscreen(UiaEngine *engine, HWND hwnd,
             if (!els[pop->order] ||
                 FAILED(els[pop->order]->lpVtbl->FindAllBuildCache(
                     els[pop->order], UIA_TREESCOPE_DESCENDANTS,
-                    engine->detail_condition, engine->detail_cache, &sub)) ||
+                    scan_web_window(hwnd) && engine->web_detail_condition
+                        ? engine->web_detail_condition
+                        : engine->detail_condition,
+                    engine->detail_cache, &sub)) ||
                 !sub)
                 continue;
             if (FAILED(sub->lpVtbl->get_Length(sub, &sub_length)))
@@ -1969,6 +2021,76 @@ static const int g_scan_patterns[] = {
     UIA_IsExpandCollapsePatternAvailablePropertyId
 };
 
+static BOOL scan_type_listed(int control_type)
+{
+    int i;
+
+    for (i = 0; i < (int)(sizeof(g_scan_types) / sizeof(g_scan_types[0]));
+         ++i)
+        if (g_scan_types[i] == control_type)
+            return TRUE;
+    return FALSE;
+}
+
+// Any of the four patterns the condition asks for (cached).
+static BOOL element_patterns(IUIAutomationElement *el)
+{
+    int i;
+
+    for (i = 0;
+         i < (int)(sizeof(g_scan_patterns) / sizeof(g_scan_patterns[0])); ++i)
+        if (cached_bool_property(el, g_scan_patterns[i]))
+            return TRUE;
+    return FALSE;
+}
+
+// An element the web condition listed for its keyboard focus alone (no
+// listed type, none of the patterns): Chromium exposes a div whose click
+// handler sits on an ancestor (React, jsaction) and a range input that way,
+// and nothing else about them says "clickable". Blink also calls focusable
+// what tabindex=-1 marks for scripts (a main region, a heading after a
+// route change), every scroll area since keyboard-focusable scrollers, and
+// the toolbar's own focus stops. Returns why it is left out, or NULL to
+// keep it: not text, not a scroll area, inside the page (page: the page
+// Document, NULL when the window has none) and under a quarter of the
+// page's visible area. Containers around real targets go the usual way
+// (filter_containers).
+static const WCHAR *focusable_left_out(IUIAutomationElement *el,
+                                       int control_type, const RECT *rc,
+                                       const RECT *page, const RECT *monitor)
+{
+    RECT inter, on;
+
+    if (!cached_bool_property(el, UIA_IsKeyboardFocusablePropertyId))
+        return L"no clickable type or pattern";
+    switch (control_type) {
+    case UIA_TextControlTypeId:
+    case UIA_PaneControlTypeId:
+    case UIA_ListControlTypeId:
+    case UIA_TableControlTypeId:
+    case UIA_TreeControlTypeId:
+    case UIA_MenuBarControlTypeId:
+    case UIA_TitleBarControlTypeId:
+    case UIA_ToolBarControlTypeId:
+    case UIA_HeaderControlTypeId:
+    case UIA_StatusBarControlTypeId:
+    case UIA_TabControlTypeId:
+    case UIA_SeparatorControlTypeId:
+    case UIA_ThumbControlTypeId:
+        return L"focusable only: text or a container";
+    default:
+        break;
+    }
+    if (cached_bool_property(el, UIA_IsScrollPatternAvailablePropertyId))
+        return L"focusable only: a scroll area";
+    if (!page || !IntersectRect(&inter, rc, page))
+        return L"focusable only: outside the page";
+    if (IntersectRect(&on, page, monitor) &&
+        rect_area(rc) * 4 > rect_area(&on))
+        return L"focusable only: too large";
+    return NULL;
+}
+
 // Copies a FindAll array into an owned reference list, with empty rescued
 // rects (one per element). Returns the element count (0 when out of memory or
 // the array cannot be read); *els and *rescued are then NULL.
@@ -2064,6 +2186,8 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
     BOOL *drop;
     POINT *new_click;
     int el_count = length;      // entries in els (each holds a reference)
+    int page = -1;              // the page Document (focusable_left_out)
+    LONG64 page_area = 0;
     int i;
 
     if (length > 0) {
@@ -2090,6 +2214,8 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
         else
             length = 0;     // out of memory: nothing labelled this time
     }
+    if (length > 0)
+        page = page_document(&lay, monitor, &page_area);
 
     for (i = 0; i < length; ++i) {
         IUIAutomationElement *el = els[i];
@@ -2102,6 +2228,7 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
         LONG64 orig_area;
         LONG64 clip_area;
         LONG64 monitor_area;
+        BOOL focusable_only = FALSE;
 
         if (!el)
             continue;           // els holds the reference, released below
@@ -2137,6 +2264,18 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
             scan_reject(el, out, detail, &rc, control_type,
                         L"dialog or menu itself");
             continue;
+        }
+        // In for its keyboard focus alone (the web condition): only what is
+        // worth a click.
+        if (!scan_type_listed(control_type) && !element_patterns(el)) {
+            const WCHAR *why = focusable_left_out(
+                el, control_type, &rc, page >= 0 ? &documents[page] : NULL,
+                monitor);
+            if (why) {
+                scan_reject(el, out, detail, &rc, control_type, why);
+                continue;
+            }
+            focusable_only = TRUE;
         }
 
         orig_area = rect_area(&rc);
@@ -2202,7 +2341,11 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
             continue;
         }
 
-        target.actionable = element_actionable(el, control_type);
+        // Nothing says a focusable-only element does anything itself: around
+        // smaller targets it is a wrapper (a tabindex=-1 region holding
+        // links), not an actionable card.
+        target.actionable = !focusable_only &&
+                            element_actionable(el, control_type);
         target.name[0] = 0;
         if (engine->with_names || detail)
             cached_name(el, target.name, 128);
@@ -2342,10 +2485,11 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
 }
 
 // One FindAll under an element, as the scan cache asks for it: every element
-// with the cached properties, in tree order. Returns FALSE when UI Automation
-// could not answer (the caller then falls back or drops the piece).
+// with the cached properties, in tree order; web adds the keyboard-focusable
+// ones (scan_web_window). Returns FALSE when UI Automation could not answer
+// (the caller then falls back or drops the piece).
 static BOOL find_all_under(UiaEngine *engine, IUIAutomationElement *el,
-                           int scope, BOOL detail,
+                           int scope, BOOL detail, BOOL web,
                            IUIAutomationElement ***els_out,
                            RECT **rescued_out, int *count_out)
 {
@@ -2357,9 +2501,13 @@ static BOOL find_all_under(UiaEngine *engine, IUIAutomationElement *el,
     *els_out = NULL;
     *rescued_out = NULL;
     *count_out = 0;
+    if (web && engine->web_condition)
+        condition = engine->web_condition;
     if (detail) {
         if (engine->detail_condition && engine->detail_cache) {
-            condition = engine->detail_condition;
+            condition = web && engine->web_detail_condition
+                            ? engine->web_detail_condition
+                            : engine->detail_condition;
             cache = engine->detail_cache;
         } else {
             detail = FALSE;
@@ -2398,7 +2546,7 @@ static void scan_window_uia(UiaEngine *engine, HWND hwnd,
         return;
     }
     if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS, detail,
-                        &els, &rescued, &length)) {
+                        scan_web_window(hwnd), &els, &rescued, &length)) {
         if (detail)
             detail_add(&out->detail, L"scan:   FindAll failed");
         root->lpVtbl->Release(root);
@@ -3016,7 +3164,8 @@ static void scan_root_item(ScanJob *job, ScanItem *item)
         kids = NULL;
         count = 0;
         if (!find_all_under(engine, root, UIA_TREESCOPE_DESCENDANTS,
-                            win->detail, &els, &rescued, &length)) {
+                            win->detail, scan_web_window(win->hwnd), &els,
+                            &rescued, &length)) {
             if (win->detail)
                 detail_add(&win->found.detail, L"scan:   FindAll failed");
         } else {
@@ -3058,7 +3207,7 @@ static void scan_split_item(ScanJob *job, ScanItem *item,
     if (!find_children(engine, el, win->detail, &kids, &count)) {
         free(kids);
         if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
-                           &els, &rescued, &length)) {
+                           FALSE, &els, &rescued, &length)) {
             node->kind = SN_PART;
             node->els = els;
             node->rescued = rescued;
@@ -3073,7 +3222,7 @@ static void scan_split_item(ScanJob *job, ScanItem *item,
 
     if (count > SCAN_SPLIT_MAX_CHILDREN) {
         if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
-                           &els, &rescued, &length)) {
+                           FALSE, &els, &rescued, &length)) {
             node->kind = SN_PART;
             node->els = els;
             node->rescued = rescued;
@@ -3122,7 +3271,7 @@ static void scan_titlebar_item(ScanJob *job, ScanItem *item,
     if (!find_children(engine, el, win->detail, &kids, &count)) {
         free(kids);
         if (find_all_under(engine, el, UIA_TREESCOPE_SUBTREE, win->detail,
-                           &els, &rescued, &length)) {
+                           FALSE, &els, &rescued, &length)) {
             node->kind = SN_PART;
             node->els = els;
             node->rescued = rescued;
@@ -3195,8 +3344,9 @@ static void scan_item_run(ScanJob *job, ScanItem *item)
         IUIAutomationElement **els = NULL;
         RECT *rescued = NULL;
         int count = 0;
-        if (find_all_under(engine, el, item->scope, item->win->detail, &els,
-                           &rescued, &count)) {
+        // Parts are split off classic windows only (scan_can_split).
+        if (find_all_under(engine, el, item->scope, item->win->detail, FALSE,
+                           &els, &rescued, &count)) {
             node->els = els;
             node->rescued = rescued;
             node->count = count;
@@ -3802,6 +3952,40 @@ static BOOL uia_build_condition(UiaEngine *engine)
             ok = FALSE;
     }
 
+    // Browser windows: the same, or keyboard-focusable. Optional: without
+    // it those windows get the plain condition.
+    if (ok) {
+        IUIAutomationCondition *focusable = property_condition(
+            engine->automation, UIA_IsKeyboardFocusablePropertyId, VT_BOOL,
+            TRUE);
+        IUIAutomationCondition *web_or = NULL;
+        IUIAutomationCondition *web_items[2];
+
+        if (focusable) {
+            web_items[0] = or_cond;
+            web_items[1] = focusable;
+            if (FAILED(engine->automation->lpVtbl->
+                       CreateOrConditionFromNativeArray(
+                           engine->automation, web_items, 2, &web_or)))
+                web_or = NULL;
+            focusable->lpVtbl->Release(focusable);
+        }
+        if (web_or) {
+            and_items[0] = web_or;
+            and_items[1] = enabled;
+            and_items[2] = off;
+            if (FAILED(engine->automation->lpVtbl->
+                       CreateAndConditionFromNativeArray(
+                           engine->automation, and_items, 3,
+                           &engine->web_condition)))
+                engine->web_condition = NULL;
+            if (engine->web_condition)
+                engine->web_detail_condition = web_or;
+            else
+                web_or->lpVtbl->Release(web_or);
+        }
+    }
+
     off->lpVtbl->Release(off);
     enabled->lpVtbl->Release(enabled);
     // The types alone serve log = 2 (engine->detail_condition).
@@ -3827,7 +4011,11 @@ static IUIAutomationCacheRequest *uia_new_cache(IUIAutomation *automation,
         UIA_IsInvokePatternAvailablePropertyId,
         UIA_IsTogglePatternAvailablePropertyId,
         UIA_IsSelectionItemPatternAvailablePropertyId,
-        UIA_IsExpandCollapsePatternAvailablePropertyId
+        UIA_IsExpandCollapsePatternAvailablePropertyId,
+        // For an element in through the web condition alone
+        // (focusable_left_out).
+        UIA_IsKeyboardFocusablePropertyId,
+        UIA_IsScrollPatternAvailablePropertyId
     };
     IUIAutomationCacheRequest *cache = NULL;
     BOOL ok;
@@ -3894,10 +4082,15 @@ static void uia_engine_cleanup(UiaEngine *engine)
         engine->true_condition->lpVtbl->Release(engine->true_condition);
     if (engine->condition)
         engine->condition->lpVtbl->Release(engine->condition);
+    if (engine->web_condition)
+        engine->web_condition->lpVtbl->Release(engine->web_condition);
     if (engine->detail_cache)
         engine->detail_cache->lpVtbl->Release(engine->detail_cache);
     if (engine->detail_condition)
         engine->detail_condition->lpVtbl->Release(engine->detail_condition);
+    if (engine->web_detail_condition)
+        engine->web_detail_condition->lpVtbl->Release(
+            engine->web_detail_condition);
     if (engine->automation)
         engine->automation->lpVtbl->Release(engine->automation);
     memset(engine, 0, sizeof(*engine));

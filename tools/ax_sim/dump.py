@@ -12,7 +12,8 @@ EVERY = '--all' in sys.argv
 ROLES = {'push button', 'link', 'menu item', 'list item', 'check box',
          'radio button', 'toggle button', 'entry', 'combo box', 'page tab',
          'tree item', 'document web', 'internal frame', 'dialog', 'menu',
-         'list', 'section'}
+         'list', 'section', 'panel', 'landmark', 'heading', 'slider',
+         'image', 'canvas', 'status bar', 'scroll pane'}
 
 
 def line(o, depth):

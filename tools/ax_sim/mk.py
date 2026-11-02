@@ -4,8 +4,10 @@
 # adds a main() that repeats scan_window_uia's per-element checks, its taking
 # back of offscreen elements into a dialog or menu (rescue_offscreen, as with
 # log = 2) and its overlay collection on conv.py's input instead of UI
-# Automation. Keep that main() in step with scan_window_uia. A function that
-# moved or was renamed in uia.c makes this fail loudly.
+# Automation, and the focusable-only test of scan_filter (focusable_left_out,
+# for an actionable flag of 2; the scroll-area part cannot be simulated).
+# Keep that main() in step with scan_window_uia. A function that moved or
+# was renamed in uia.c makes this fail loudly.
 import sys
 src, out = sys.argv[1], sys.argv[2]
 s = open(src).read()
@@ -50,8 +52,13 @@ main = r'''
 #define T_SCROLLBAR 50014
 #define T_MENU 50009
 #define T_WINDOW 50032
+#define T_TEXT 50020
+#define T_PANE 50033
+#define T_LIST 50008
+#define T_TABLE 50036
+#define T_TREE 50023
 static struct { int type, act, off; RECT rc; char name[80]; } el[3000];
-static RECT raw[3000], taken[3000]; static int types[3000];
+static RECT raw[3000], taken[3000]; static int types[3000]; static int page_doc=-1;
 int main(void){
   RECT monitor={0,0,1600,1000}; RECT zrects[1]={{0,0,1600,1000}};
   RECT documents[16]; int doc_order[16]; int document_count=0; RECT scrollbars[1]; int scrollbar_count=0;
@@ -63,6 +70,7 @@ int main(void){
   for (i=0;i<len;i++){ types[i]=el[i].type; if(!el[i].off) raw[i]=el[i].rc; }
   for (i=0;i<len;i++) if (el[i].type==T_DOC && !el[i].off && document_count<16) { doc_order[document_count]=i; documents[document_count++]=el[i].rc; }
   for (i=1;i<document_count;++i){int d; for(d=0;d<i;++d){RECT inter; if(IntersectRect(&inter,&documents[i],&documents[d])) documents[i]=inter;}}
+  { int d; LONG64 pa=0; page_doc=-1; for(d=0;d<document_count;d++){RECT on; LONG64 a=IntersectRect(&on,&documents[d],&monitor)?rect_area(&on):0; if(a>pa){pa=a;page_doc=d;}} }
 #ifdef HAVE_RESCUE
   /* rescue_offscreen, as with log = 2: the offscreen elements in a dialog's or menu's run */
   if (document_count) { int page=0, d, k, taken_until=-1; LONG64 pa=0;
@@ -85,6 +93,12 @@ int main(void){
     if (el[i].off && rect_area(&taken[i])<=0) { printf("  %-36s offscreen\n", el[i].name); continue; }
     if (rect_area(&taken[i])>0) rc=taken[i];
     if (el[i].type==T_DOC || el[i].type==T_MENU || el[i].type==T_WINDOW) continue;
+    if (el[i].act==2) { /* focusable_left_out */
+      RECT inter, on; int t=el[i].type;
+      if (t==T_TEXT||t==T_PANE||t==T_LIST||t==T_TABLE||t==T_TREE) why="focusable only: text or a container";
+      else if (page_doc<0||!IntersectRect(&inter,&rc,&documents[page_doc])) why="focusable only: outside the page";
+      else if (IntersectRect(&on,&documents[page_doc],&monitor) && rect_area(&rc)*4>rect_area(&on)) why="focusable only: too large";
+      if (why){ printf("  %-36s %s\n", el[i].name, why); continue; } }
     orig_area=rect_area(&rc);
     if (orig_area<=0) why="zero area";
     else if (el[i].type==T_SCROLLBAR || inside_any(scrollbars,scrollbar_count,&rc)) why="scrollbar";
@@ -97,7 +111,7 @@ int main(void){
       else if (monitor_area>0 && clip_area*100>monitor_area*40) why="too large"; }
     if (!why){ click=choose_click_point(zrects,0,&clip); if(click.x<0&&click.y<0) why="hidden"; }
     if (why){ printf("  %-36s %s\n", el[i].name, why); continue; }
-    memset(&cands[n],0,sizeof cands[n]); cands[n].target.rc=clip; cands[n].target.click=click; cands[n].control_type=el[i].type; cands[n].actionable=el[i].act; cands[n].order=i; strcpy(names[n],el[i].name); n++;
+    memset(&cands[n],0,sizeof cands[n]); cands[n].target.rc=clip; cands[n].target.click=click; cands[n].control_type=el[i].type; cands[n].actionable=el[i].act==1; cands[n].order=i; strcpy(names[n],el[i].name); n++;
   }
   { static BOOL drop[3000]; static POINT nc[3000]; ScanResult res; int kept=0; memset(&res,0,sizeof res);
     filter_containers(cands,n,zrects,0,NULL,drop,nc);

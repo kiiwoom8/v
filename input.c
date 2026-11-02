@@ -342,20 +342,30 @@ static void notify_state(void)
     post_main(WM_APP_STATE_CHANGED, 0, 0);
 }
 
+// A burst of actions (a scroll stream sends a wheel event every frame) tells
+// the hints once; their wait re-reads the newest action itself.
+#define PAGE_ACTED_POST_MS 100
+
 // at: where it happened; NULL = at the cursor (the wheel and clicks go there).
 static void page_acted_at(int kind, const POINT *at)
 {
     DWORD now = GetTickCount();
     POINT pt = { 0, 0 };
+    LONG prev, prev_kind;
 
     if (at)
         pt = *at;
     else
         GetCursorPos(&pt);
-    InterlockedExchange(&s_page_kind, kind);
+    prev_kind = InterlockedExchange(&s_page_kind, kind);
     InterlockedExchange(&s_page_x, pt.x);
     InterlockedExchange(&s_page_y, pt.y);
-    InterlockedExchange(&s_page_acted, (LONG)(now ? now : 1));
+    prev = InterlockedExchange(&s_page_acted, (LONG)(now ? now : 1));
+    // A Chromium page reports the result late; the hints start waiting for
+    // it now rather than when the hotkey comes (hint_page_acted).
+    if (prev == 0 || prev_kind != kind ||
+        now - (DWORD)prev > PAGE_ACTED_POST_MS)
+        post_main(WM_APP_PAGE_ACTED, (WPARAM)kind, 0);
 }
 
 static void page_acted(int kind)

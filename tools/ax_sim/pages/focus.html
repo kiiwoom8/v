@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8"><title>focus mock</title><style>
+body{margin:0;font:14px Arial}
+main{padding:20px}
+.card{display:inline-block;width:260px;height:120px;margin:10px;background:#eee;vertical-align:top}
+.region{width:600px;padding:10px;margin:10px;border:1px solid #ccc}
+.scroll{width:400px;height:80px;overflow:auto;border:1px solid #999;margin:10px}
+.huge{width:1200px;height:600px;background:#ddd;margin:10px}
+.toast{position:fixed;right:20px;bottom:20px;width:240px;height:48px;background:#333;color:#fff}
+</style></head><body>
+<!-- What the web condition lists for its keyboard focus alone (scan_focusable):
+     the main region and the heading (tabindex=-1 for scripts), a div with
+     tabindex whose click handler sits on an ancestor (as React attaches
+     them), a range input, a region around links, a scroll area, a huge
+     block and a toast. -->
+<main tabindex="-1">
+<h1 tabindex="-1">Focus mock</h1>
+<div class="card" tabindex="0" id="react">Card: click handler on an ancestor</div>
+<div class="card" tabindex="0" role="button">Card with role button</div>
+<div class="card">Card with no tabindex</div>
+<div class="region" tabindex="-1"><a href="#a">Link in a region</a> <a href="#b">Another link</a></div>
+<label>Volume <input type="range" min="0" max="10"></label>
+<div class="scroll" tabindex="0"><p style="height:300px">Scrollable text</p></div>
+<div class="huge" tabindex="0">Huge focusable block</div>
+</main>
+<div class="toast" tabindex="-1" role="status">Saved</div>
+<script>document.getElementById('react').parentElement.addEventListener('click', e => { if (e.target.id==='react') e.target.textContent='clicked'; });</script>
+</body></html>

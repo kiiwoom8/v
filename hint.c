@@ -80,6 +80,9 @@
 // A page that kept scrolling by itself through such a wait (a live chat, a
 // scrolling ticker) is not waited for again for this long.
 #define SETTLE_RESTLESS_MS 10000
+// A wait ahead of the hotkey that ran out on a page scrolling by itself:
+// no new one for that window before this (its flushes would never stop).
+#define SETTLE_BACKOFF_MS 5000
 // Chromium windows whose last scroll report is remembered.
 #define SCROLL_SEEN_SLOTS 8
 // Labels shown before every window answered (a browser's) leave free codes
@@ -197,26 +200,36 @@ static BOOL      g_scan_browser;     // the scan's active window is a browser: s
 
 // Chromium reports every scroll it hands to UI Automation as
 // EVENT_SYSTEM_SCROLLINGEND (BrowserAccessibilityManager::OnLocationChanges),
-// whoever scrolled: the last report per top-level window.
+// whoever scrolled: the last report per top-level window, and when a wait
+// for that window last ended (fresh: its tree had the page by then, so
+// actions and reports before that tick need no new wait).
 static HWINEVENTHOOK g_scroll_hook;
 static struct {
     HWND  root;
     DWORD tick;
+    DWORD fresh;
 } g_scroll_seen[SCROLL_SEEN_SLOTS];
 static int       g_scroll_seen_next;
 
-// The wait for a Chromium page to catch up before the first scan
-// (settle_begin, settle_step).
+// The wait for a Chromium page to catch up (settle_arm, settle_step). It
+// runs whether or not the hints are open: our own scroll or click and a
+// scroll the browser reported start it at once (settle_poke), so the page
+// is usually in by the time the hotkey comes. An open whose first scan has
+// to wait for it sets g_settle_wait and gets begin_scan from settle_done.
 static BOOL      g_settle_on;
+static BOOL      g_settle_wait;      // the open's first scan starts when it ends
 static HWND      g_settle_root;      // the Chromium window
 static POINT     g_settle_pt;        // where a flush asks it
-static DWORD     g_settle_t0;        // when the wait began
+static DWORD     g_settle_t0;        // the action or report waited for
 static DWORD     g_settle_acted;     // our page action's tick, 0 = none
+static int       g_settle_kind;      // its PAGE_* kind
 static DWORD     g_settle_floor;     // no flush before this tick
 static DWORD     g_settle_quiet;     // our scroll's animation is over by then
 static BOOL      g_settle_due;       // the next timer sends a flush
 static HWND      g_restless_root;    // kept scrolling by itself (SETTLE_RESTLESS_MS)
 static DWORD     g_restless_until;
+static HWND      g_backoff_root;     // no wait ahead of the hotkey before g_backoff_until
+static DWORD     g_backoff_until;
 static DWORD     g_settle_deadline;  // the scan starts by then whatever happens
 static DWORD     g_settle_flush;     // tick of the last flush, 0 = none yet
 static int       g_settle_flushes;   // flushes sent
@@ -271,6 +284,8 @@ static void begin_scan(void);
 static void merge_scan(ClickList *list);
 static BOOL scan_ready(const ClickList *list);
 static void settle_step(BOOL report);
+static void settle_poke(void);
+static HWND settle_root(void);
 static BOOL active_browser_here(void);
 
 // ---------------------------------------------------------------------------
@@ -2130,11 +2145,12 @@ static void cancel_scan(void)
     if (g_hint_wnd) {
         KillTimer(g_hint_wnd, TIMER_SCAN_ID);
         KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
-        KillTimer(g_hint_wnd, TIMER_SETTLE_ID);
     }
     g_scan_wait_first = FALSE;
     g_scan_retry = FALSE;
-    g_settle_on = FALSE;
+    // A running wait for the page goes on by itself (it records when the
+    // page was in); only this open no longer waits for it.
+    g_settle_wait = FALSE;
     if (g_scanning || g_refresh_on)
         uia_cancel();  // drops the first scan or a background refresh
     g_scanning = FALSE;
@@ -2167,33 +2183,53 @@ static BOOL tick_reached(DWORD a, DWORD b)
     return (LONG)(a - b) >= 0;
 }
 
-static DWORD scroll_seen_tick(HWND root)
+// The slot of root in g_scroll_seen (-1 when it has none and alloc is off).
+static int scroll_slot(HWND root, BOOL alloc)
 {
     int i;
 
     for (i = 0; i < SCROLL_SEEN_SLOTS; ++i)
-        if (g_scroll_seen[i].root == root) return g_scroll_seen[i].tick;
-    return 0;
+        if (g_scroll_seen[i].root == root) return i;
+    if (!alloc) return -1;
+    i = g_scroll_seen_next;
+    g_scroll_seen_next = (g_scroll_seen_next + 1) % SCROLL_SEEN_SLOTS;
+    g_scroll_seen[i].root = root;
+    g_scroll_seen[i].tick = 0;
+    g_scroll_seen[i].fresh = 0;
+    return i;
+}
+
+static DWORD scroll_seen_tick(HWND root)
+{
+    int i = scroll_slot(root, FALSE);
+
+    return i >= 0 ? g_scroll_seen[i].tick : 0;
 }
 
 static void scroll_seen_set(HWND root, DWORD tick)
 {
-    int i;
+    g_scroll_seen[scroll_slot(root, TRUE)].tick = tick;
+}
 
-    for (i = 0; i < SCROLL_SEEN_SLOTS; ++i) {
-        if (g_scroll_seen[i].root == root) {
-            g_scroll_seen[i].tick = tick;
-            return;
-        }
-    }
-    g_scroll_seen[g_scroll_seen_next].root = root;
-    g_scroll_seen[g_scroll_seen_next].tick = tick;
-    g_scroll_seen_next = (g_scroll_seen_next + 1) % SCROLL_SEEN_SLOTS;
+// When a wait for root last ended: its tree had the page as of then.
+static DWORD fresh_tick(HWND root)
+{
+    int i = scroll_slot(root, FALSE);
+
+    return i >= 0 ? g_scroll_seen[i].fresh : 0;
+}
+
+static void fresh_set(HWND root, DWORD tick)
+{
+    g_scroll_seen[scroll_slot(root, TRUE)].fresh = tick;
 }
 
 // Out of context, so it runs on this (UI) thread between messages. Other
 // apps' scroll bars report scrolls too; only a window being waited for, or
-// asked about later (scroll_seen_tick), matters.
+// asked about later (scroll_seen_tick), matters. A scroll of the Chromium
+// window the hints would label starts the wait for it right away
+// (settle_poke; one caused by our own action belongs to that action's wait,
+// settle_window), so the page is in before the hotkey comes.
 static void CALLBACK scroll_event_proc(HWINEVENTHOOK hook, DWORD event,
                                        HWND hwnd, LONG id_object,
                                        LONG id_child, DWORD thread,
@@ -2217,6 +2253,9 @@ static void CALLBACK scroll_event_proc(HWINEVENTHOOK hook, DWORD event,
     scroll_seen_set(root, now ? now : 1);
     if (g_settle_on && root == g_settle_root)
         settle_step(TRUE);
+    else if (g_cfg.scan_flush && g_cfg.scan_settle > 0 &&
+             root == settle_root())
+        settle_poke();
 }
 
 // The Chromium window a scan now would label first: the active one, else the
@@ -2246,7 +2285,9 @@ static HWND settle_root(void)
 // waits while the page catches up: after our own scroll, click or back /
 // forward (input_since_page_action), and after any scroll the window itself
 // reported (a mouse wheel, a touchpad, a key, the page's own script), for at
-// most scan_settle. Returns the window, NULL when the scan may start now.
+// most scan_settle. An action or report that a wait already covered (it
+// ended after them: fresh_tick) needs none. Returns the window, NULL when
+// the scan may start now.
 static HWND settle_window(DWORD *acted, int *kind, POINT *act_pt,
                           DWORD *seen)
 {
@@ -2254,6 +2295,7 @@ static HWND settle_window(DWORD *acted, int *kind, POINT *act_pt,
     DWORD now = GetTickCount();
     DWORD since;
     DWORD last;
+    DWORD fresh;
 
     *acted = 0;
     *kind = 0;
@@ -2262,10 +2304,16 @@ static HWND settle_window(DWORD *acted, int *kind, POINT *act_pt,
     if (g_cfg.scan_settle <= 0) return NULL;
     root = settle_root();
     if (!root) return NULL;
+    fresh = fresh_tick(root);
     since = input_since_page_action(kind, act_pt);
-    if (since < (DWORD)g_cfg.scan_settle)
-        *acted = (now - since) ? now - since : 1;
+    if (since < (DWORD)g_cfg.scan_settle) {
+        DWORD at = (now - since) ? now - since : 1;
+        if (!(fresh && tick_reached(fresh, at)))
+            *acted = at;
+    }
     last = g_cfg.scan_flush ? scroll_seen_tick(root) : 0;
+    if (last && fresh && tick_reached(fresh, last))
+        last = 0;
     // Reports that came while our own scroll or click was recent are its
     // own, and its wait covers them. A page that keeps scrolling by itself
     // is left alone for a while.
@@ -2295,21 +2343,45 @@ static void settle_timer(DWORD ms)
         SetTimer(g_hint_wnd, TIMER_SETTLE_ID, ms ? (UINT)ms : 1, NULL);
 }
 
+static const WCHAR *settle_cause(void)
+{
+    if (!g_settle_acted) return L"a scroll it reported";
+    if (g_settle_kind == PAGE_SCROLL) return L"our scroll";
+    if (g_settle_kind == PAGE_NAV) return L"back or forward";
+    return L"our click";
+}
+
 static void settle_done(const WCHAR *why)
 {
-    // Waiting only on the page's own scrolling, and it never stopped.
+    DWORD now = GetTickCount();
+
+    // Waiting only on the page's own scrolling, and it never stopped. The
+    // hints were waiting: leave the page alone for a while. Ahead of the
+    // hotkey: only no new wait of that kind for a while (a live chat would
+    // be flushed without end); the hotkey still gets its wait.
     if (!g_settle_acted && !g_settle_fallback &&
-        tick_reached(GetTickCount(), g_settle_deadline)) {
-        g_restless_root = g_settle_root;
-        g_restless_until = GetTickCount() + SETTLE_RESTLESS_MS;
+        tick_reached(now, g_settle_deadline)) {
+        if (g_settle_wait) {
+            g_restless_root = g_settle_root;
+            g_restless_until = now + SETTLE_RESTLESS_MS;
+        } else {
+            g_backoff_root = g_settle_root;
+            g_backoff_until = now + SETTLE_BACKOFF_MS;
+        }
     }
     g_settle_on = FALSE;
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_SETTLE_ID);
-    app_log(L"hint: the page caught up after %lu ms (%ls; %d flushes, "
-            L"%d moved)", (unsigned long)(GetTickCount() - g_settle_t0),
-            why, g_settle_flushes, g_settle_moves);
-    if (g_open && g_scanning && g_mode == HINT_MODE_ELEMENTS)
-        begin_scan();
+    // What happened before now is in the tree: the next open scans at once.
+    fresh_set(g_settle_root, now ? now : 1);
+    app_log(L"hint: the page caught up %lu ms after %ls (%ls; %d flushes, "
+            L"%d moved%ls)", (unsigned long)(now - g_settle_t0),
+            settle_cause(), why, g_settle_flushes, g_settle_moves,
+            g_settle_wait ? L"" : L", ahead of the hotkey");
+    if (g_settle_wait) {
+        g_settle_wait = FALSE;
+        if (g_open && g_scanning && g_mode == HINT_MODE_ELEMENTS)
+            begin_scan();
+    }
 }
 
 static void settle_flush(DWORD now)
@@ -2323,17 +2395,16 @@ static void settle_flush(DWORD now)
 // holds back (uia_flush) and answers with a scroll report when that moved
 // the page. A flush that comes back with nothing new means the tree is
 // current. report: Chromium reported a scroll of g_settle_root; otherwise
-// TIMER_SETTLE_ID.
+// TIMER_SETTLE_ID. Runs with the hints closed too.
+static BOOL settle_rebase(void);
+
 static void settle_step(BOOL report)
 {
     DWORD now = GetTickCount();
     DWORD left, seen, at;
 
     if (!g_settle_on) return;
-    if (!g_open || !g_scanning || g_mode != HINT_MODE_ELEMENTS) {
-        g_settle_on = FALSE;
-        return;
-    }
+    if (!report) settle_rebase();
     if (tick_reached(now, g_settle_deadline)) {
         settle_done(L"time limit");
         return;
@@ -2393,18 +2464,16 @@ static void settle_step(BOOL report)
     settle_timer(left);
 }
 
-// Starts the wait before the first scan when the page has not caught up.
-// FALSE when the scan may start now. The status text shows meanwhile, and
-// typed keys queue as during any scan.
-static BOOL settle_begin(void)
+// Sets the wait up for root: our action at acted (kind, where it happened),
+// or else a scroll the browser reported at seen. The shared start of an
+// open's wait (settle_begin), a wait ahead of the hotkey (settle_poke) and
+// a wait moved to a newer action (settle_rebase).
+static void settle_arm(HWND root, DWORD acted, int kind, const POINT *act_pt,
+                       DWORD seen)
 {
-    DWORD acted, seen, now = GetTickCount();
-    DWORD deadline = 0;
-    int kind;
-    POINT act_pt;
-    HWND root = settle_window(&acted, &kind, &act_pt, &seen);
+    DWORD now = GetTickCount();
+    DWORD deadline;
 
-    if (!root || !g_hint_wnd) return FALSE;
     // Our own action keeps its old deadline; a scroll only the browser
     // reported is waited for briefly.
     if (acted) {
@@ -2417,7 +2486,7 @@ static BOOL settle_begin(void)
 
     g_settle_on = TRUE;
     g_settle_root = root;
-    g_settle_t0 = now;
+    g_settle_t0 = acted ? acted : seen;
     g_settle_deadline = deadline;
     g_settle_flush = 0;
     g_settle_flushes = 0;
@@ -2425,6 +2494,7 @@ static BOOL settle_begin(void)
     g_settle_due = FALSE;
     g_settle_fallback = FALSE;
     g_settle_acted = acted;
+    g_settle_kind = kind;
     if (acted) {
         g_settle_quiet = acted + SETTLE_QUIET_MS;
         g_settle_floor = kind == PAGE_SCROLL ? g_settle_quiet
@@ -2441,12 +2511,82 @@ static BOOL settle_begin(void)
     // loading page sends no positions), or something covers the page so no
     // flush can reach it: wait out the deadline.
     if (!g_cfg.scan_flush || (acted && kind == PAGE_NAV) ||
-        !uia_page_point(root, acted ? &act_pt : NULL, &g_settle_pt))
+        !uia_page_point(root, acted ? act_pt : NULL, &g_settle_pt))
         g_settle_fallback = TRUE;
+}
+
+// A newer action of ours in the window being waited for moves the wait to
+// it: floor, deadline and proof start over. TRUE when it did.
+static BOOL settle_rebase(void)
+{
+    DWORD acted, seen;
+    int kind;
+    POINT act_pt;
+    HWND root;
+
+    if (!g_settle_on) return FALSE;
+    root = settle_window(&acted, &kind, &act_pt, &seen);
+    if (root != g_settle_root || !acted) return FALSE;
+    if (g_settle_acted && tick_reached(g_settle_acted, acted)) return FALSE;
+    settle_arm(root, acted, kind, &act_pt, seen);
+    return TRUE;
+}
+
+// Starts the wait before the first scan when the page has not caught up, or
+// joins the one already running for that window (settle_poke). FALSE when
+// the scan may start now. The status text shows meanwhile, and typed keys
+// queue as during any scan.
+static BOOL settle_begin(void)
+{
+    DWORD acted, seen, now = GetTickCount();
+    int kind;
+    POINT act_pt;
+    HWND root = settle_window(&acted, &kind, &act_pt, &seen);
+
+    if (!root || !g_hint_wnd) return FALSE;
+    g_settle_wait = TRUE;
+    if (g_settle_on && g_settle_root == root) {
+        app_log(L"hint: waiting for the page to catch up (asked %lu ms "
+                L"ago, up to %lu ms more)",
+                (unsigned long)(now - g_settle_t0),
+                (unsigned long)(tick_reached(now, g_settle_deadline)
+                                    ? 0 : g_settle_deadline - now));
+        if (settle_rebase())
+            settle_step(FALSE);
+        return TRUE;
+    }
+    settle_arm(root, acted, kind, &act_pt, seen);
     app_log(L"hint: waiting up to %lu ms for the page to catch up",
-            (unsigned long)(deadline - now));
+            (unsigned long)(g_settle_deadline - now));
     settle_step(FALSE);
     return TRUE;
+}
+
+// Starts the wait ahead of the hotkey: after our own scroll, click or back /
+// forward (hint_page_acted) and after a scroll the browser reported
+// (scroll_event_proc). A running wait for the same window moves to the
+// newer action instead. Pressing the hotkey after it ended scans at once
+// (fresh_tick); pressing it earlier joins it (settle_begin).
+static void settle_poke(void)
+{
+    DWORD acted, seen;
+    int kind;
+    POINT act_pt;
+    HWND root;
+
+    if (!g_hint_wnd || g_cfg.scan_settle <= 0) return;
+    root = settle_window(&acted, &kind, &act_pt, &seen);
+    if (!root) return;
+    if (g_settle_on && g_settle_root == root) {
+        if (settle_rebase())
+            settle_step(FALSE);
+        return;
+    }
+    if (!acted && root == g_backoff_root &&
+        !tick_reached(GetTickCount(), g_backoff_until))
+        return;
+    settle_arm(root, acted, kind, &act_pt, seen);
+    settle_step(FALSE);
 }
 
 // Keeps the labels current while the overlay stays open, but only after the
@@ -2514,7 +2654,7 @@ static BOOL adopt_prescan(void)
     }
     g_scanning = TRUE;
     g_scan_wait_first = FALSE;
-    g_settle_on = FALSE;
+    g_settle_wait = FALSE;
     g_scan_t0 = g_pre_t0;
     g_scan_browser = active_browser_here();
     g_scan_list = g_pre_list;   // ownership moves
@@ -2559,10 +2699,8 @@ static void start_scan(BOOL repaint)
     discard_prescan();
     reset_input();
     free_elements();
-    if (g_hint_wnd) {
+    if (g_hint_wnd)
         KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
-        KillTimer(g_hint_wnd, TIMER_SETTLE_ID);
-    }
     g_refresh_on = FALSE;
     g_scan_retry = FALSE;
     if (g_scan_list) {
@@ -2571,9 +2709,9 @@ static void start_scan(BOOL repaint)
     }
     g_scanning = TRUE;
     g_scan_wait_first = FALSE;
-    g_settle_on = FALSE;
+    g_settle_wait = FALSE;
     // While the browser catches up, the status text shows and typed keys
-    // queue as during any scan; settle_step starts the scan.
+    // queue as during any scan; settle_done starts the scan.
     ++g_scan_id;            // an older scan's posts no longer count
     uia_cancel();
     g_scan_t0 = GetTickCount();
@@ -2966,6 +3104,7 @@ void hint_shutdown(void)
         g_scroll_hook = NULL;
     }
     g_settle_on = FALSE;
+    g_settle_wait = FALSE;
     if (g_hint_wnd) {
         if (g_open) hint_close();
         DestroyWindow(g_hint_wnd);
@@ -3106,16 +3245,29 @@ void hint_prepare(BOOL on)
 
     discard_prescan();
     // Right after a scroll or click a browser still reports the old page:
-    // hint_open starts the scan once it has caught up (settle_begin).
+    // hint_open starts the scan once it has caught up (settle_begin), and
+    // that wait is normally running already (settle_poke); make sure.
     // log = 2 skips the early scan too: every Alt press would log one, and
     // the open's own scan is the one to report.
-    if (settle_needed() || g_cfg.log >= 2)
+    if (settle_needed()) {
+        settle_poke();
+        return;
+    }
+    if (g_cfg.log >= 2)
         return;
     ++g_scan_id;
     g_pre_id = g_scan_id;
     g_pre_mon = cursor_monitor();
     g_pre_t0 = GetTickCount();
     uia_scan(g_pre_mon, g_pre_id, FALSE);
+}
+
+// This program scrolled, clicked or went back or forward (WM_APP_PAGE_ACTED,
+// at most once per burst): a Chromium page needs time to report the result,
+// so the wait for it starts now rather than when the hotkey comes.
+void hint_page_acted(void)
+{
+    settle_poke();
 }
 
 void hint_close(void)

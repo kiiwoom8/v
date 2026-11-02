@@ -130,17 +130,23 @@ their elements instead and disappear when an element goes away (when labels
 run out one may grow a letter, and a label whose element went away is never
 reused). A scan that finds nothing keeps trying for up to 3 s, then closes
 the hints. Chrome, Edge and apps built on them tell UI Automation about moved
-and new elements up to half a second late, so right after vim mouse scrolled
-or clicked there, or the browser reported a scroll of its own (mouse wheel,
-touchpad, keys), the hints first ask the browser to send its changes at once
-and scan as soon as they are in: about a third of a second after a scroll
-instead of two thirds, and well under a tenth when you press the hotkey
-later (`scan_flush`; never longer than `scan_settle`, default 650 ms; after
-back / forward the hints still wait it out, since a loading page reports
-nothing). The labels
+and new elements up to half a second late, so when vim mouse scrolls or
+clicks there, or the browser reports a scroll of its own (mouse wheel,
+touchpad, keys), vim mouse asks the browser right then to send its changes
+and waits for them: about a third of a second after a scroll. That starts
+with the scroll or click itself, not with the hotkey, so a hotkey pressed
+after it is over finds the page in and shows the labels at once, and one
+pressed sooner waits for the rest of it (`scan_flush`; never longer than
+`scan_settle`, default 650 ms, from the scroll or click; after back /
+forward vim mouse waits it out, since a loading page reports nothing). The
+labels
 then sit where things are now, and a panel the click opened has its own. In
 a browser the labels show as soon as the browser has answered; other windows
-on the monitor get theirs a moment later (`browser_first`). A menu, dialog or embedded frame drawn over a web page
+on the monitor get theirs a moment later (`browser_first`). In a browser an
+element that only says it can take the keyboard focus gets a label too (a
+`div` with `tabindex` whose click handler sits on an ancestor, as React
+attaches them; a range slider), unless it is text, a scroll area, lies
+outside the page or covers over a quarter of it (`scan_focusable`). A menu, dialog or embedded frame drawn over a web page
 (Google's account menu, a Zendesk menu or modal) gets its own labels; page
 links partly under it get their label and click on the part that shows, and
 links entirely under a menu or dialog get none. Chrome sometimes reports
@@ -316,13 +322,20 @@ ones:
   included. Default 1. Browsers are always searched in one go: they answer
   one question at a time),
   `scan_settle` (0-2000 ms, default 650: after vim mouse scrolled, clicked or
-  went back or forward in Chrome, Edge or an app built on them, the hints
-  wait at most this long from then for the page to catch up, because those
-  report the page's new positions up to half a second late. 0 = scan at
-  once), `scan_flush` (1 = meanwhile ask the browser to send its changes at
-  once and scan as soon as they are in, and do the same after scrolls the
-  browser reports itself, such as the mouse wheel, default; 0 = wait out
-  `scan_settle` after vim mouse's own scrolls and clicks only)
+  went back or forward in Chrome, Edge or an app built on them, it waits at
+  most this long from then for the page to catch up, because those report
+  the page's new positions up to half a second late; hints opened before
+  the wait is over wait for it, hints opened later scan at once. 0 = never
+  wait), `scan_flush` (1 = during that wait ask the browser to send its
+  changes at once and end it as soon as they are in, and wait like that
+  after scrolls the browser reports itself, such as the mouse wheel,
+  default; 0 = wait out `scan_settle` after vim mouse's own scrolls and
+  clicks only), `scan_focusable` (1 = in a browser, also label elements
+  that only say they can take the keyboard focus, such as a `div` with
+  `tabindex` whose click handler sits on an ancestor or a range slider,
+  unless they are text, scroll areas, lie outside the page or cover over a
+  quarter of it, default; 0 = only elements with a clickable control type
+  or pattern)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
@@ -394,12 +407,21 @@ when GitHub cannot be reached.
 - **Labels sit where things were a moment ago, or a panel that just opened
   has none.** Chrome, Edge and apps built on them report moved and new
   elements up to half a second late. After vim mouse's own scrolls and clicks,
-  and after scrolls the browser reports (mouse wheel, touchpad, keys), the
-  hints ask the browser to catch up first (`scan_flush`, `scan_settle`).
+  and after scrolls the browser reports (mouse wheel, touchpad, keys), vim
+  mouse asks the browser to catch up right away, and hints opened before
+  that is over wait for it (`scan_flush`, `scan_settle`).
   After clicking with the mouse, wait a moment before opening the hints, or
   press the hint hotkey again to relabel. If labels land in the wrong place
   right after scrolling, set `scan_flush = 0` and tell us (with `log = 1`,
-  `vim.log` says how each wait ended).
+  `vim.log` says how each wait ended and whether it ended ahead of the
+  hotkey).
+- **The hints take long to appear in a browser right after scrolling.** With
+  `log = 1`, `vim.log` says how long each wait for the page took and how it
+  ended: "stopped", "reported" or "asked" is the browser answering (about a
+  third of a second after a scroll, usually before the hotkey), "time
+  limit" means it did not (`scan_settle`, 650 ms). "N targets after M ms"
+  is the search itself, which runs in the browser: a long, busy page takes
+  longer. Send those lines with a report.
 - **A panel, menu or page element gets no label.** Set `log = 2`, open the
   hints where the label is missing, press `Esc`, and look in `vim.log` for
   the lines starting with `scan:`. Each element of the active window is
@@ -411,8 +433,14 @@ when GitHub cannot be reached.
   window is on top of it; the window lines above say which), `under a
   dialog or menu`, `container`, `too small` and so on (`kept, moved off an
   overlay` is a page element partly under a panel, clicked on the part that
-  shows). An element that is not listed at all is not
-  exposed by the app. Set `log` back to 0 or 1 afterwards; the lines are
+  shows; `focusable only: ...` is an element that only says it can take the
+  keyboard focus and was judged not worth a click, see `scan_focusable`).
+  An element that is not listed at all is not
+  exposed by the app: in a web page, a plain `div` or `span` made clickable
+  by a click handler on an ancestor alone, with no role, `tabindex` or
+  handler of its own (often only `cursor: pointer` shows it), is invisible
+  to UI Automation and to every program using it; press `;` for the grid
+  there. Set `log` back to 0 or 1 afterwards; the lines are
   many.
 - **A web page element gets no label.** With Node and Chrome installed,
   `mingw32-make check` builds `tools\hint_check.exe` and

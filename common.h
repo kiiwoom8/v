@@ -63,6 +63,8 @@
 #define WM_APP_HINT_PREPARE     (WM_APP + 13) // wParam 1 = the hint hotkey's modifiers went down, start scanning early;
                                               // 0 = the hotkey will not follow; -> hint_prepare
 #define WM_APP_UPDATE_DONE      (WM_APP + 14) // wParam = result from the update worker; -> update_on_done
+#define WM_APP_PAGE_ACTED       (WM_APP + 15) // wParam = PAGE_* kind: this program scrolled, clicked or went
+                                              // back / forward (once per burst); -> hint_page_acted
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -181,13 +183,21 @@ typedef struct {
                                // long from then for the page to catch up: Chromium tells UI
                                // Automation about moved and new elements up to 500 ms late,
                                // so an earlier scan labels old positions (0-2000 ms, default
-                               // 650; 0 = off). See scan_flush.
+                               // 650; 0 = off). The wait starts with the action itself, not
+                               // with the hotkey (hint_page_acted), so a hotkey pressed after
+                               // it ended scans at once. See scan_flush.
     int   scan_flush;          // 1 = during that wait, ask the browser to send its changes now
-                               // and scan as soon as they are in (about 330 ms after a scroll
-                               // instead of 650; back / forward still wait it out), and wait
-                               // after scrolls the browser reports itself (mouse wheel,
-                               // touchpad, keys) too, up to 300 ms; default 1.
+                               // and end it as soon as they are in (about 330 ms after a
+                               // scroll instead of 650; back / forward still wait it out), and
+                               // wait like that after scrolls the browser reports itself
+                               // (mouse wheel, touchpad, keys) too, up to 300 ms; default 1.
                                // 0 = wait out scan_settle after our own actions only.
+    int   scan_focusable;      // 1 = in a browser window, elements that UI Automation calls
+                               // keyboard-focusable but that have no clickable control type
+                               // or pattern (a div with tabindex whose click handler sits on
+                               // an ancestor, a range input) get labels too, unless they are
+                               // text, scroll, cover over a quarter of the page or lie
+                               // outside it; default 1. 0 = only control types and patterns.
 } Config;
 
 extern Config g_cfg;
@@ -267,7 +277,8 @@ void input_type_text(const WCHAR *text);
 // forward (INFINITE if it never did); kind gets PAGE_SCROLL, PAGE_CLICK or
 // PAGE_NAV (back / forward) and pt where it happened, physical screen px
 // (the cursor for PAGE_NAV; either may be NULL). The hints wait for browsers
-// to catch up.
+// to catch up; each action also posts WM_APP_PAGE_ACTED (once per burst) so
+// that wait starts right away.
 enum { PAGE_SCROLL = 1, PAGE_CLICK = 2, PAGE_NAV = 3 };
 DWORD input_since_page_action(int *kind, POINT *pt);
 
@@ -289,6 +300,7 @@ BOOL hint_is_open(void);
 void hint_on_key(UINT vk, UINT mods);
 void hint_on_elements(struct ClickList *list);  // WM_APP_ELEMENTS; always frees list
 void hint_hotkey_again(void);           // reload: rescan the elements, or reset the grid
+void hint_page_acted(void);             // WM_APP_PAGE_ACTED: start waiting for the page now
 
 // ---------------------------------------------------------------------------
 // Clickable elements (uia.c). UI Automation runs on its own MTA worker thread;
