@@ -30,27 +30,29 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 
 | File | Lines | Responsibility | Names worth knowing |
 |---|---|---|---|
-| `common.h` | 447 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
-| `main.c` | 566 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
-| `config.c` | 2208 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey` |
+| `common.h` | 480 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
+| `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
+| `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3535 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `input_thread_proc` |
 | `hint.c` | 3484 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_done`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view` |
 | `uia.c` | 6194 | UI Automation through hand-declared COM vtables. Four MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_target`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
-| `tray.c` | 1389 | Tray icon and menu, balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
+| `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
+| `shutdown.c` | 1066 | Scheduled shutdown (tray "Schedule shutdown", `shutdown_at`): a one-off from the tray and the next `shutdown_at` day, whichever is first, on wall-clock UTC; one thread timer; the countdown window (Cancel, 10 more minutes, Shut down now); the "At a time or after..." window; `ExitWindowsEx`. Skips a shutdown the computer slept through. | `sd_check`, `next_due`, `clock_next`, `daily_consume`, `schedule_once`, `power_off`, `missed`, `countdown_open`, `parse_when`, `shutdown_next` |
 | `version.h` | 12 | The one place to bump the version (numbers and both strings). | `VIM_VERSION_*` |
 | `vim.rc`, `vim.manifest`, `vim.ico` | | Resources: icon, manifest (Common Controls v6, per-monitor DPI, supported OS), version info. `vim.ico` is generated by `tools/make_icon.c` and committed. | |
 | `tools/uia_probe.c` | 320 | Console tool: lists what the scan finds on the monitor under the cursor (`-v` for every target, `-d` for every element of the active window with what became of it, as `log = 2`; `-n` runs, `-w` seconds before each, `-o` file). Read-only. `make probe`. | |
 | `tools/hint_check.c`, `tools/hint_check.mjs` | 1941, 804 | Compares Chrome's DOM clickables (over CDP) with the real scan and reports misses with the drop reason. `make check`, then `node tools/hint_check.mjs [url ...]`. | `g_scan_debug` hook in `uia.c` |
 | `tools/ax_sim/` | 364 | Linux check of the element filters: Chromium's real tree for a mock page (headful, AT-SPI) run through `uia.c`'s own `filter_containers`, `cover_overlays`, `rescue_pick` and `target_add`, plus a copy of the focusable-only test. `tools/ax_sim/run.sh <page> [steps]`, `OLD=<rev>` diffs against an older `uia.c`, `INPUT=<file>` replays a saved input (one written from a Windows scan: `pages/google_menu_win.txt`). | `run.sh`, `mk.py`, `conv.py`, `pages/` |
+| `tools/shutdown_test.c` | 370 | Console check of `shutdown.c` with a fake clock and a fake `ExitWindowsEx` (never shuts down): typed times, `vim.ini` values, daylight saving, sleep, late wake, the one-off against `shutdown_at`. `make shutdown-test`; runs on Windows or under Wine. | |
 | `tools/make_icon.c` | 512 | Draws `vim.ico` (large sizes stored as PNG). `make icon`. | |
 
 ### Threads and how modules talk
 
 | Thread | Owner | Does |
 |---|---|---|
-| Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here, and so do Chromium's scroll reports (`EVENT_SYSTEM_SCROLLINGSTART`/`END`, an out-of-context WinEvent hook in `hint.c`). |
+| Main / UI | `main.c` | Message loop; the overlay (`hint.c`), tray and help (`tray.c`), editor (`snippet.c`), the scheduled shutdown's timer and windows (`shutdown.c`). Everything that touches windows we own. Every `WM_APP_*` message in `common.h` lands here, and so do Chromium's scroll reports (`EVENT_SYSTEM_SCROLLINGSTART`/`END`, an out-of-context WinEvent hook in `hint.c`). |
 | Input (highest priority) | `input.c` `input_thread_proc` | Installs the low-level hook (`kb_proc`), WinEvent focus hooks, raw keyboard input (hook-loss check) and the power/session window; owns the mode indicator window. |
 | Movement | `input.c` `movement_thread` | Pointer movement, scroll streams, glides. Ticks on a high-resolution waitable timer (1 ms). Calls `uia_scroll_target` and `uia_scroll_end`. |
 | UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel (a classic window's parts too: one queue of work items per scan), merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
@@ -78,8 +80,9 @@ Invariants stated in `common.h` and enforced by history:
   there can deadlock.
 - The hook is the only keyboard dispatcher. The old `RegisterHotKey` approach
   (`0964d95`) is gone; every hotkey is matched inside `kb_proc`.
-- Shutdown order in `main_wnd_proc` `WM_DESTROY`: watcher, editor, hints,
-  **`input_stop` before `uia_stop`** (`4dda943`), then tray.
+- Shutdown order in `main_wnd_proc` `WM_DESTROY`: watcher, editor, scheduled
+  shutdown (`shutdown_stop`), hints, **`input_stop` before `uia_stop`**
+  (`4dda943`), then tray.
 
 ## 3. Timeline by phase
 
@@ -287,6 +290,24 @@ Invariants stated in `common.h` and enforced by history:
   also fetch keyboard-focusable elements (`scan_focusable`) with filters
   against what else Blink calls focusable, checked on Linux with
   `tools/ax_sim` (`focus.html`).
+
+### Phase 8: scheduled shutdown (2026-11-02)
+
+- Asked to "implement scheduling shut off computer", a new module,
+  `shutdown.c`. The tray menu's **Schedule shutdown** turns the computer off
+  in 15 or 30 minutes, 1 or 2 hours, or at a typed time or wait (`23:30`,
+  `90`, `2h`, `1h30`); `shutdown_at` in `vim.ini` does it every day, and a
+  cancel from the tray skips one day. A countdown window
+  (`shutdown_warning`, 60 s) offers Cancel, 10 more minutes and Shut down
+  now, then `ExitWindowsEx` powers off (`shutdown_force` for apps with
+  unsaved work). The help window gets no row: it lists keys, and this has
+  none. The rules it keeps are in section 5. There was no Windows
+  machine, so the schedule got the first automated test here,
+  `tools/shutdown_test.c` (a fake clock: sleep, late wake, daylight saving,
+  the one-off against `shutdown_at`), and the real `vim.exe` was driven
+  under Wine and Xvfb through its tray commands: the dialog with good and
+  bad input, the countdown ticking, `Esc`, 10 more minutes, Shut down now
+  reaching `ExitWindowsEx`, and both states of the submenu.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -893,6 +914,28 @@ last ten are all `worktree-agent-*` into `element-hints`.
   deletes `<exe>.old`, retrying for 2 s while the old image is unmapped.
   Never do the download on the UI thread, and validate the file (`MZ`, `PE`,
   Content-Length) before it can replace a working exe.
+- **A scheduled shutdown must never surprise.** `shutdown.c` keeps times on
+  the wall clock in UTC (FILETIME units), never in ticks: a timer does not
+  run while the computer sleeps, and a shutdown it slept through by more
+  than 5 minutes (`MISSED_MS`) is skipped with a balloon, not carried out the
+  moment someone wakes the computer. A late wake inside that, or a sleep
+  with the countdown on screen (a check more than `GAP_MS` after its tick),
+  shows the countdown in full again. The countdown takes the focus so `Esc`
+  can cancel it, so whatever is typed into it by surprise must be harmless:
+  no mnemonics, Cancel is the default button, and "Shut down now" is neither
+  a tab stop nor in the others' group, so it can only be clicked. The
+  shutdown is used up (one-off cleared, `shutdown_at` day marked done in
+  `g_daily_done`, a local day number) before `ExitWindowsEx`, so an app
+  that stops it is not asked again a second later; the other kind due
+  within the next minute goes with it. `shutdown_at` is turned into UTC
+  for its own date (`TzSpecificLocalTimeToSystemTime`), so daylight saving
+  does not move it, and `WM_TIMECHANGE` recomputes it for a new time zone.
+  A one-off lives in memory only; quitting or updating drops it.
+- **Turning the computer off needs the shutdown privilege enabled first.**
+  `power_off` enables `SeShutdownPrivilege` on the process token, then
+  `ExitWindowsEx(EWX_SHUTDOWN | EWX_POWEROFF | EWX_FORCEIFHUNG)` (a full
+  shutdown, like `shutdown /s`, not the Start menu's fast-startup one).
+  `EWX_FORCE` only with `shutdown_force`, since it loses unsaved work.
 - **Shut down users before providers.** `4dda943`: `input_stop` must come
   before `uia_stop`. Tearing down the scroll cache first could close the
   event the movement thread waits on and delete its critical section.
@@ -1036,6 +1079,15 @@ last ten are all `worktree-agent-*` into `element-hints`.
   `mode=ogs` (and `late=` for a later height) does the same, but Chromium
   on Linux keeps its clip right there, so the stale box is not reproduced
   on Linux.
+- **Scheduled shutdown** (`shutdown.c`) was checked with
+  `tools/shutdown_test.c` and by driving `vim.exe` under Wine, not on
+  Windows. To check: "In 15 minutes" from the tray, then the countdown a
+  minute before, Cancel, 10 more minutes and `Esc` there, and one real
+  shutdown; an app with unsaved work (Notepad) holding it up with
+  `shutdown_force = 0` and closed with 1; sleeping through a one-off
+  (expect "Shutdown skipped" on waking); `shutdown_at` a few minutes ahead,
+  then cancelling that day from the tray. `log = 1` writes a "shutdown:"
+  line for each step.
 - **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet.
 
 ## 8. How to change things efficiently
@@ -1117,6 +1169,29 @@ section 5 after any targeting change.
 `tray_on_command`. State shown in the menu or icon comes from `tray_update`
 (`WM_APP_STATE_CHANGED`).
 
+A submenu works the same way: `append_shutdown_menu` builds one with
+`CreatePopupMenu` and appends it with `MF_POPUP`; its items' `IDM_*` ids
+reach `tray_on_command` like any other.
+
+### Scheduled shutdown
+
+`shutdown.c`: the state is `g_once_due` (tray one-off) and `g_daily_due`
+(next `shutdown_at`), and `sd_check` is the one place that decides, on
+every timer tick and after every change: skip a missed one, open the
+countdown, or `power_off`. A new way to schedule calls `schedule_once`
+(it replaces earlier `shutdown_at` days and says so). The countdown's
+buttons are in `cd_wnd_proc` and `countdown_open` (keep "Shut down now"
+off the keyboard); the typed time or wait is `parse_when`, clock times
+`parse_clock` in `config.c`. Settings are `shutdown_at`, `shutdown_warning`
+and `shutdown_force` in `[general]` (`process_general`); `main.c` routes
+`WM_TIMECHANGE`, the reload (`shutdown_config_changed`) and the dialog keys
+(`shutdown_dialog_message`). Run `make shutdown-test` and
+`tools/shutdown_test.exe` after a change (on Linux: `wine
+tools/shutdown_test.exe`, with `TZ=America/New_York` for the daylight
+saving case); add a scenario there for new behaviour. It includes
+`shutdown.c` with `GetSystemTimeAsFileTime` and `ExitWindowsEx` defined to
+fakes, so it reaches the statics and never shuts down.
+
 ### Self-update
 
 `update.c`: the download URL (`UPDATE_URL`, the rolling `latest` release that
@@ -1137,7 +1212,8 @@ Version: `version.h` only (numbers and both strings). Icon: edit
 ### Build and check
 
 - Local (Windows): `mingw32-make`, or double-click `build.bat` (finds MinGW in
-  `C:\MinGW` or `C:\msys64\mingw32`). Tools: `mingw32-make probe check icon`.
+  `C:\MinGW` or `C:\msys64\mingw32`). Tools: `mingw32-make probe check icon
+  shutdown-test`.
 - Linux cross-compile, the same as CI (needs `gcc-mingw-w64-i686`):
   `make CC=i686-w64-mingw32-gcc WINDRES=i686-w64-mingw32-windres CFLAGS="-Wall -Wextra -O2 -std=gnu11 -Werror"`,
   then the same with `probe check`. Also try `x86_64-w64-mingw32-*`, since CI
@@ -1149,9 +1225,10 @@ Version: `version.h` only (numbers and both strings). Icon: edit
   at-spi2-core, python3-gi with gir1.2-atspi-2.0, Node with Playwright and
   gcc.
 - CI: `build.yml` (every branch except `master`, and PRs: 32 and 64 bit,
-  `-Werror`, app and tools); `release.yml` (`master` and `v*`: 32-bit build,
+  `-Werror`, app and tools, `shutdown-test` built but not run); `release.yml` (`master` and `v*`: 32-bit build,
   zip, rolling `latest` release).
-- There are no automated tests. Behaviour is verified on Windows; the logs
+- The only automated test is `tools/shutdown_test.c` (scheduled shutdown;
+  `wine64` runs it on Linux). Other behaviour is verified on Windows; the logs
   (`log = 1`, `log = 2` for a scan) and the tools are the debugging aids,
   and `tools/ax_sim` checks the element filters without Windows.
 

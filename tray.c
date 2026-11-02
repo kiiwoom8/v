@@ -30,6 +30,12 @@ static const WCHAR HELP_TITLE[] =
 #define IDM_TEXT       1009
 #define IDM_LOCK       1010
 #define IDM_UPDATE     1011
+#define IDM_SD_15      1012
+#define IDM_SD_30      1013
+#define IDM_SD_60      1014
+#define IDM_SD_120     1015
+#define IDM_SD_AT      1016
+#define IDM_SD_CANCEL  1017
 
 #define HELP_MAX_ROWS  64
 #define HELP_INF       0x3fffffff
@@ -288,14 +294,19 @@ static void nid_init(NOTIFYICONDATAW *nid, DWORD flags)
 
 static void build_tooltip(WCHAR *dst, int cch)
 {
-    WCHAR hint[64], mode[64], text[256];
+    WCHAR hint[64], mode[64], at[96], off[128], text[256];
 
     format_hotkey(&g_cfg.hint_hotkey, hint, 64);
     format_key(g_cfg.mouse_mode_key, mode, 64);
-    _snwprintf(text, 255, L"vim mouse - %s hints, %s mouse mode%s",
+    off[0] = L'\0';
+    if (shutdown_next(at, 96, NULL, 0)) {
+        _snwprintf(off, 127, L"\nShutdown at %s", at);
+        off[127] = L'\0';
+    }
+    _snwprintf(text, 255, L"vim mouse - %s hints, %s mouse mode%s%s",
                hint, mode,
                input_is_locked() ? L" (keyboard locked)" :
-               input_is_paused() ? L" (paused)" : L"");
+               input_is_paused() ? L" (paused)" : L"", off);
     text[255] = L'\0';
     copy_wstr(dst, cch, text);
 }
@@ -609,6 +620,38 @@ static void append_item(HMENU menu, UINT id, const WCHAR *label,
     AppendMenuW(menu, flags, id, text);
 }
 
+// "Schedule shutdown" submenu; the item itself names a pending shutdown.
+static void append_shutdown_menu(HMENU menu)
+{
+    HMENU sub = CreatePopupMenu();
+    WCHAR at[96], left[48], text[192];
+    BOOL  pending;
+
+    if (!sub)
+        return;
+    pending = shutdown_next(at, 96, left, 48);
+    append_item(sub, IDM_SD_15, L"In 15 minutes", NULL, FALSE);
+    append_item(sub, IDM_SD_30, L"In 30 minutes", NULL, FALSE);
+    append_item(sub, IDM_SD_60, L"In 1 hour", NULL, FALSE);
+    append_item(sub, IDM_SD_120, L"In 2 hours", NULL, FALSE);
+    append_item(sub, IDM_SD_AT, L"At a time or after...", NULL, FALSE);
+    AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
+    if (pending) {
+        _snwprintf(text, 191, L"Cancel shutdown at %s (%s)", at, left);
+        text[191] = L'\0';
+        append_item(sub, IDM_SD_CANCEL, text, NULL, FALSE);
+        _snwprintf(text, 191, L"Shutdown at %s", at);
+        text[191] = L'\0';
+    } else {
+        append_item(sub, IDM_SD_CANCEL, L"Cancel scheduled shutdown", NULL,
+                    FALSE);
+        EnableMenuItem(sub, IDM_SD_CANCEL, MF_BYCOMMAND | MF_GRAYED);
+        copy_wstr(text, 192, L"Schedule shutdown");
+    }
+    AppendMenuW(menu, MF_STRING | MF_POPUP | (pending ? MF_CHECKED : 0),
+                (UINT_PTR)sub, text);
+}
+
 static void show_menu(void)
 {
     HMENU  menu;
@@ -655,6 +698,7 @@ static void show_menu(void)
     if (update_running())
         EnableMenuItem(menu, IDM_UPDATE, MF_BYCOMMAND | MF_GRAYED);
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    append_shutdown_menu(menu);
     append_item(menu, IDM_QUIT, L"Quit", NULL, FALSE);
 
     GetCursorPos(&pt);
@@ -708,6 +752,24 @@ BOOL tray_on_command(WORD id)
         return TRUE;
     case IDM_UPDATE:
         update_start();
+        return TRUE;
+    case IDM_SD_15:
+        shutdown_in(15);
+        return TRUE;
+    case IDM_SD_30:
+        shutdown_in(30);
+        return TRUE;
+    case IDM_SD_60:
+        shutdown_in(60);
+        return TRUE;
+    case IDM_SD_120:
+        shutdown_in(120);
+        return TRUE;
+    case IDM_SD_AT:
+        shutdown_dialog_open();
+        return TRUE;
+    case IDM_SD_CANCEL:
+        shutdown_cancel();
         return TRUE;
     case IDM_QUIT:
         app_quit();

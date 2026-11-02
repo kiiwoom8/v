@@ -514,6 +514,37 @@ void format_hotkey(const Hotkey *hk, WCHAR *buf, int cch)
     buf[cch - 1] = 0;
 }
 
+// "23:30", "7:05": a 24-hour clock time, as minutes after midnight.
+BOOL parse_clock(const WCHAR *s, int *minute)
+{
+    int h = 0, m = 0, digits = 0;
+
+    if (s == NULL || minute == NULL)
+        return FALSE;
+    while (is_space(*s))
+        s++;
+    while (*s >= L'0' && *s <= L'9' && digits < 2) {
+        h = h * 10 + (*s - L'0');
+        s++;
+        digits++;
+    }
+    if (digits == 0 || *s != L':')
+        return FALSE;
+    s++;
+    digits = 0;
+    while (*s >= L'0' && *s <= L'9' && digits < 2) {
+        m = m * 10 + (*s - L'0');
+        s++;
+        digits++;
+    }
+    while (is_space(*s))
+        s++;
+    if (digits != 2 || *s != 0 || h > 23 || m > 59)
+        return FALSE;
+    *minute = h * 60 + m;
+    return TRUE;
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 
@@ -532,6 +563,9 @@ void config_set_defaults(Config *c)
     c->capslock_off = 1;
     c->indicator = INDICATOR_CURSOR;
     c->log = 0;
+    c->shutdown_at = -1;
+    c->shutdown_warning = 60;
+    c->shutdown_force = 0;
 
     c->speed = 600.0;
     c->max_speed = 2400.0;
@@ -801,6 +835,21 @@ static void process_general(Config *c, int line, const WCHAR *key,
             warn_add(line, L"bad value \"%ls\" for \"shortcut_method\" "
                      L"(use paste or type)", val);
     }
+    else if (_wcsicmp(key, L"shutdown_at") == 0) {
+        int minute;
+        if (*val == 0 || _wcsicmp(val, L"none") == 0 ||
+            _wcsicmp(val, L"off") == 0)
+            c->shutdown_at = -1;
+        else if (parse_clock(val, &minute))
+            c->shutdown_at = minute;
+        else
+            warn_add(line, L"bad time \"%ls\" for \"shutdown_at\" "
+                     L"(use a 24-hour time such as 23:30, or none)", val);
+    }
+    else if (_wcsicmp(key, L"shutdown_warning") == 0)
+        apply_int_range(&c->shutdown_warning, line, key, val, 0, 600);
+    else if (_wcsicmp(key, L"shutdown_force") == 0)
+        apply_bool(&c->shutdown_force, line, key, val);
     else
         warn_add(line, L"unknown key \"%ls\" in [general]", key);
 }
@@ -1441,6 +1490,21 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; which is restored afterwards; works best in browsers and with an IME)\r\n");
     appendf(buf, cch, L"; or type (key by key, for apps that block pasting).\r\n");
     appendf(buf, cch, L"shortcut_method = %ls\r\n", d.shortcut_paste ? L"paste" : L"type");
+    appendf(buf, cch, L"; Turn the computer off every day at this time (24-hour clock, such\r\n");
+    appendf(buf, cch, L"; as 23:30). The tray menu's \"Schedule shutdown\" can cancel one day's\r\n");
+    appendf(buf, cch, L"; and also shuts down once, in a while or at a time. none = only that.\r\n");
+    if (d.shutdown_at >= 0)
+        appendf(buf, cch, L"shutdown_at = %d:%02d\r\n", d.shutdown_at / 60,
+                d.shutdown_at % 60);
+    else
+        appendf(buf, cch, L"shutdown_at = none\r\n");
+    appendf(buf, cch, L"; Seconds a countdown window shows before a scheduled shutdown, with\r\n");
+    appendf(buf, cch, L"; Cancel and 10 more minutes (0-600; 0 = shut down without one).\r\n");
+    appendf(buf, cch, L"shutdown_warning = %d\r\n", d.shutdown_warning);
+    appendf(buf, cch, L"; 1 = a scheduled shutdown closes apps even when they have unsaved\r\n");
+    appendf(buf, cch, L"; work. 0 = only apps that do not respond; one that asks to save its\r\n");
+    appendf(buf, cch, L"; work can hold the shutdown up until someone answers.\r\n");
+    appendf(buf, cch, L"shutdown_force = %d\r\n", d.shutdown_force ? 1 : 0);
 
     appendf(buf, cch, L"\r\n[mouse]\r\n");
     appendf(buf, cch, L"; Movement speeds in pixels per second. speed is where movement starts\r\n");

@@ -346,6 +346,7 @@ void app_reload_config(BOOL notify)
     g_cfg = tmp;
     snippet_editor_refresh();
     input_config_changed();
+    shutdown_config_changed();
     tray_update();
     app_log(L"config: reloaded");
 
@@ -434,12 +435,16 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_UPDATE_DONE:
         update_on_done(wp);
         return 0;
+    case WM_TIMECHANGE:
+        shutdown_time_changed();
+        return 0;
     case WM_CLOSE:
         app_quit();
         return 0;
     case WM_DESTROY:
         stop_watch_thread();
         snippet_editor_close();
+        shutdown_stop();
         hint_shutdown();
         // Stop input first: its movement thread calls into UIA until joined.
         input_stop();
@@ -537,6 +542,7 @@ int main(void)
         app_log(L"uia: UI Automation unavailable, element hints disabled");
 
     start_watch_thread();
+    shutdown_init();
 
     if (created) {
         WCHAR hint[64], mode[64], text[512];
@@ -557,7 +563,8 @@ int main(void)
     app_log(L"main: started");
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-        if (snippet_editor_dialog_message(&msg))
+        if (snippet_editor_dialog_message(&msg) ||
+            shutdown_dialog_message(&msg))
             continue;
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

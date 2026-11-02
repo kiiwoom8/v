@@ -2,7 +2,7 @@ CC = gcc
 WINDRES ?= windres
 CFLAGS = -Wall -Wextra -O2 -std=gnu11
 LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid -lcomdlg32 -lwininet
-SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c
+SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
 TARGET = vim.exe
@@ -39,11 +39,19 @@ check: tools/hint_check.exe
 tools/hint_check.exe: tools/hint_check.c uia.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/hint_check.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32
 
+# Console check of the scheduled shutdown's timing with a fake clock; it never
+# shuts down. Runs on Windows, or under Wine.
+shutdown-test: tools/shutdown_test.exe
+
+tools/shutdown_test.exe: tools/shutdown_test.c shutdown.c config.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/shutdown_test.c -luser32 -lgdi32 -ladvapi32
+
 clean:
 	-@del /Q $(TARGET) 2>nul || true
 	-@del /Q *.o 2>nul || true
 	-@del /Q tools\uia_probe.exe 2>nul || true
 	-@del /Q tools\hint_check.exe 2>nul || true
 	-@del /Q tools\make_icon.exe 2>nul || true
+	-@del /Q tools\shutdown_test.exe 2>nul || true
 
-.PHONY: all clean probe check icon
+.PHONY: all clean probe check icon shutdown-test

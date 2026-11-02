@@ -267,6 +267,41 @@ is put back right after, and the shortcut's text is kept out of the clipboard
 history. For an app that blocks pasting, set `shortcut_method = type` in
 `[general]` to type the text key by key instead.
 
+## Scheduled shutdown
+
+The tray menu's **Schedule shutdown** turns the computer off later: **In 15
+minutes**, **In 30 minutes**, **In 1 hour**, **In 2 hours**, or **At a time or
+after...**, where you type a time such as `23:30` (today, or tomorrow once it
+has passed) or how long to wait: `90` (minutes), `45m`, `2h` or `1h30`. A
+balloon confirms it, and until then the menu item reads "Shutdown at 23:30"
+and the tray icon's tooltip says so too. Choosing again replaces it; **Cancel
+shutdown at ...** in the same menu cancels it.
+
+To shut down every day, set `shutdown_at = 23:30` in the `[general]` section
+of `vim.ini`. Cancelling from the tray menu then skips that day only, and a
+shutdown chosen in the tray menu that comes later than that day's replaces
+it.
+
+A minute before (`shutdown_warning`), a countdown window opens on top:
+
+- **Cancel** (or `Esc`, `Enter`, or closing the window) keeps the computer on.
+- **10 more minutes** postpones it.
+- **Shut down now** shuts down at once. It can only be clicked, so keys typed
+  into the window by surprise never shut the computer down.
+
+Then Windows shuts down and turns the computer off (a full shutdown, like
+`shutdown /s`). Apps that do not respond are closed; an app with unsaved work
+may ask to save it, which holds the shutdown up until someone answers. Set
+`shutdown_force = 1` to close such apps anyway (their unsaved work is lost).
+
+- If the computer was asleep at that time and wakes more than 5 minutes
+  later, the shutdown is skipped and a balloon says so, instead of turning the
+  computer off the moment someone wakes it. Woken sooner, it counts down in
+  full first.
+- A shutdown chosen in the tray menu is kept only while vim mouse runs:
+  quitting or updating vim mouse cancels it. `shutdown_at` applies whenever
+  vim mouse runs (see "Start with Windows").
+
 ## Settings
 
 `vim.ini` lives next to `vim.exe`, or in `%APPDATA%\vim mouse` when the
@@ -347,6 +382,12 @@ ones:
   open, each element of the active window with where it is and whether it
   got a label or why not, and turn the early scan off)
 - `shortcut_method` (`paste` or `type`: how text shortcuts insert their text)
+- `shutdown_at` (a 24-hour time such as `23:30`: turn the computer off every
+  day then; `none` = only when chosen in the tray menu, default),
+  `shutdown_warning` (seconds the countdown window shows before a scheduled
+  shutdown, 0-600, default 60; 0 = none), `shutdown_force` (1 = close apps
+  even when they have unsaved work; default 0), see
+  [Scheduled shutdown](#scheduled-shutdown)
 - `[shortcuts]`: text shortcuts, see [Text shortcuts](#text-shortcuts)
 
 ## Tray menu
@@ -364,6 +405,9 @@ Left- or right-click the tray icon:
 - Reload settings
 - Start with Windows (checked when enabled)
 - Update to latest version (see [Updating](#updating))
+- Schedule shutdown (in 15 or 30 minutes, 1 or 2 hours, or at a time you
+  type; shows "Shutdown at ..." with a cancel item while one is scheduled; see
+  [Scheduled shutdown](#scheduled-shutdown))
 - Quit
 
 ## Updating
@@ -470,6 +514,11 @@ when GitHub cannot be reached.
   off. If Windows is set to turn Caps Lock off with the Shift key (Settings,
   Time & language, Typing, Advanced keyboard settings, Input language hot
   keys), vim mouse cannot turn it off; `vim.log` says so with `log = 1`.
+- **The computer did not shut down at the scheduled time.** It was asleep
+  then (a balloon says "Shutdown skipped"), vim mouse was quit or updated in
+  between (a shutdown chosen in the tray menu is not saved), or an app with
+  unsaved work asked to save it: answer it, or set `shutdown_force = 1`. With
+  `log = 1`, `vim.log` has a "shutdown:" line for each step.
 - **Start automatically at login.** Tick "Start with Windows" in the tray menu
   (it writes a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
 - **Something is wrong.** Set `log = 1` in `vim.ini` and read `vim.log` in the
@@ -495,6 +544,8 @@ in Common Controls v6, per-monitor DPI and the supported Windows versions) and
 the version info. Regenerate the icon with `mingw32-make icon` after changing
 its drawing code. A GitHub Actions build check (`build.yml`) compiles 32-bit and
 64-bit with `-Werror` on every branch except `master` and on pull requests.
+`mingw32-make shutdown-test` builds `tools\shutdown_test.exe`, which checks the
+scheduled shutdown's timing against a fake clock and never shuts down.
 
 Source layout:
 
@@ -510,6 +561,8 @@ Source layout:
 - `tray.c` - tray icon and menu, help window, start with Windows
 - `snippet.c` - text shortcut editor window
 - `update.c` - update to the latest release from the tray menu
+- `shutdown.c` - scheduled shutdown: the schedule, the countdown window,
+  turning the computer off
 - `common.h` - shared contract between modules
 - `version.h` - version numbers and strings, shared by the code and `vim.rc`
 - `vim.rc`, `vim.manifest`, `vim.ico` - icon, manifest and version resources

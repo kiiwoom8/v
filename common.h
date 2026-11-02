@@ -15,6 +15,8 @@
 //   snippet.c text shortcut editor window (tray "Text shortcuts...")
 //   update.c self-update from the latest GitHub release (tray "Update to
 //            latest version")
+//   shutdown.c scheduled shutdown (tray "Schedule shutdown", shutdown_at):
+//            the schedule, its countdown window, turning the computer off
 
 #ifndef VIM_COMMON_H
 #define VIM_COMMON_H
@@ -103,6 +105,13 @@ typedef struct {
                                // hint open's scan made of every element of the active
                                // window (and no early scan); default 0
     int    shortcut_paste;     // text shortcuts: 1 = paste via the clipboard (default), 0 = type keys
+    int    shutdown_at;        // turn the computer off every day at this local time, in
+                               // minutes after midnight (vim.ini "23:30"); -1 = none (default).
+                               // The tray menu can cancel one day's.
+    int    shutdown_warning;   // seconds the countdown window shows before a scheduled
+                               // shutdown (0-600, default 60; 0 = none)
+    int    shutdown_force;     // 1 = a scheduled shutdown closes apps even with unsaved work;
+                               // default 0 (only hung apps; others may hold it up)
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
     double speed;              // default 600
@@ -216,6 +225,7 @@ BOOL         parse_key(const WCHAR *s, UINT *vk);        // "h", ",", "CapsLock"
 BOOL         parse_hotkey(const WCHAR *s, Hotkey *out);  // "Alt+F", "Ctrl+Alt+Q", "none"
 void         format_key(UINT vk, WCHAR *buf, int cch);   // vk -> display name ("h", "CapsLock", ",")
 void         format_hotkey(const Hotkey *hk, WCHAR *buf, int cch);  // "Alt+F"; "none" if unbound
+BOOL         parse_clock(const WCHAR *s, int *minute);   // "23:30", "7:05" -> minutes after midnight
 
 // Text shortcuts: the [shortcuts] section of vim.ini, "abbreviation = text".
 // Holding Alt and typing the abbreviation types the text when Alt is released.
@@ -430,6 +440,29 @@ BOOL update_wait_for_old(HANDLE mutex);
 // Startup: deletes "<exe>.old" (retrying briefly after an update) and any
 // partial "<exe>.new" left by quitting during a download.
 void update_cleanup(void);
+
+// ---------------------------------------------------------------------------
+// Scheduled shutdown (shutdown.c). Main/UI thread.
+//
+// The next shutdown is the earlier of a one-off from the tray menu (kept in
+// memory only) and the next shutdown_at day. shutdown_warning seconds before
+// it a countdown window opens (Cancel, 10 more minutes, Shut down now); then
+// ExitWindowsEx powers off. One the computer slept through by more than
+// 5 minutes is skipped with a balloon.
+
+void shutdown_init(void);               // after the settings and the tray: arms shutdown_at
+void shutdown_stop(void);               // quit: closes its windows, stops its timer
+void shutdown_config_changed(void);     // g_cfg was reloaded (shutdown_at may have changed)
+void shutdown_time_changed(void);       // WM_TIMECHANGE: shutdown_at follows the local clock
+void shutdown_in(int minutes);          // one-off this many minutes from now (replaces one)
+void shutdown_dialog_open(void);        // tray "At a time or after...": type 23:30 or 90
+// Cancels the next shutdown: the one-off, or that day's shutdown_at (the next
+// day's still happens). A balloon names the next one, if any.
+void shutdown_cancel(void);
+// TRUE when a shutdown is scheduled: at = "23:30" / "1:00 tomorrow", left =
+// "in 1 h 5 min" (either may be NULL).
+BOOL shutdown_next(WCHAR *at, int at_cch, WCHAR *left, int left_cch);
+BOOL shutdown_dialog_message(MSG *msg); // IsDialogMessage for its windows
 
 // ---------------------------------------------------------------------------
 // App helpers (main.c)
