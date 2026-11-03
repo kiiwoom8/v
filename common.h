@@ -529,5 +529,7 @@ void app_log(const WCHAR *fmt, ...);          // OutputDebugString, plus vim.log
 void app_reload_config(BOOL notify);          // reload g_cfg, notify modules, balloon on warnings
 void app_config_written(void);                // we rewrote vim.ini: reload quietly
 void app_quit(void);
+BOOL app_has_uiaccess(void);                  // the signed UIAccess install (README): the overlay
+                                              // may be drawn above the Start menu and banners
 
 #endif

@@ -4,8 +4,13 @@
 // Application icon (Explorer also shows it for vim.exe).
 1 ICON "vim.ico"
 
-// Embedded process manifest. 24 is RT_MANIFEST.
+// Embedded process manifest. 24 is RT_MANIFEST. The UIAccess build
+// (make uiaccess, windres -DUIACCESS) embeds vim.uiaccess.manifest instead.
+#ifdef UIACCESS
+1 24 "vim.uiaccess.manifest"
+#else
 1 24 "vim.manifest"
+#endif
 
 1 VERSIONINFO
 FILEVERSION     VIM_VERSION_MAJOR, VIM_VERSION_MINOR, VIM_VERSION_PATCH, 0

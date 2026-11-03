@@ -390,6 +390,19 @@ void update_start(void)
         tray_balloon(L"Updating", L"Already downloading the update.");
         return;
     }
+    // The release's vim.exe is not signed and carries the plain manifest, so
+    // it would turn the UIAccess install back into an ordinary one (and the
+    // swap in Program Files needs administrator rights anyway).
+    if (app_has_uiaccess()) {
+        InterlockedExchange(&g_running, 0);
+        MessageBoxW(NULL, L"This is the signed UIAccess install, which the "
+                          L"downloaded release would replace with an "
+                          L"ordinary one. To update it, build the new "
+                          L"version (mingw32-make uiaccess) and run "
+                          L"tools\\uiaccess_setup.ps1 again.",
+                    APP_NAME, MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        return;
+    }
     if (!init_paths()) {
         InterlockedExchange(&g_running, 0);
         MessageBoxW(NULL, L"The program's own path could not be read, so it "

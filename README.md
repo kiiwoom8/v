@@ -505,9 +505,53 @@ to `vim.exe.old` and deleted when the new one starts. The download goes to
 `vim.exe.new` next to it, so the folder must be writable: in
 `C:\Program Files` the update fails and offers to open the download page, and
 you replace `vim.exe` yourself after quitting vim mouse. The same happens
-when GitHub cannot be reached.
+when GitHub cannot be reached. The UIAccess install (next section) is not
+updated this way at all: the release's exe is not signed, so the menu item
+says to build and run the setup script again.
+
+## Hints on the Start menu and notifications
+
+The Start menu, Search, the notification centre, Quick Settings and
+notification banners are drawn by Windows above every ordinary window,
+topmost ones included. vim mouse finds their elements (the scan takes the
+active window and whatever the mouse would hit on the monitor, not only the
+windows Windows lists for ordinary programs), and elements they cover get
+no label, but the labels inside them are drawn under them, where you cannot
+see them. Windows lets a program draw above that system UI only with the
+UIAccess privilege: an exe whose manifest asks for it, signed by a
+certificate the machine trusts, started from `C:\Program Files`. The same
+privilege lets the keyboard hook and the hint clicks reach windows running
+as administrator.
+
+To install that build:
+
+1. `mingw32-make uiaccess` builds `vim-uiaccess.exe`: the same program with
+   `vim.uiaccess.manifest` embedded instead of `vim.manifest`.
+2. `powershell -ExecutionPolicy Bypass -File tools\uiaccess_setup.ps1`
+   makes a code-signing certificate the first time (`CN=vim mouse UIAccess`
+   in your user's certificate store, its private key not exportable), signs
+   the exe, then asks once for administrator rights to trust the certificate
+   on the machine and copy the exe to `C:\Program Files\vim mouse\vim.exe`.
+   It copies your `vim.ini` to `%APPDATA%\vim mouse` if there is none there
+   yet (the installed program keeps its settings there), points "Start with
+   Windows" at the new exe if it is on, stops the running vim mouse and
+   starts the installed one.
+3. With `log = 1`, `vim.log` (now in `%APPDATA%\vim mouse`) starts with
+   `uiaccess: on`. Windows refuses to start a UIAccess exe at all when the
+   signature or the folder is wrong, so a running install is a working one.
+
+Run the script again after every build. `tools\uiaccess_setup.ps1 -Uninstall`
+removes the installed copy and the certificate's trust and starts `vim.exe`
+next to the source again. Trusting the certificate means this machine
+accepts anything signed with its key, which is why the key cannot leave your
+user's store.
 
 ## Troubleshooting
+
+- **No labels on the Start menu, Search, the notification centre, Quick
+  Settings or a notification banner.** Without the UIAccess install (previous
+  section) the labels are drawn under them. `log = 2` lists those windows
+  with `above the desktop band` and says what was found in them.
 
 - **A hotkey clashes with another program.** Change it in `vim.ini` and save;
   it reloads immediately. Use `none` to unbind a hotkey.
@@ -638,6 +682,9 @@ its drawing code. A GitHub Actions build check (`build.yml`) compiles 32-bit and
 64-bit with `-Werror` on every branch except `master` and on pull requests.
 `mingw32-make shutdown-test` builds `tools\shutdown_test.exe`, which checks the
 scheduled shutdown's timing against a fake clock and never shuts down.
+`mingw32-make uiaccess` builds `vim-uiaccess.exe`, the UIAccess build (see
+"Hints on the Start menu and notifications"), which only runs signed and
+installed by `tools\uiaccess_setup.ps1`.
 
 Source layout:
 
@@ -657,4 +704,6 @@ Source layout:
   turning the computer off
 - `common.h` - shared contract between modules
 - `version.h` - version numbers and strings, shared by the code and `vim.rc`
-- `vim.rc`, `vim.manifest`, `vim.ico` - icon, manifest and version resources
+- `vim.rc`, `vim.manifest`, `vim.ico` - icon, manifest and version resources;
+  `vim.uiaccess.manifest` is the manifest of the UIAccess build
+- `tools/uiaccess_setup.ps1` - signs and installs the UIAccess build

@@ -491,6 +491,12 @@ int main(void)
     if (!config_load(&g_cfg, &created))
         app_log(L"config: initial load failed");
     app_log(L"config: settings file %s", config_path());
+    app_log(L"uiaccess: %s", app_has_uiaccess()
+                ? L"on (the overlay may be drawn above the Start menu, "
+                  L"Search, the notification centre and banners)"
+                : L"off (labels inside the Start menu, Search, the "
+                  L"notification centre and banners stay hidden under "
+                  L"them; see README)");
 
     update_cleanup();
 
@@ -576,4 +582,30 @@ int main(void)
     if (mutex)
         CloseHandle(mutex);
     return (int)msg.wParam;
+}
+
+// Whether Windows gave this process UIAccess: the build with uiAccess="true"
+// in its manifest (make uiaccess), signed by a certificate the machine trusts
+// and started from Program Files (tools/uiaccess_setup.ps1). Then a topmost
+// window of ours sits above the Start menu, Search, the notification centre
+// and notification banners, which otherwise cover the hint overlay, and the
+// keyboard hook and clicks reach administrator windows. TokenUIAccess is 26
+// in TOKEN_INFORMATION_CLASS; the number keeps old MinGW.org headers happy.
+BOOL app_has_uiaccess(void)
+{
+    static int known = -1;
+    HANDLE token;
+    DWORD ui = 0;
+    DWORD size = 0;
+
+    if (known < 0) {
+        known = 0;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+            if (GetTokenInformation(token, (TOKEN_INFORMATION_CLASS)26, &ui,
+                                    sizeof(ui), &size) && ui)
+                known = 1;
+            CloseHandle(token);
+        }
+    }
+    return known > 0;
 }

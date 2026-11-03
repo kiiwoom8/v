@@ -805,6 +805,7 @@ typedef struct {
     BOOL do_scan;
     BOOL is_fg;
     BOOL is_taskbar;
+    BOOL above;                 // above the desktop band (add_unlisted_windows)
     int z;
 } WinInfo;
 
@@ -2835,10 +2836,10 @@ static BOOL append_window(EnumContext *ctx, const WinInfo *win)
     return TRUE;
 }
 
-static BOOL CALLBACK enum_window_cb(HWND hwnd, LPARAM lp)
+// What the window list records about one top-level window: its class, its
+// bounds clipped to the monitor, or why it is out (base_skip).
+static void window_info_fill(const EnumContext *ctx, HWND hwnd, WinInfo *win)
 {
-    EnumContext *ctx = (EnumContext *)lp;
-    WinInfo win;
     DwmGetWindowAttributeFn dwm = dwm_get_window_attribute();
     RECT rect;
     DWORD cloaked = 0;
@@ -2846,34 +2847,34 @@ static BOOL CALLBACK enum_window_cb(HWND hwnd, LPARAM lp)
     LONG exstyle;
     BOOL have_rect = FALSE;
 
-    memset(&win, 0, sizeof(win));
-    win.hwnd = hwnd;
-    win.z = -1;
-    GetClassNameW(hwnd, win.cls, 64);
+    memset(win, 0, sizeof(*win));
+    win->hwnd = hwnd;
+    win->z = -1;
+    GetClassNameW(hwnd, win->cls, 64);
 
     if (!IsWindowVisible(hwnd)) {
-        win.base_skip = L"invisible";
+        win->base_skip = L"invisible";
     } else if (IsIconic(hwnd)) {
-        win.base_skip = L"minimized";
+        win->base_skip = L"minimized";
     } else if (dwm && SUCCEEDED(dwm(hwnd, DWMWA_CLOAKED, &cloaked,
                                    sizeof(cloaked))) && cloaked) {
-        win.base_skip = L"cloaked";
+        win->base_skip = L"cloaked";
     } else {
         GetWindowThreadProcessId(hwnd, &pid);
         if (pid == GetCurrentProcessId()) {
-            win.base_skip = L"own process";
+            win->base_skip = L"own process";
         } else {
             // Only layered + transparent windows are invisible to the mouse;
             // plenty of normal apps (Chrome, Electron) are just layered.
             exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
             if ((exstyle & (WS_EX_TRANSPARENT | WS_EX_LAYERED)) ==
                 (WS_EX_TRANSPARENT | WS_EX_LAYERED)) {
-                win.base_skip = L"click-through";
+                win->base_skip = L"click-through";
             }
         }
     }
 
-    if (!win.base_skip) {
+    if (!win->base_skip) {
         if (dwm && SUCCEEDED(dwm(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rect,
                                  sizeof(rect))) &&
             rect.right > rect.left && rect.bottom > rect.top)
@@ -2882,13 +2883,20 @@ static BOOL CALLBACK enum_window_cb(HWND hwnd, LPARAM lp)
                  rect.right > rect.left && rect.bottom > rect.top)
             have_rect = TRUE;
         if (!have_rect)
-            win.base_skip = L"no bounds";
-        else if (!IntersectRect(&win.clip, &rect, &ctx->monitor))
-            win.base_skip = L"off monitor";
+            win->base_skip = L"no bounds";
+        else if (!IntersectRect(&win->clip, &rect, &ctx->monitor))
+            win->base_skip = L"off monitor";
         else
-            win.rect = rect;
+            win->rect = rect;
     }
+}
 
+static BOOL CALLBACK enum_window_cb(HWND hwnd, LPARAM lp)
+{
+    EnumContext *ctx = (EnumContext *)lp;
+    WinInfo win;
+
+    window_info_fill(ctx, hwnd, &win);
     if (!append_window(ctx, &win))
         return FALSE;
     return TRUE;
@@ -2947,6 +2955,116 @@ static int window_index(const WinInfo *wins, int count, HWND hwnd)
             return i;
     }
     return -1;
+}
+
+// Windows above the desktop band. The Start menu, Search, the notification
+// centre, Quick Settings and notification banners (Windows.UI.Core.CoreWindow
+// windows of StartMenuExperienceHost, SearchHost and ShellExperienceHost) sit
+// in z-order bands above every ordinary window, topmost ones included, and
+// EnumWindows leaves them out for a process without UIAccess. Measured on
+// Windows 11 26300: GetForegroundWindow, WindowFromPoint, GetWindowRect,
+// IsWindowVisible and UI Automation's ElementFromHandle all answer for them,
+// while EnumWindows and the UI Automation root's children do not list them.
+// So the foreground window is taken even when the list has no such window,
+// and the monitor is sampled with WindowFromPoint every BAND_STEP_PX for
+// windows the list does not hold (a banner is about 400x200). They go in
+// front of the listed windows, higher band first (GetWindowBand is
+// undocumented but exported since Windows 8; without it the foreground
+// window leads). Knowing them keeps labels off the elements they cover; the
+// overlay itself is drawn above them only when the process has UIAccess (a
+// window owned by one of them stays in the desktop band: the owner is
+// refused). hint_check.c's synchronous scan does not go through here.
+#define BAND_STEP_PX 64
+#define BAND_MAX 8
+
+typedef BOOL (WINAPI *GetWindowBandFn)(HWND, DWORD *);
+
+static DWORD window_band(HWND hwnd)
+{
+    static GetWindowBandFn fn;
+    static BOOL tried;
+    DWORD band = 0;
+
+    if (!tried) {
+        HMODULE user = GetModuleHandleW(L"user32.dll");
+        if (user)
+            fn = (GetWindowBandFn)(void *)GetProcAddress(user,
+                                                          "GetWindowBand");
+        tried = TRUE;
+    }
+    if (fn && fn(hwnd, &band))
+        return band;
+    return 0;
+}
+
+// Returns how many windows were added (in front), with the time it took.
+static int add_unlisted_windows(EnumContext *ctx, HWND fg_root,
+                                DWORD *elapsed_ms)
+{
+    HWND found[BAND_MAX];
+    DWORD bands[BAND_MAX];
+    DWORD started = GetTickCount();
+    WinInfo *items;
+    int n = 0;
+    int i, k;
+    LONG x, y;
+
+    if (fg_root && window_index(ctx->items, ctx->count, fg_root) < 0)
+        found[n++] = fg_root;
+    for (y = ctx->monitor.top + BAND_STEP_PX / 2;
+         y < ctx->monitor.bottom && n < BAND_MAX; y += BAND_STEP_PX) {
+        for (x = ctx->monitor.left + BAND_STEP_PX / 2;
+             x < ctx->monitor.right && n < BAND_MAX; x += BAND_STEP_PX) {
+            POINT pt;
+            HWND hit, root;
+
+            pt.x = x;
+            pt.y = y;
+            hit = WindowFromPoint(pt);
+            root = hit ? GetAncestor(hit, GA_ROOT) : NULL;
+            if (!root || window_index(ctx->items, ctx->count, root) >= 0)
+                continue;
+            for (i = 0; i < n; ++i) {
+                if (found[i] == root)
+                    break;
+            }
+            if (i < n)
+                continue;
+            found[n++] = root;
+        }
+    }
+    *elapsed_ms = GetTickCount() - started;
+    if (n == 0)
+        return 0;
+
+    // Higher band first; the insertion sort is stable, so the foreground
+    // window stays ahead of the rest of its band.
+    for (i = 0; i < n; ++i)
+        bands[i] = window_band(found[i]);
+    for (i = 1; i < n; ++i) {
+        HWND h = found[i];
+        DWORD b = bands[i];
+        for (k = i; k > 0 && bands[k - 1] < b; --k) {
+            found[k] = found[k - 1];
+            bands[k] = bands[k - 1];
+        }
+        found[k] = h;
+        bands[k] = b;
+    }
+
+    items = (WinInfo *)realloc(ctx->items,
+                               (size_t)(ctx->count + n) * sizeof(*items));
+    if (!items)
+        return 0;
+    ctx->items = items;
+    ctx->cap = ctx->count + n;
+    memmove(items + n, items, (size_t)ctx->count * sizeof(*items));
+    for (i = 0; i < n; ++i) {
+        window_info_fill(ctx, found[i], &items[i]);
+        items[i].above = TRUE;
+    }
+    ctx->count += n;
+    return n;
 }
 
 static void report_skip(UiaWindowCallback cb, void *cb_user,
@@ -3816,6 +3934,8 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     int order_count = 0;
     int task_count = 0;
     int merged_count = 0;
+    int above_count = 0;
+    DWORD above_ms = 0;
     ScanJob *job = NULL;
     int i;
     int k;
@@ -3838,6 +3958,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
 
     foreground = GetForegroundWindow();
     fg_root = foreground ? GetAncestor(foreground, GA_ROOT) : NULL;
+    above_count = add_unlisted_windows(&ctx, fg_root, &above_ms);
     if (fg_root)
         fg_index = window_index(ctx.items, ctx.count, fg_root);
 
@@ -3916,12 +4037,17 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                    L"%ld,%ld %ldx%ld", mi.rcMonitor.left, mi.rcMonitor.top,
                    mi.rcMonitor.right - mi.rcMonitor.left,
                    mi.rcMonitor.bottom - mi.rcMonitor.top);
+        detail_add(&result->detail, L"scan: %d window%ls above the desktop "
+                   L"band (EnumWindows leaves them out), sampled in %lu ms",
+                   above_count, above_count == 1 ? L"" : L"s",
+                   (unsigned long)above_ms);
         for (i = 0; i < ctx.count; ++i) {
             WinInfo *win = &ctx.items[i];
-            if (win->base_skip && wcscmp(win->base_skip, L"click-through"))
+            if (win->base_skip && wcscmp(win->base_skip, L"click-through") &&
+                !win->above)
                 continue;
             detail_add(&result->detail, L"scan: window %p %ls ex %08lx "
-                       L"owner %p %ld,%ld %ldx%ld%ls: %ls",
+                       L"owner %p %ld,%ld %ldx%ld%ls%ls: %ls",
                        (void *)win->hwnd, win->cls,
                        (unsigned long)GetWindowLongW(win->hwnd, GWL_EXSTYLE),
                        (void *)GetWindow(win->hwnd, GW_OWNER),
@@ -3929,6 +4055,7 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
                        win->rect.right - win->rect.left,
                        win->rect.bottom - win->rect.top,
                        win->is_fg ? L" active" : L"",
+                       win->above ? L" above the desktop band" : L"",
                        win->do_scan ? L"scanned" : window_skip(win));
         }
         if (fg_task < 0)

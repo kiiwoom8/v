@@ -20,6 +20,19 @@ tray.o update.o: version.h
 vim.res.o: vim.rc vim.manifest vim.ico version.h
 	$(WINDRES) -I. -O coff -i vim.rc -o $@
 
+# The UIAccess build: the same program with uiAccess="true" in its manifest,
+# so Windows lets the hint overlay above the Start menu, Search, the
+# notification centre and notification banners (README, "Hints on the Start
+# menu and notifications"). Windows runs it only signed and installed under
+# Program Files: tools\uiaccess_setup.ps1 does both.
+uiaccess: vim-uiaccess.exe
+
+vim-uiaccess.exe: $(OBJS) vim.res.uiaccess.o
+	$(CC) $(CFLAGS) -o $@ $(OBJS) vim.res.uiaccess.o $(LDFLAGS)
+
+vim.res.uiaccess.o: vim.rc vim.uiaccess.manifest vim.ico version.h
+	$(WINDRES) -I. -DUIACCESS -O coff -i vim.rc -o $@
+
 # Regenerates the committed vim.ico. CI builds on Linux and uses the file as is.
 icon: tools/make_icon.exe
 	tools/make_icon.exe vim.ico
@@ -56,10 +69,11 @@ tools/shutdown_test.exe: tools/shutdown_test.c shutdown.c config.c common.h
 clean:
 	-@del /Q $(TARGET) 2>nul || true
 	-@del /Q *.o 2>nul || true
+	-@del /Q vim-uiaccess.exe 2>nul || true
 	-@del /Q tools\uia_probe.exe 2>nul || true
 	-@del /Q tools\hint_check.exe 2>nul || true
 	-@del /Q toolslush_probe.exe 2>nul || true
 	-@del /Q tools\make_icon.exe 2>nul || true
 	-@del /Q tools\shutdown_test.exe 2>nul || true
 
-.PHONY: all clean probe check icon shutdown-test flushprobe
+.PHONY: all clean probe check icon shutdown-test flushprobe uiaccess

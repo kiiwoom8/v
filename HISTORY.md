@@ -36,13 +36,14 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the Enter Enter jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `center_pointer`, `input_thread_proc` |
 | `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
-| `uia.c` | 6262 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `uia.c` | 6652 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
 | `shutdown.c` | 1137 | Scheduled shutdown (tray "Schedule shutdown", `shutdown_at`): a one-off from the tray and the next `shutdown_at` day, whichever is first, on wall-clock UTC; one thread timer; the countdown window (Cancel, 10 more minutes, Shut down now); the "At a time or after..." window; `ExitWindowsEx`. Skips a shutdown the computer slept through. | `sd_check`, `next_due`, `clock_next`, `daily_consume`, `schedule_once`, `power_off`, `missed`, `countdown_open`, `parse_when`, `shutdown_next` |
 | `version.h` | 12 | The one place to bump the version (numbers and both strings). | `VIM_VERSION_*` |
 | `vim.rc`, `vim.manifest`, `vim.ico` | | Resources: icon, manifest (Common Controls v6, per-monitor DPI, supported OS), version info. `vim.ico` is generated by `tools/make_icon.c` and committed. | |
+| `vim.uiaccess.manifest`, `tools/uiaccess_setup.ps1` | | The UIAccess build (`make uiaccess`): the manifest with `uiAccess="true"`, and the script that signs the exe with a certificate made on the machine, trusts it, installs the exe under Program Files and restarts vim mouse (phase 11). | `app_has_uiaccess` |
 | `tools/uia_probe.c` | 320 | Console tool: lists what the scan finds on the monitor under the cursor (`-v` for every target, `-d` for every element of the active window with what became of it, as `log = 2`; `-n` runs, `-w` seconds before each, `-o` file). Read-only. `make probe`. | |
 | `tools/hint_check.c`, `tools/hint_check.mjs` | 1941, 804 | Compares Chrome's DOM clickables (over CDP) with the real scan and reports misses with the drop reason. `make check`, then `node tools/hint_check.mjs [url ...]`. | `g_scan_debug` hook in `uia.c` |
 | `tools/ax_sim/` | 364 | Linux check of the element filters: Chromium's real tree for a mock page (headful, AT-SPI) run through `uia.c`'s own `filter_containers`, `cover_overlays`, `rescue_pick` and `target_add`, plus a copy of the focusable-only test. `tools/ax_sim/run.sh <page> [steps]`, `OLD=<rev>` diffs against an older `uia.c`, `INPUT=<file>` replays a saved input (one written from a Windows scan: `pages/google_menu_win.txt`). | `run.sh`, `mk.py`, `conv.py`, `pages/` |
@@ -477,6 +478,41 @@ Invariants stated in `common.h` and enforced by history:
   for the whole label, so it stays clear of its neighbours). The grid still
   shows its typed row letter in `match_fg`.
 
+### Phase 11: system UI above the desktop (2026-11-03)
+
+- "My vim cannot trace system UI (notification, system app etc) with
+  navigator." Measured on Windows 11 26300 with scripts around
+  `WindowFromPoint`, `GetWindowBand` and the managed UI Automation client:
+  the Start menu and Search (`Windows.UI.Core.CoreWindow` windows of
+  StartMenuExperienceHost and SearchHost, band 6), the notification centre
+  and notification banners (ShellExperienceHost, band 4) live in z-order
+  bands above the desktop band that holds every ordinary window, topmost
+  ones included. `EnumWindows` does not list them for a process without
+  UIAccess, and neither do the UI Automation root's children, so the scan
+  never saw them (`log = 2` said "the active window ... is not scanned"
+  with the Start menu open) and labelled the windows underneath as if
+  nothing covered them. `GetForegroundWindow`, `WindowFromPoint`,
+  `GetWindowRect`, `IsWindowVisible` and `ElementFromHandle` all answer for
+  them, so `add_unlisted_windows` takes the foreground window the list
+  lacks, samples the monitor every 64 px with `WindowFromPoint` (16 ms at
+  most for 1920x1080), puts what it finds in front of the listed windows
+  ordered by band, and `log = 2` marks them "above the desktop band".
+  Checked with `uia_probe -d`: Start 15 targets, Search 1 (its box), the
+  notification centre 74, a banner 8, and the banner "covered" while Start
+  was open. The Settings app (`ApplicationFrameWindow`) is an ordinary
+  window and had 24 labels already.
+- The overlay cannot be drawn above those bands from an ordinary process:
+  `WindowFromPoint` picked a banner over a topmost test window, and a
+  window created with the banner as owner (or re-owned to it afterwards)
+  stayed in the desktop band with no owner set. Windows reserves that for
+  UIAccess programs (manifest `uiAccess="true"`, signed by a certificate the
+  machine trusts, started from Program Files), so `make uiaccess` builds the
+  same program with `vim.uiaccess.manifest`, `tools/uiaccess_setup.ps1`
+  makes the certificate, signs and installs it (one administrator prompt),
+  `app_has_uiaccess` logs the state at start, and the tray update refuses
+  to replace that install with the unsigned release. Not yet run on the
+  user's machine: the trust step needs the administrator prompt (section 7).
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -625,7 +661,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 109 | `8bca056` | 11-03 | 10 | Commit-log row for `f536827`; the Naver Mail "select all" label confirmed by the user | |
 | 110 | `9ce3e54` | 11-03 | 10 | `pause_hotkey` defaults to `Alt+P` and takes two presses within `pause_tap_ms` (0-1000, default 300; 0 = one press): `handle_hotkeys` arms `s_pause_tap` on the first and toggles on the second, both swallowed, cleared by any other key and in `reset_key_state`; `pause_label` shows "Alt+P P" in the help and the tray menu | "Add shortcut for pause/restart vim navigator", asked as `Alt+0 0` and corrected to `Alt+p p` |
 | 111 | `5c687e5` | 11-03 | 10 | `draw_element_label` drops the typed prefix: only the characters still to type are drawn, in a box shrunk from the right of the placed one (`match_fg` now colours the grid's typed row letter only) | "Instead of shadowing the typed char, remove the typed char of the navigators so I can view it more cleanly instead of overlapped big boxes" |
-| 112 | | 11-03 | 10 | A bare `g` that typed because the focus was not known yet still arms `g g` (`s_bare_asked` set by `bare_key_ok`, read on the pass-through path of `handle_down`); the second `g` jumps only where the answer by then is "no text field" and types otherwise; `scroll_end_tap_ms` defaults to 500 (was 300); `log = 1` writes the tap timing and the reason a second tap did not jump | "Sometimes g g doesn't work at once so I have to press this twice": right after a hint click (`FOCUS_CLICK_DELAY_MS` and the classification) or on a page still loading, the first `g` reached the app and the second only armed, so the top needed `g g g` |
+| 112 | `29def43` | 11-03 | 10 | A bare `g` that typed because the focus was not known yet still arms `g g` (`s_bare_asked` set by `bare_key_ok`, read on the pass-through path of `handle_down`); the second `g` jumps only where the answer by then is "no text field" and types otherwise; `scroll_end_tap_ms` defaults to 500 (was 300); `log = 1` writes the tap timing and the reason a second tap did not jump | "Sometimes g g doesn't work at once so I have to press this twice": right after a hint click (`FOCUS_CLICK_DELAY_MS` and the classification) or on a page still loading, the first `g` reached the app and the second only armed, so the top needed `g g g` |
+
+| 113 | | 11-03 | 11 | `add_unlisted_windows`: the scan's window list takes the foreground window and whatever `WindowFromPoint` hits on a 64 px grid of the monitor (`BAND_STEP_PX`, `BAND_MAX` 8) when `EnumWindows` left them out, in front of the listed windows, ordered by `GetWindowBand` (`window_band`; `WinInfo.above`, `log = 2` says "above the desktop band"); `window_info_fill` is the shared window check; `make uiaccess` builds `vim-uiaccess.exe` with `vim.uiaccess.manifest` (`vim.rc` `#ifdef UIACCESS`), `tools/uiaccess_setup.ps1` signs and installs it, `app_has_uiaccess` (TokenUIAccess) is logged at start and stops the tray update | "My vim cannot trace system UI (notification, system app etc) with navigator": the Start menu, Search, the notification centre and banners sit in z-order bands above the desktop, unseen by `EnumWindows`, and the overlay cannot be drawn above them without UIAccess |
 
 ## 5. Lessons learned: rules not to break
 
@@ -1128,6 +1166,20 @@ last ten are all `worktree-agent-*` into `element-hints`.
   `.blind` text next to it is a Text of 14x101 px whose centre lies
   below the square. A visible control (`opacity: 0` over the label, 24
   px) needs nothing and gets nothing.
+- **System UI lives above the desktop band, where `EnumWindows` does not
+  look.** Phase 11: the Start menu and Search (band 6), the notification
+  centre and notification banners (band 4) are left out of `EnumWindows`
+  and of the UI Automation root's children for a process without UIAccess,
+  while `GetForegroundWindow`, `WindowFromPoint`, `GetWindowRect`,
+  `IsWindowVisible` and `ElementFromHandle` answer for them.
+  `add_unlisted_windows` finds them through the foreground window and a
+  64 px `WindowFromPoint` grid and puts them first in z-order
+  (`GetWindowBand`, undocumented but exported, orders them; with Start open
+  the taskbar moves up there too, and Start's window spans the screen above
+  the taskbar, so everything else is "covered"). Nothing in the desktop
+  band draws above them: a topmost window loses, and giving a window one
+  of them as owner is refused (the owner stays null). Only a UIAccess
+  process can, which is a signing and install matter, not a code one.
 
 ### Scrolling and movement
 
@@ -1447,6 +1499,20 @@ last ten are all `worktree-agent-*` into `element-hints`.
   On the user's query the earlier run showed the cause (the link's label
   "covered by Group"), so expect two labels at a result's corner now: the
   link's at the corner, the block's to its right.
+- **The UIAccess install** (phase 11: `make uiaccess`,
+  `tools/uiaccess_setup.ps1`) was built and the script parsed and tried on
+  its error path on 2026-11-03, but trusting the certificate needs an
+  administrator prompt, so it has not run on the user's machine. To check:
+  run the script, then `vim.log` (in `%APPDATA%\vim mouse` from then on)
+  must start with "uiaccess: on", and `Alt+F` must show labels on the Start
+  menu, the notification centre and a banner (`f` with Start open types
+  into its search box). The expectation that a topmost window of a
+  UIAccess process sits above those bands comes from the on-screen
+  keyboard and Magnifier, which do; if the labels still hide,
+  `GetWindowBand` on the overlay (`tools/uia_probe.c` could print it) says
+  which band it got, 1 being the desktop band. The scan side is checked:
+  with the probe, Start, Search, the notification centre and a banner are
+  listed "above the desktop band" and answer with their elements.
 - **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet.
 
 ## 8. How to change things efficiently
@@ -1520,7 +1586,8 @@ taken back into a dialog or menu), `filter_containers` and
 `choose_outer_click_point` (containers and click points), `cover_overlays`
 (elements under a web dialog, menu or frame), `slow_check` and
 `lazy_tree_window` (skip rules), `uia_scan_monitor` (window list and
-merging), `find_all_window` (a window's FindAll: full references through
+merging; `add_unlisted_windows` adds the windows above the desktop band that
+`EnumWindows` leaves out, `BAND_STEP_PX`, `BAND_MAX`, `window_band`), `find_all_window` (a window's FindAll: full references through
 `full_cache` for a window `full_memory` remembers, fetched once more when
 `tiny_boxes_listed` first sees a hidden checkbox) and `label_stand_in`
 (that checkbox's label, from `scan_filter`; `STAND_IN_MAX`,
@@ -1613,6 +1680,17 @@ under `C:\Program Files`), and no network.
 
 Version: `version.h` only (numbers and both strings). Icon: edit
 `tools/make_icon.c`, run `make icon` on Windows, and commit `vim.ico`.
+
+### The UIAccess build
+
+`make uiaccess` links the same objects with `vim.res.uiaccess.o` (`vim.rc`
+under `-DUIACCESS` embeds `vim.uiaccess.manifest`, `uiAccess="true"`).
+Windows starts such an exe only signed by a certificate in the machine's
+Trusted Root store and placed under Program Files (`EnableSecureUIAPaths`):
+`tools/uiaccess_setup.ps1` does both and restarts vim mouse from there.
+`app_has_uiaccess` (`main.c`, TokenUIAccess) tells the code; `update.c`
+refuses the unsigned release on that install. Keep both manifests in step
+when the manifest changes.
 
 ### Build and check
 
