@@ -162,6 +162,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_CAPS_CHECK  (WM_APP + 26)  // to s_power_wnd; wParam = key just released
 #define WM_INPUT_PTR_UPDATE  (WM_APP + 27)  // decide again whether the pointer is hidden
 #define WM_INPUT_CENTER      (WM_APP + 28)  // key_center twice: pointer to the middle
+#define WM_INPUT_FOCUS_ANSWER (WM_APP + 29) // uia_focus_notify: a focus answer arrived
 
 #define MOVE_LEFT  0x01
 #define MOVE_DOWN  0x02
@@ -212,6 +213,9 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // Waiting inside the hook keeps key order intact: no other key is processed
 // meanwhile.
 #define BARE_WAIT_MS 100
+// A second tap (g g, key_center twice) that typed because the focus was still
+// being asked for still acts when the answer arrives within this long.
+#define TAP_DEFER_MS 1000
 // Keys that reach the app tell the hints their scan ahead is old, at most
 // this often.
 #define AHEAD_FORGET_POST_MS 200
@@ -286,6 +290,15 @@ static DWORD s_end_tap_tick = 0;
 static BOOL  s_center_tap = FALSE;
 static BOOL  s_center_ok = FALSE;
 static DWORD s_center_tick = 0;
+
+// A second tap that typed because the focus was still being asked for
+// (tap_defer): the answer decides it (tap_answer, on WM_INPUT_FOCUS_ANSWER)
+// within TAP_DEFER_MS, as long as the focus window is still the same and no
+// other key came. Hook and input thread are one thread, so no locking.
+enum { DEFER_NONE, DEFER_TOP, DEFER_CENTER };
+static int   s_defer_act = DEFER_NONE;
+static DWORD s_defer_tick = 0;
+static HWND  s_defer_focus = NULL;
 
 // Shift + g asked for the bottom while Shift was still held. It scrolls
 // through UI Automation on press (Shift does not matter there); the wheel
@@ -1611,34 +1624,143 @@ static BOOL bare_key_ok(UINT vk)
     return kind == FOCUS_OTHER;
 }
 
+// key_center, or a digit key_center's number pad twin.
+static BOOL center_key_is(UINT vk)
+{
+    UINT k = g_cfg.key_center;
+
+    if (!k || g_cfg.center_tap_ms <= 0)
+        return FALSE;
+    if (vk == k)
+        return TRUE;
+    return k >= '0' && k <= '9' && vk == VK_NUMPAD0 + (k - '0');
+}
+
+static const WCHAR *focus_kind_name(int kind)
+{
+    return kind == FOCUS_TEXT ? L"in a text field" :
+           kind == FOCUS_OTHER ? L"outside text fields" : L"not known yet";
+}
+
+static const WCHAR *defer_name(int act)
+{
+    return act == DEFER_TOP ? L"g g" : L"center";
+}
+
+// The window with the keyboard focus, as far as this process can tell
+// without asking the app (the foreground window when its thread names none).
+static HWND focus_hwnd_now(void)
+{
+    GUITHREADINFO gti;
+    HWND fg = GetForegroundWindow();
+    DWORD tid;
+
+    ZeroMemory(&gti, sizeof(gti));
+    gti.cbSize = sizeof(gti);
+    tid = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
+    if (tid && GetGUIThreadInfo(tid, &gti) && gti.hwndFocus)
+        return gti.hwndFocus;
+    return fg;
+}
+
+// The second tap typed because the focus was still being asked for: the
+// answer decides it (tap_answer) instead of a third tap.
+static void tap_defer(int act)
+{
+    s_defer_act = act;
+    s_defer_tick = GetTickCount();
+    s_defer_focus = focus_hwnd_now();
+    if (g_cfg.log)
+        app_log(L"%ls: the second tap typed while the focus was still being "
+                L"asked for; the answer decides within %d ms",
+                defer_name(act), TAP_DEFER_MS);
+}
+
+static void tap_defer_cancel(void)
+{
+    if (s_defer_act != DEFER_NONE && g_cfg.log)
+        app_log(L"%ls: dropped, another key came first",
+                defer_name(s_defer_act));
+    s_defer_act = DEFER_NONE;
+}
+
 // key_center twice (0 0 within center_tap_ms, no modifiers) puts the
 // pointer in the middle of the active window's screen, from the input thread
 // once the hook has returned (both presses reach the app as usual). Outside
-// mouse mode only where the focus is known not to be in a text field, like
-// the bare keys, read when the first press arms it: that press asks the
-// focus again (focus_key_passed), so the answer at the second is often still
-// pending, and nothing here waits for it.
+// mouse mode only where the focus is not in a text field, like the bare
+// keys: the first tap arms unless the focus is known to be one, the second
+// waits briefly for a pending answer (BARE_WAIT_MS, the hook's one wait) and
+// leaves the decision to the answer (tap_defer) when it is still pending.
 static void center_key_down(UINT vk, UINT mods, BOOL armed)
 {
-    DWORD now;
-    BOOL ok;
+    DWORD now, gap;
+    int kind = FOCUS_OTHER;
+    BOOL popup = FALSE;
+    BOOL second;
 
-    if (!g_cfg.key_center || vk != g_cfg.key_center || mods != 0 ||
-        g_cfg.center_tap_ms <= 0)
+    if (mods != 0 || !center_key_is(vk))
         return;
     now = GetTickCount();
-    if (armed && s_center_ok &&
-        (DWORD)(now - s_center_tick) <= (DWORD)g_cfg.center_tap_ms) {
-        ok = flag_get(&s_mouse_mode) ||
-             (!popup_open(TRUE, NULL) && uia_focus_wait(0) != FOCUS_TEXT);
-        if (ok && s_input_tid)
-            PostThreadMessageW(s_input_tid, WM_INPUT_CENTER, 0, 0);
+    gap = now - s_center_tick;
+    second = armed && s_center_ok && gap <= (DWORD)g_cfg.center_tap_ms;
+    if (!flag_get(&s_mouse_mode)) {
+        popup = popup_open(TRUE, NULL);
+        kind = popup ? FOCUS_UNKNOWN : uia_focus_wait(second ? BARE_WAIT_MS : 0);
+    }
+    if (second) {
+        if (popup || kind == FOCUS_TEXT) {
+            if (g_cfg.log)
+                app_log(L"center: second tap typed, %ls",
+                        popup ? L"a menu is open" : focus_kind_name(kind));
+        } else if (kind == FOCUS_UNKNOWN) {
+            tap_defer(DEFER_CENTER);
+        } else {
+            if (g_cfg.log)
+                app_log(L"center: second tap %lu ms after the first; pointer "
+                        L"to the middle", (unsigned long)gap);
+            if (s_input_tid)
+                PostThreadMessageW(s_input_tid, WM_INPUT_CENTER, 0, 0);
+        }
         return;
+    }
+    if (armed && g_cfg.log)
+        app_log(s_center_ok ? L"center: second tap %lu ms after the first, "
+                              L"over center_tap_ms (%d); it is the first again" :
+                              L"center: second tap %lu ms after a first that "
+                              L"could not jump (%d ms window); it is the first "
+                              L"again",
+                (unsigned long)gap, g_cfg.center_tap_ms);
+    s_center_tap = TRUE;
+    s_center_tick = now;
+    s_center_ok = !popup && kind != FOCUS_TEXT;
+    if (!s_center_ok && g_cfg.log)
+        app_log(L"center: first tap cannot jump, %ls",
+                popup ? L"a menu is open" : focus_kind_name(kind));
+}
+
+// Alt + key_center twice: the same jump anywhere, text fields included. Both
+// presses are swallowed, like the other Alt keys; alt_seen as for
+// alt_action_down.
+static BOOL alt_center_down(UINT vk, BOOL armed, BOOL alt_seen)
+{
+    DWORD now;
+
+    if (!center_key_is(vk))
+        return FALSE;
+    if (alt_seen)
+        send_mask_key();
+    mark_caps_used();
+    s_owner[vk] = OWN_SWALLOW;
+    now = GetTickCount();
+    if (armed && (DWORD)(now - s_center_tick) <= (DWORD)g_cfg.center_tap_ms) {
+        if (s_input_tid)
+            PostThreadMessageW(s_input_tid, WM_INPUT_CENTER, 0, 0);
+        return TRUE;
     }
     s_center_tap = TRUE;
     s_center_tick = now;
-    s_center_ok = flag_get(&s_mouse_mode) ||
-                  (!popup_open(TRUE, NULL) && uia_focus_wait(0) == FOCUS_OTHER);
+    s_center_ok = TRUE;
+    return TRUE;
 }
 
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
@@ -1728,7 +1850,13 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
     UINT base;
     int act;
     BOOL shift;
+    BOOL center_tap = s_center_tap;
 
+    // Any key but a modifier ends a pending tap, as in handle_down.
+    if (!is_modifier(vk)) {
+        s_center_tap = FALSE;
+        tap_defer_cancel();
+    }
     if (handle_hotkeys(vk, mods, FALSE)) {
         s_owner[vk] = OWN_SWALLOW;
         s_alt_pending = FALSE;
@@ -1764,7 +1892,8 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
 
             s_end_tap = FALSE;
             s_end_shift = FALSE;
-            if (alt_action_down(vk, act, shift, end_tap, FALSE)) {
+            if (alt_action_down(vk, act, shift, end_tap, FALSE) ||
+                alt_center_down(vk, center_tap, FALSE)) {
                 s_alt_consumed = TRUE;
                 return TRUE;
             }
@@ -1790,11 +1919,12 @@ static BOOL handle_down(UINT vk)
     BOOL bare;
 
     // Any key ends a pending g g (a second g is armed by end_tap) and a
-    // pending 0 0, and drops a bottom jump still waiting for Shift;
-    // modifiers never reach here.
+    // pending 0 0, a second tap waiting for the focus answer, and drops a
+    // bottom jump still waiting for Shift; modifiers never reach here.
     s_end_tap = FALSE;
     s_center_tap = FALSE;
     s_end_shift = FALSE;
+    tap_defer_cancel();
 
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1835,6 +1965,8 @@ static BOOL handle_down(UINT vk)
     // the Alt release from opening its menu bar.
     if (base == KMOD_ALT || bare) {
         if (alt_action_down(vk, act, shift, end_tap, !bare))
+            return TRUE;
+        if (!bare && alt_center_down(vk, center_tap, TRUE))
             return TRUE;
         if (!bare && shortcut_begin(vk)) {
             send_mask_key();
@@ -1903,13 +2035,19 @@ static BOOL handle_down(UINT vk)
     // click, a page still loading). It is still the first of a g g: the
     // second g jumps if by then the answer says the focus is outside a text
     // field, where the typed g did nothing, and types as usual otherwise.
-    // Without this, g g right after a click needed g g g.
+    // Without this, g g right after a click needed g g g. When the second g
+    // typed for the same reason, the answer still makes the jump (tap_defer).
     if (act == ACT_SCROLL_END && mods == 0 && s_bare_asked) {
-        s_end_tap = TRUE;
-        s_end_tap_tick = GetTickCount();
-        if (g_cfg.log)
+        DWORD now = GetTickCount();
+
+        if (end_tap && (DWORD)(now - s_end_tap_tick) <=
+                           (DWORD)g_cfg.scroll_end_tap_ms)
+            tap_defer(DEFER_TOP);
+        else if (g_cfg.log)
             app_log(L"g g: the first g typed while the focus was being "
                     L"asked for; a second g still goes to the top");
+        s_end_tap = TRUE;
+        s_end_tap_tick = now;
     }
     center_key_down(vk, mods, center_tap);
     focus_key_passed(vk);
@@ -2221,6 +2359,7 @@ static void reset_key_state(void)
     s_alt_extended = FALSE;
     s_end_shift = FALSE;
     s_center_tap = FALSE;
+    s_defer_act = DEFER_NONE;
     s_pause_tap = FALSE;
     InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
@@ -2511,6 +2650,48 @@ static void center_pointer(void)
     ptr_update();
     if (g_cfg.log)
         app_log(L"center: pointer to %ld,%ld", pt.x, pt.y);
+}
+
+// WM_INPUT_FOCUS_ANSWER, on the input thread: a focus answer arrived. A
+// second tap that typed while it was pending (tap_defer) acts now where the
+// focus turned out to be outside a text field, and is dropped where it was
+// in one, moved elsewhere, or the answer came too late.
+static void tap_answer(void)
+{
+    int act = s_defer_act;
+    DWORD gap;
+    int kind;
+
+    if (act == DEFER_NONE)
+        return;
+    gap = GetTickCount() - s_defer_tick;
+    if (gap > TAP_DEFER_MS || flag_get(&s_paused) || flag_get(&s_capture) ||
+        flag_get(&s_mouse_mode) || focus_hwnd_now() != s_defer_focus ||
+        popup_open(TRUE, NULL)) {
+        s_defer_act = DEFER_NONE;
+        if (g_cfg.log)
+            app_log(L"%ls: dropped, %ls", defer_name(act),
+                    gap > TAP_DEFER_MS ? L"the focus answer came too late"
+                                       : L"the focus moved meanwhile");
+        return;
+    }
+    kind = uia_focus_state();
+    if (kind == FOCUS_UNKNOWN)
+        return;     // still being asked (a retry): the next answer decides
+    s_defer_act = DEFER_NONE;
+    if (kind != FOCUS_OTHER) {
+        if (g_cfg.log)
+            app_log(L"%ls: typed, the focus turned out to be in a text field",
+                    defer_name(act));
+        return;
+    }
+    if (g_cfg.log)
+        app_log(L"%ls: the answer came %lu ms after the second tap; acting "
+                L"now", defer_name(act), (unsigned long)gap);
+    if (act == DEFER_TOP)
+        scroll_press(ACT_FAST_UP, FALSE, TRUE);
+    else
+        center_pointer();
 }
 
 // The keyboard is in use: the real mouse's last event counts as long ago,
@@ -3864,6 +4045,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
         s_input_tid = 0;
         return 1;
     }
+    uia_focus_notify(s_input_tid, WM_INPUT_FOCUS_ANSWER);
     focus_hooks_update();
     caps_timer_update();
     ptr_thread_start();
@@ -3907,12 +4089,17 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 center_pointer();
                 continue;
             }
+            if (msg.message == WM_INPUT_FOCUS_ANSWER) {
+                tap_answer();
+                continue;
+            }
             continue;
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
+    uia_focus_notify(0, 0);
     cleanup_input();
     s_input_tid = 0;
     return 0;

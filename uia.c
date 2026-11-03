@@ -6050,6 +6050,25 @@ static HWND  g_fx_hwnd;
 static int   g_fx_answer = FOCUS_UNKNOWN;
 static DWORD g_fx_not_before;       // do not ask before this tick
 static DWORD g_fx_pending_since;    // when the current unanswered gen started
+// uia_focus_notify: the thread told of every answer (0 = none), its message.
+static volatile LONG g_fx_notify_tid;
+static UINT g_fx_notify_msg;
+
+void uia_focus_notify(DWORD tid, UINT msg)
+{
+    g_fx_notify_msg = msg;
+    InterlockedExchange(&g_fx_notify_tid, (LONG)tid);
+}
+
+// An answer is in: a key that typed while it was pending decides on it now
+// (input.c tap_answer). A post only; the worker never waits for that thread.
+static void focus_notify(void)
+{
+    DWORD tid = (DWORD)InterlockedCompareExchange(&g_fx_notify_tid, 0, 0);
+
+    if (tid)
+        PostThreadMessageW(tid, g_fx_notify_msg, 0, 0);
+}
 
 // The window with the keyboard focus (the foreground window if its thread
 // names none), and the GUI thread state behind it. FALSE if unknown.
@@ -6452,6 +6471,7 @@ static DWORD WINAPI focus_worker(void *arg)
                 }
                 kind = g_fx_answer;
                 SetEvent(g_fx_answered);
+                focus_notify();
             } else {
                 BOOL keep = (kind == FOCUS_FAILED ||
                              kind == FOCUS_UNKNOWN) &&
@@ -6467,6 +6487,7 @@ static DWORD WINAPI focus_worker(void *arg)
                 kind = g_fx_answer;
                 hwnd = g_fx_hwnd;
                 SetEvent(g_fx_answered);
+                focus_notify();
                 if (retry_gen == gen) {
                     if (g_fx_answer == FOCUS_UNKNOWN &&
                         retry_done < FOCUS_RETRIES) {

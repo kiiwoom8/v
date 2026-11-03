@@ -447,6 +447,10 @@ BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out);
 void uia_flush(POINT pt, UINT seq);
 int  uia_focus_state(void);
 int  uia_focus_wait(DWORD max_ms);
+// Posts msg (wParam, lParam 0) to thread tid whenever an answer arrives, so a
+// key that typed while the focus was being asked for can still act on the
+// answer without the hook waiting for it; tid 0 turns it off. Never waits.
+void uia_focus_notify(DWORD tid, UINT msg);
 void uia_focus_stop(void);
 
 // ---------------------------------------------------------------------------

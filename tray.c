@@ -884,6 +884,9 @@ static void build_help_rows(void)
         _snwprintf(buf, 127, L"%s %s", k, k);
         buf[127] = L'\0';
         help_add_row(buf, L"Pointer to the middle of the screen (two taps; outside text fields or in mouse mode)");
+        _snwprintf(buf, 127, L"Alt + %s %s", k, k);
+        buf[127] = L'\0';
+        help_add_row(buf, L"The same anywhere, text fields included (both taps swallowed)");
     }
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.lock_hotkey.vk)

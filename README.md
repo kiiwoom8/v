@@ -35,6 +35,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
 | `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press; where UI Automation cannot scroll that area, once Shift is released, so browsers do not scroll sideways) |
 | `0` `0` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; `0` still reaches the app) |
+| `Alt+0 0` | The same anywhere, text fields included (both taps swallowed) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
@@ -77,7 +78,10 @@ is not sure (right after a click, in a game or a remote desktop, with a menu
 open) the letters type as usual. A key pressed while it is still asking waits
 up to 0.1 s for the answer instead of typing at once. A `g` that typed while
 it was still asking still counts as the first of `g g`: the second `g` scrolls
-to the top once the answer says the focus is outside a text field.
+to the top once the answer says the focus is outside a text field, and when
+the second `g` typed for the same reason the jump still comes once the
+answer arrives (within a second, unless another key or a focus change comes
+first).
 Text shortcuts always need Alt. `bare_keys = 0` turns this off.
 
 **0 twice.** Two quick taps of `0` (within `center_tap_ms`, default
@@ -89,6 +93,11 @@ uses the same focus answer as the keys without Alt, so with `bare_keys = 0`
 it works in mouse mode only. With the pointer hidden outside mouse mode it
 shows up in the middle and hides again after `hide_pointer` ms. `key_center`
 picks another key (`none` turns it off), `center_tap_ms` the tap window.
+`Alt+0 0` does the same anywhere, text fields included, and swallows both
+presses like the other Alt keys. A second `0` that typed while vim mouse was
+still asking where the focus is still makes the jump once the answer says
+it is outside a text field (within a second, unless another key comes
+first).
 
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
@@ -453,7 +462,7 @@ ones:
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_scroll_end`
   (`g`: tap twice for the top, with Shift for the bottom), `key_center`
-  (`0`: tap twice for the middle of the screen; `none` = off), `key_hints`,
+  (`0`: tap twice for the middle of the screen, with Alt anywhere; `none` = off), `key_hints`,
   `key_exit`, `key_help` remaps
 - `hide_pointer` (0-60000 ms, default 2000: outside mouse mode the pointer is
   hidden; the real mouse shows it, and it hides again this long after the

@@ -1618,7 +1618,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
                  d.key_scroll_right);
     add_key_line(buf, cch, L"Scroll to the top (tap twice) / bottom (with Shift).",
                  L"key_scroll_end", d.key_scroll_end);
-    add_key_line(buf, cch, L"Tap twice: pointer to the middle of the screen (none = off).",
+    add_key_line(buf, cch, L"Tap twice: pointer to the middle of the screen; with Alt anywhere (none = off).",
                  L"key_center", d.key_center);
     add_key_line(buf, cch, L"Open the click hints.", L"key_hints",
                  d.key_hints);

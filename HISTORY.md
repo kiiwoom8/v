@@ -34,7 +34,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
-| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the `0 0` jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `center_pointer`, `input_thread_proc` |
+| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the `0 0` jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `input_thread_proc` |
 | `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
 | `uia.c` | 6652 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
@@ -513,10 +513,31 @@ Invariants stated in `common.h` and enforced by history:
   to replace that install with the unsigned release. Not yet run on the
   user's machine: the trust step needs the administrator prompt (section 7).
 - "Change centering shortcut from enter twice into 00." `key_center`
-  defaults to `0` (was Enter); nothing else changed: both presses still
-  reach the app outside mouse mode (swallowed as a typing key inside it),
-  and outside text fields only. A `vim.ini` written before keeps
-  `key_center = Enter` until edited.
+  defaults to `0` (was Enter); a digit also matches its number-pad key
+  (`center_key_is`). A `vim.ini` written before keeps `key_center = Enter`
+  until edited.
+- "00 doesn't work though; make Alt + 00 also work" and "sometimes gg
+  doesn't move to the top, I have to retype them": the cause of `29def43`,
+  one step further. Right after a hint click the focus answer is pending
+  for `FOCUS_CLICK_DELAY_MS` plus the classification, and the *second* tap
+  can land inside that too: it typed and only re-armed, so the top needed
+  a third and fourth `g`; `0 0` did not even arm, since the first tap
+  required a known "no text field". Now the first `0` arms unless the
+  focus is known to be a text field, a second tap waits `BARE_WAIT_MS`
+  like the bare keys, and a second tap (`g g` or `0 0`) that still typed
+  with the answer pending is deferred (`tap_defer`, `DEFER_TOP` /
+  `DEFER_CENTER`): the focus worker posts `WM_INPUT_FOCUS_ANSWER` to the
+  input thread after every answer (`uia_focus_notify`, `focus_notify`),
+  and `tap_answer` acts within `TAP_DEFER_MS` (1 s) when the answer is
+  "no text field", the focus window (`focus_hwnd_now`) is still the
+  tap's, no other key came (`tap_defer_cancel` in `handle_down` and
+  `alt_resolve`) and no menu opened; a text-field answer drops it, so a
+  key typed into a text field still never turns into a jump. Hook and
+  input thread are one thread, so the state needs no lock. `Alt` +
+  `key_center` twice (`alt_center_down`, on both Alt paths) jumps
+  anywhere, text fields included, both taps swallowed like the other Alt
+  keys; `first_key_taken` warns a text shortcut starting with that key.
+  `log = 1` writes why a tap did not jump.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -668,7 +689,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 111 | `5c687e5` | 11-03 | 10 | `draw_element_label` drops the typed prefix: only the characters still to type are drawn, in a box shrunk from the right of the placed one (`match_fg` now colours the grid's typed row letter only) | "Instead of shadowing the typed char, remove the typed char of the navigators so I can view it more cleanly instead of overlapped big boxes" |
 | 112 | `29def43` | 11-03 | 10 | A bare `g` that typed because the focus was not known yet still arms `g g` (`s_bare_asked` set by `bare_key_ok`, read on the pass-through path of `handle_down`); the second `g` jumps only where the answer by then is "no text field" and types otherwise; `scroll_end_tap_ms` defaults to 500 (was 300); `log = 1` writes the tap timing and the reason a second tap did not jump | "Sometimes g g doesn't work at once so I have to press this twice": right after a hint click (`FOCUS_CLICK_DELAY_MS` and the classification) or on a page still loading, the first `g` reached the app and the second only armed, so the top needed `g g g` |
 
-| 113 | | 11-03 | 11 | `add_unlisted_windows`: the scan's window list takes the foreground window and whatever `WindowFromPoint` hits on a 64 px grid of the monitor (`BAND_STEP_PX`, `BAND_MAX` 8) when `EnumWindows` left them out, in front of the listed windows, ordered by `GetWindowBand` (`window_band`; `WinInfo.above`, `log = 2` says "above the desktop band"); `window_info_fill` is the shared window check; `make uiaccess` builds `vim-uiaccess.exe` with `vim.uiaccess.manifest` (`vim.rc` `#ifdef UIACCESS`), `tools/uiaccess_setup.ps1` signs and installs it, `app_has_uiaccess` (TokenUIAccess) is logged at start and stops the tray update | "My vim cannot trace system UI (notification, system app etc) with navigator": the Start menu, Search, the notification centre and banners sit in z-order bands above the desktop, unseen by `EnumWindows`, and the overlay cannot be drawn above them without UIAccess |
+| 113 | `c85c40f` | 11-03 | 11 | `add_unlisted_windows`: the scan's window list takes the foreground window and whatever `WindowFromPoint` hits on a 64 px grid of the monitor (`BAND_STEP_PX`, `BAND_MAX` 8) when `EnumWindows` left them out, in front of the listed windows, ordered by `GetWindowBand` (`window_band`; `WinInfo.above`, `log = 2` says "above the desktop band"); `window_info_fill` is the shared window check; `make uiaccess` builds `vim-uiaccess.exe` with `vim.uiaccess.manifest` (`vim.rc` `#ifdef UIACCESS`), `tools/uiaccess_setup.ps1` signs and installs it, `app_has_uiaccess` (TokenUIAccess) is logged at start and stops the tray update | "My vim cannot trace system UI (notification, system app etc) with navigator": the Start menu, Search, the notification centre and banners sit in z-order bands above the desktop, unseen by `EnumWindows`, and the overlay cannot be drawn above them without UIAccess |
+| 114 | `45e8e6c` | 11-03 | 11 | `key_center` defaults to `0` (was Enter) | "Change centering shortcut from enter twice into 00" |
+| 115 | | 11-03 | 11 | `Alt` + `key_center` twice (`alt_center_down`, both Alt paths, both taps swallowed) jumps anywhere; the bare first `0` arms unless the focus is a known text field and the second waits `BARE_WAIT_MS`; a second tap (`g g` or `0 0`) that typed while the focus was still being asked for is deferred (`tap_defer`, `TAP_DEFER_MS` 1000) and acts from `tap_answer` on `WM_INPUT_FOCUS_ANSWER`, posted by the focus worker through `uia_focus_notify` after every answer, if the answer is "no text field", the focus window is the same and no other key came; a digit `key_center` also matches its number-pad key; `log = 1` says why a tap did not jump | "00 doesn't work though; make alt + 00 also work" and "sometimes gg doesn't move to the top, i have to retype them": the second tap landed while the focus answer was still pending (right after a hint click), so both typed and only a third and fourth tap jumped |
 
 ## 5. Lessons learned: rules not to break
 
@@ -790,6 +813,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
   focus is outside a text field, so a `g` typed into a text field never
   turns into a jump. The window is 500 ms (`scroll_end_tap_ms`); vim itself
   has no timeout for `g g`, and a lone `g` is swallowed or harmless anyway.
+  When the second `g` typed for the same reason, `tap_defer` hands the jump
+  to the focus answer (`tap_answer`, within `TAP_DEFER_MS`), dropped when
+  the answer says text field, the focus window changed or another key
+  came; `0 0` (`key_center`) works the same way.
 - **Do not throw away a good answer.** `da32599`: every focus change made the
   answer unknown; background apps and IME windows invalidated the foreground
   answer; a failed poll replaced a good one. The fix: ignore focus events
@@ -1534,7 +1561,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
    `apply_action_down` and the release in `handle_up`. Clear any pending
    state in `reset_key_state`. A key that must still reach the app
    (`key_center`) is matched in `center_key_down` instead, on the
-   pass-through paths of `handle_down`.
+   pass-through paths of `handle_down`; its Alt form in `alt_center_down`,
+   on both Alt paths (`handle_down`, `alt_resolve`). A two-tap key whose
+   second tap may type while the focus is still being asked for defers to
+   the answer through `tap_defer` / `tap_answer` (a `DEFER_*` value).
 4. `snippet.c` `first_key_taken`: if it is a new Alt-key letter.
 5. `tray.c` `build_help_rows`: the help window.
 6. `README.md`: the Keys tables, Settings, and Troubleshooting if it takes a
