@@ -605,7 +605,13 @@ void config_set_defaults(Config *c)
     parse_key(L"i", &c->key_exit);
     parse_key(L"/", &c->key_help);
 
-    wcscpy(c->alphabet, L"abcdefhjklmnopqrstuvwxz");
+    // Home row, then the top row, then the bottom row, each in keyboard
+    // order. build_labels (hint.c) expands the alphabet's head first, so
+    // its first letters begin every two-letter label and are the one-letter
+    // labels of a quiet screen; the tail letters are the one-letter labels
+    // of a busy one. g, i and y are left out: they read as q, j and v in
+    // the label font.
+    wcscpy(c->alphabet, L"asdfhjklqwertuopzxcvbnm");
     c->cell_size = 64;
     c->subgrid = 1;
     wcscpy(c->subgrid_keys, L"qwer/asdf/zxcv");
@@ -1627,7 +1633,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     add_key_line(buf, cch, L"Show the help window.", L"key_help", d.key_help);
 
     appendf(buf, cch, L"\r\n[hints]\r\n");
-    appendf(buf, cch, L"; Characters used for the hint grid labels: 2-60 unique letters/digits.\r\n");
+    appendf(buf, cch, L"; Characters used for the hint labels: 2-60 unique letters/digits. The\r\n");
+    appendf(buf, cch, L"; first ones begin every two-letter label, so put the easiest keys first\r\n");
+    appendf(buf, cch, L"; (default: home row, top row, bottom row; g, i and y look like q, j, v).\r\n");
     appendf(buf, cch, L"alphabet = %ls\r\n", d.alphabet);
     appendf(buf, cch, L"; Target size of one grid cell in pixels at 100%% scaling (24-400).\r\n");
     appendf(buf, cch, L"cell_size = %d\r\n", d.cell_size);

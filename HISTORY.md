@@ -555,6 +555,31 @@ Invariants stated in `common.h` and enforced by history:
   deferred `g g` (`tap_answer`) aims like the bare path. `log = 1` writes
   which route the top took. Confirmed by the user: "Yes, works".
 
+### Phase 12: the label alphabet (2026-11-04)
+
+- "When it comes to navigator alphabet combinations, as I know vimium uses
+  left hand friendly pattern. I can be wrong so investigate and if there's
+  better option for it, apply that." Checked against the sources: Vimium's
+  default is `sadfjklewcmpgh` (the home row of both hands first, then
+  `e w c m p g h`), Vimium C's `sadjklewcmpgh`, Tridactyl's
+  `hjklasdfgyuiopqwertnmzxcvb` (all 26, home row first); the left-hand-only
+  set is Surfingkeys' `asdfgqwertzxcvb`, so that the right hand can stay on
+  the mouse. Ours was the old program's `abcdefhjklmnopqrstuvwxz`:
+  alphabetical, minus `g`, `i` and `y` (they read as `q`, `j` and `v` in
+  the label font). The order matters: `build_labels` expands the head of
+  the alphabet first, so its first letters begin every two-letter label (on
+  a page of 150 elements the first eight are prefixes) and are the
+  one-letter labels of a quiet screen, while the tail letters are the
+  one-letter labels of a busy page. Alphabetical put `b` and `c`, bottom-row
+  keys, among the prefixes. The default is now `asdfhjklqwertuopzxcvbnm`:
+  the home row, then the top row, then the bottom row, each in keyboard
+  order. The same 23 letters, so the code space (529 two-letter labels) and
+  the grid (23 columns at 1080p) are unchanged. A left-hand-only set was
+  not taken: both hands are on the keyboard here, and 15 letters would push
+  busy pages to three-letter labels and the grid to 15 columns. The user's
+  own `vim.ini` names the alphabet explicitly, so it got the new line too
+  (the default alone would have changed nothing there).
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1172,6 +1197,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
   one of the few codes left over (0 to 21 with the default alphabet) or
   none. `build_labels` now plans for a quarter more elements, at least an
   alphabet's worth.
+- **The alphabet's order is part of the design.** `build_labels` expands
+  the alphabet's head first: with `keep_labels` its first letter is always
+  a prefix (its codes wait for late elements), the next ones become
+  prefixes as the page grows, and the tail letters stay one-letter labels.
+  So the default (phase 12) puts the home row first and the bottom row
+  last; keep that when adding or removing letters, and keep `g`, `i` and
+  `y` out (they read as `q`, `j` and `v` in bold Segoe UI at label size,
+  the old program's lesson).
 - **Two labels at one corner hide each other.** Labels were drawn at
   their element's top-left in target order, so where a card and the link
   at its corner were both targets (Google: every result block exposes
@@ -1446,6 +1479,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | In a browser, a checkbox or radio button hidden behind its label (a 1 px input) gets the label's box (`scan_hidden_checkbox = 0` restores) | phase 10 | The input was too small for a label and the label itself is never a target |
 | `Alt+P P` pauses and resumes everything (`pause_tap_ms = 0` makes it one press; `pause_hotkey = none` restores) | phase 10 | The pause hotkey was unbound; pausing only from the tray menu |
 | An element label drops its typed characters and shrinks to what is still to type | phase 10 | The whole label stayed, the typed prefix coloured `match_fg` (the grid still does that) |
+| The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 
 ## 7. Open threads
 

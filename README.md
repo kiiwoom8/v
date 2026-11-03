@@ -456,7 +456,14 @@ ones:
   the right of it, or below it at the screen's edge, the smaller element
   keeping its corner, default; 0 = every label at its element's top-left
   corner, one over the other)
-- `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `alphabet`, `opacity`
+- `alphabet` (the label letters, 2-60 unique letters or digits, default
+  `asdfhjklqwertuopzxcvbnm`: the home row, then the top row, then the bottom
+  row, each in keyboard order. The first letters begin every two-letter
+  label and are the one-letter labels of a quiet screen, so the easiest keys
+  go first; `g`, `i` and `y` are left out because they look like `q`, `j`
+  and `v` in the label font. The grid's rows and columns use the same
+  letters in this order)
+- `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `opacity`
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,

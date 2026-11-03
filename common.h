@@ -168,7 +168,9 @@ typedef struct {
     UINT key_help;             // /  (also shown as ?)
 
     // [hints]
-    WCHAR alphabet[64];        // label chars, default L"abcdefhjklmnopqrstuvwxz"
+    WCHAR alphabet[64];        // label chars, default L"asdfhjklqwertuopzxcvbnm":
+                               // home row, top row, bottom row; the first
+                               // letters begin every two-letter label
     int   cell_size;           // target cell size in px at 100% scaling, default 64
     int   subgrid;             // 1 = refine inside the chosen cell, default 1
     WCHAR subgrid_keys[64];    // rows separated by '/', default L"qwer/asdf/zxcv"

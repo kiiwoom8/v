@@ -1691,7 +1691,7 @@ int main(int argc, char **argv)
     memset(&stats, 0, sizeof(stats));
     memset(&final, 0, sizeof(final));
     memset(&scan_run, 0, sizeof(scan_run));
-    lstrcpynW(g_cfg.alphabet, L"abcdefhjklmnopqrstuvwxz", 64);
+    lstrcpynW(g_cfg.alphabet, L"asdfhjklqwertuopzxcvbnm", 64);
     // The app's defaults for what the scan and the labels do in a browser.
     g_cfg.scan_focusable = 1;
     g_cfg.scan_hidden_checkbox = 1;
