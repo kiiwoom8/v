@@ -34,7 +34,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
 | `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press; where UI Automation cannot scroll that area, once Shift is released, so browsers do not scroll sideways) |
-| `Enter` `Enter` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; Enter still reaches the app) |
+| `0` `0` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; `0` still reaches the app) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
@@ -80,11 +80,11 @@ it was still asking still counts as the first of `g g`: the second `g` scrolls
 to the top once the answer says the focus is outside a text field.
 Text shortcuts always need Alt. `bare_keys = 0` turns this off.
 
-**Enter twice.** Two quick taps of `Enter` (within `center_tap_ms`, default
+**0 twice.** Two quick taps of `0` (within `center_tap_ms`, default
 300 ms) put the pointer in the middle of the screen that holds the active
 window: in mouse mode, and outside it wherever the keyboard focus is not in
-a text field, so two blank lines in a chat box or a document move nothing.
-Both presses reach the app as usual; vim mouse never holds Enter back. It
+a text field, so typing `00` in a chat box or a document moves nothing.
+Both presses reach the app as usual; vim mouse never holds `0` back. It
 uses the same focus answer as the keys without Alt, so with `bare_keys = 0`
 it works in mouse mode only. With the pointer hidden outside mouse mode it
 shows up in the middle and hides again after `hide_pointer` ms. `key_center`
@@ -133,7 +133,7 @@ a pass-through modifier.
 | `u` / `d` | Scroll up / down (tap = one notch, hold = continuous, accelerating) |
 | `,` / `.` | Scroll left / right |
 | `g g` / `Shift+g` | Scroll to the top (two quick taps) / bottom |
-| `Enter` `Enter` | Move the pointer to the middle of the screen (two quick taps; Enter still passes through) |
+| `0` `0` | Move the pointer to the middle of the screen (two quick taps) |
 | `f` | Click hints (mouse mode stays on afterwards) |
 | `/` or `?` | Help window |
 | `i`, `Esc`, `CapsLock` tap | Leave mouse mode |
@@ -384,7 +384,7 @@ ones:
   5), `fast_scroll_speed`, `fast_scroll_max_speed` (while held),
   `scroll_end_tap_ms` (two `g` taps within this many ms scroll to the top,
   0-1000, default 500; 0 = `g g` and `Shift+g` off), `center_tap_ms` (two
-  `Enter` taps within this many ms move the pointer to the middle of the
+  `0` taps within this many ms move the pointer to the middle of the
   screen, 0-1000, default 300; 0 = off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `key_grid` (the key that switches between the element labels and the grid
@@ -453,7 +453,7 @@ ones:
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_scroll_end`
   (`g`: tap twice for the top, with Shift for the bottom), `key_center`
-  (`Enter`: tap twice for the middle of the screen; `none` = off), `key_hints`,
+  (`0`: tap twice for the middle of the screen; `none` = off), `key_hints`,
   `key_exit`, `key_help` remaps
 - `hide_pointer` (0-60000 ms, default 2000: outside mouse mode the pointer is
   hidden; the real mouse shows it, and it hides again this long after the

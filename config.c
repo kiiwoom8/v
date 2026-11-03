@@ -600,7 +600,7 @@ void config_set_defaults(Config *c)
     parse_key(L",", &c->key_scroll_left);
     parse_key(L".", &c->key_scroll_right);
     parse_key(L"g", &c->key_scroll_end);
-    parse_key(L"Enter", &c->key_center);
+    parse_key(L"0", &c->key_center);
     parse_key(L"f", &c->key_hints);
     parse_key(L"i", &c->key_exit);
     parse_key(L"/", &c->key_help);

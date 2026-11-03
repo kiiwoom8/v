@@ -279,7 +279,7 @@ static DWORD s_pause_tick = 0;
 static BOOL  s_end_tap = FALSE;
 static DWORD s_end_tap_tick = 0;
 
-// The last key was a lone key_center (Enter). A second one within
+// The last key was a lone key_center (0). A second one within
 // center_tap_ms puts the pointer in the middle of the screen; any other key
 // starts over. s_center_ok is whether the first press was somewhere the
 // jump is allowed (mouse mode, or the focus known not to be in a text field).
@@ -1611,7 +1611,7 @@ static BOOL bare_key_ok(UINT vk)
     return kind == FOCUS_OTHER;
 }
 
-// key_center twice (Enter Enter within center_tap_ms, no modifiers) puts the
+// key_center twice (0 0 within center_tap_ms, no modifiers) puts the
 // pointer in the middle of the active window's screen, from the input thread
 // once the hook has returned (both presses reach the app as usual). Outside
 // mouse mode only where the focus is known not to be in a text field, like
@@ -1790,7 +1790,7 @@ static BOOL handle_down(UINT vk)
     BOOL bare;
 
     // Any key ends a pending g g (a second g is armed by end_tap) and a
-    // pending Enter Enter, and drops a bottom jump still waiting for Shift;
+    // pending 0 0, and drops a bottom jump still waiting for Shift;
     // modifiers never reach here.
     s_end_tap = FALSE;
     s_center_tap = FALSE;

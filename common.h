@@ -160,7 +160,7 @@ typedef struct {
     UINT key_scroll_left;      // ,
     UINT key_scroll_right;     // .
     UINT key_scroll_end;       // g  (g g = top, Shift + g = bottom)
-    UINT key_center;           // Enter  (tap twice = pointer to the middle of the screen;
+    UINT key_center;           // 0  (tap twice = pointer to the middle of the screen;
                                // the key still reaches the app; in mouse mode, and outside
                                // it where the focus is not in a text field)
     UINT key_hints;            // f  (open click hints)
