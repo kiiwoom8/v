@@ -5701,22 +5701,26 @@ void uia_scroll_stop(void)
 }
 
 // ---------------------------------------------------------------------------
-// Scroll to the bottom on press (Shift + g). Its own MTA thread and engine,
-// not the scroll-target worker: that one may be busy for hundreds of
-// milliseconds in a FindAll, which would delay the jump. ScrollPattern's
-// SetScrollPercent ignores the held Shift, where a wheel event does not
-// (browsers turn Shift + wheel into sideways scrolling).
+// Scroll to the top (g g) or the bottom (Shift + g) on press. Its own MTA
+// thread and engine, not the scroll-target worker: that one may be busy for
+// hundreds of milliseconds in a FindAll, which would delay the jump.
+// ScrollPattern's SetScrollPercent lands exactly, at once, and does not pass
+// through the app's wheel handling: it ignores the held Shift, where a wheel
+// event does not (browsers turn Shift + wheel into sideways scrolling), and
+// it cannot be cut short the way the wheel glide to the top was in Chrome.
 
 // UIA's "leave this axis as it is" scroll percent. Its own name: the SDK
 // headers may spell the constant differently.
 #define SCROLL_PERCENT_UNCHANGED (-1.0)
 #define UIA_SCROLL_END_BELOW 99.9  // a percent this close to 100 is the bottom
+#define UIA_SCROLL_END_ABOVE 0.1   // a percent this close to 0 is the top
 #define SCROLL_END_TREE_MAX 64     // walk at most this far up the raw view
 
 typedef struct {
     BOOL  set;
     LONG  seq;
     POINT pt;
+    BOOL  top;      // the top (g g); otherwise the bottom (Shift + g)
 } ScrollEndRequest;
 
 static HANDLE g_se_thread;
@@ -5732,10 +5736,10 @@ static LONG g_se_seq;
 static LONG g_se_answer_seq;
 static BOOL g_se_answer;
 
-// Scrolls the area at pt to the bottom, chaining up like a wheel does: an
-// element already at the bottom passes the ask to its parent. TRUE when a
-// vertically scrollable element was found at all (all at the bottom).
-static BOOL scroll_end_at(IUIAutomation *automation, POINT pt)
+// Scrolls the area at pt to the top or the bottom, chaining up like a wheel
+// does: an element already at that end passes the ask to its parent. TRUE
+// when a vertically scrollable element was found at all (all at that end).
+static BOOL scroll_end_at(IUIAutomation *automation, POINT pt, BOOL top)
 {
     IUIAutomationElement *el = NULL;
     IUIAutomationTreeWalker *walker = NULL;
@@ -5770,13 +5774,19 @@ static BOOL scroll_end_at(IUIAutomation *automation, POINT pt)
             if (SUCCEEDED(sp->lpVtbl->get_CurrentVerticallyScrollable(
                     sp, &vertical)) && vertical) {
                 double pct = 0.0;
+                BOOL there;
 
                 found = TRUE;
-                // Unreadable counts as "not at the bottom": try the scroll.
+                // Unreadable counts as "not at that end": try the scroll.
                 if (FAILED(sp->lpVtbl->get_CurrentVerticalScrollPercent(
-                        sp, &pct)) || pct < UIA_SCROLL_END_BELOW) {
+                        sp, &pct)))
+                    there = FALSE;
+                else
+                    there = top ? pct <= UIA_SCROLL_END_ABOVE
+                                : pct >= UIA_SCROLL_END_BELOW;
+                if (!there) {
                     hr = sp->lpVtbl->SetScrollPercent(
-                        sp, SCROLL_PERCENT_UNCHANGED, 100.0);
+                        sp, SCROLL_PERCENT_UNCHANGED, top ? 0.0 : 100.0);
                     sp->lpVtbl->Release(sp);
                     el->lpVtbl->Release(el);
                     walker->lpVtbl->Release(walker);
@@ -5853,7 +5863,7 @@ static DWORD WINAPI scroll_end_worker(void *arg)
             last_engine_try = now;
         }
         if (ready)
-            answered = scroll_end_at(engine.automation, req.pt);
+            answered = scroll_end_at(engine.automation, req.pt, req.top);
 
         EnterCriticalSection(&g_se_cs);
         g_se_answer_seq = req.seq;
@@ -5929,7 +5939,7 @@ static void scroll_end_stop(void)
     InterlockedExchange(&g_se_state, 0);
 }
 
-BOOL uia_scroll_end(POINT pt, DWORD timeout_ms)
+BOOL uia_scroll_end(POINT pt, BOOL top, DWORD timeout_ms)
 {
     DWORD start;
     LONG seq;
@@ -5939,6 +5949,7 @@ BOOL uia_scroll_end(POINT pt, DWORD timeout_ms)
     EnterCriticalSection(&g_se_cs);
     seq = ++g_se_seq;
     g_se_req.pt = pt;
+    g_se_req.top = top;
     g_se_req.seq = seq;
     g_se_req.set = TRUE;
     LeaveCriticalSection(&g_se_cs);

@@ -404,14 +404,15 @@ enum { SCROLL_AIM_POINTER = 0, SCROLL_AIM_TARGET = 1, SCROLL_AIM_ASKING = -1 };
 int  uia_scroll_aim(POINT pt, BOOL vertical, DWORD since_ms, POINT *target);
 void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);
-// Shift + g (bottom) through UI Automation: scrolls the area at pt to the
-// bottom through its ScrollPattern on its own thread, so a held Shift does
-// not matter. Waits up to timeout_ms. TRUE when it scrolled, or when every
-// vertically scrollable area there was already at the bottom; FALSE when UI
-// Automation could not scroll there, and the caller falls back to the wheel
-// once Shift is released. One caller thread at a time (the movement thread).
-// uia_scroll_stop (and so uia_stop) stops it too.
-BOOL uia_scroll_end(POINT pt, DWORD timeout_ms);
+// g g (top) and Shift + g (bottom) through UI Automation: scrolls the area at
+// pt to that end through its ScrollPattern on its own thread, exactly and at
+// once, so neither a held Shift nor the app's own wheel handling matters.
+// Waits up to timeout_ms. TRUE when it scrolled, or when every vertically
+// scrollable area there was already at that end; FALSE when UI Automation
+// could not scroll there, and the caller falls back to the wheel (for the
+// bottom once Shift is released). One caller thread at a time (the movement
+// thread). uia_scroll_stop (and so uia_stop) stops it too.
+BOOL uia_scroll_end(POINT pt, BOOL top, DWORD timeout_ms);
 // Bare keys: whether the keyboard focus is in a text field (UI Automation, on
 // its own thread). uia_focus_changed forgets the answer and asks again, not
 // before delay_ms from now (a click the app has not handled yet); the first

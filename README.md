@@ -33,7 +33,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+h` / `Alt+l` | Go back / forward (sent as `Alt+Left` / `Alt+Right`: browsers, Explorer, VS Code and most apps) |
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
-| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press; where UI Automation cannot scroll that area, once Shift is released, so browsers do not scroll sideways) |
+| `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press). Both go through UI Automation, exactly and at once; where that cannot scroll the area, the wheel does it (for the bottom once Shift is released, so browsers do not scroll sideways) |
 | `0` `0` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; `0` still reaches the app) |
 | `Alt+0 0` | The same anywhere, text fields included (both taps swallowed) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
@@ -141,7 +141,7 @@ a pass-through modifier.
 | `v` | Press and hold the left button (drag/select); `v` or `a` again releases |
 | `u` / `d` | Scroll up / down (tap = one notch, hold = continuous, accelerating) |
 | `,` / `.` | Scroll left / right |
-| `g g` / `Shift+g` | Scroll to the top (two quick taps) / bottom |
+| `g g` / `Shift+g` | Scroll to the top (two quick taps) / bottom, through UI Automation where it can scroll the area, else on the wheel |
 | `0` `0` | Move the pointer to the middle of the screen (two quick taps) |
 | `f` | Click hints (mouse mode stays on afterwards) |
 | `/` or `?` | Help window |

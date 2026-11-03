@@ -184,7 +184,8 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // Scroll speed ramps from its base toward its maximum after this delay. A tap
 // still delivers at least one notch (fast_scroll_lines notches for the fast keys).
 #define SCROLL_HOLD_DELAY_MS 150.0
-// g g / Shift + g glide to the end instead of jumping: the fast stream starts at
+// Where UI Automation cannot scroll to the end (uia_scroll_end), g g / Shift +
+// g glide there on the wheel instead of jumping: the fast stream starts at
 // fast_scroll_speed and grows exponentially with this time constant. The exact
 // distance delivered after t is v0 * tau * (e^(t/tau) - 1); it stops once it
 // reaches SCROLL_JUMP_UNITS, 64 of the largest signed 16-bit wheel deltas.
@@ -205,8 +206,9 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // that cannot scroll the area does the wheel wait for Shift to come up. If
 // Shift stays held longer than this, the press is forgotten.
 #define SCROLL_END_SHIFT_MS 1000
-// How long the movement thread waits for that UI Automation scroll before it
-// falls back to the wheel at Shift release.
+// How long the movement thread waits for a UI Automation scroll to the top
+// (g g) or the bottom before it falls back to the wheel (for the bottom at
+// Shift release).
 #define SCROLL_END_UIA_MS 300
 // The hook may wait this long for an answer that is still being asked. It must
 // stay far below Windows' LowLevelHooksTimeout, or Windows removes the hook.
@@ -248,10 +250,11 @@ static volatile LONG s_scroll_flags = 0;
 static volatile LONG s_scroll_auto = 0;
 static volatile LONG s_scroll_pending = 0;
 static volatile LONG s_target_gen = 0;
-// g g goes to the top of the page and Shift + g to the bottom. With smooth
-// scrolling the movement thread glides there on that direction's fast stream;
-// without it, it sends the whole jump at once. The bit marks the press and is
-// cleared when the thread starts it.
+// g g goes to the top of the page and Shift + g to the bottom. The movement
+// thread asks UI Automation first (uia_scroll_end: exact, at once); where that
+// finds nothing to scroll, with smooth scrolling it glides there on that
+// direction's fast stream, and without it sends the whole jump at once. The
+// bit marks the press and is cleared when the thread starts it.
 static volatile LONG s_scroll_jump = 0;
 static volatile LONG s_move_exit = 0;
 
@@ -2689,7 +2692,7 @@ static void tap_answer(void)
         app_log(L"%ls: the answer came %lu ms after the second tap; acting "
                 L"now", defer_name(act), (unsigned long)gap);
     if (act == DEFER_TOP)
-        scroll_press(ACT_FAST_UP, FALSE, TRUE);
+        scroll_press(ACT_FAST_UP, g_cfg.alt_scroll_auto, TRUE);
     else
         center_pointer();
 }
@@ -3271,10 +3274,11 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     LONG jump;
                     int j, k, delta;
 
-                    // The bottom jump through UI Automation is one shot at
-                    // one point, so it alone waits for the lookup; streams
+                    // A jump through UI Automation is one shot at one
+                    // point, so it alone waits for the lookup; streams
                     // start at once and are re-aimed.
-                    if (aim_asking && idx == 5 && (auto_bits & (1 << idx)) &&
+                    if (aim_asking && (idx == 4 || idx == 5) &&
+                        (auto_bits & (1 << idx)) &&
                         (InterlockedCompareExchange(&s_scroll_jump, 0, 0) &
                          (1 << idx)))
                         continue;
@@ -3294,6 +3298,45 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     jump = InterlockedCompareExchange(&s_scroll_jump, 0, 0);
                     if (jump & (1 << idx)) {
                         atomic_and(&s_scroll_jump, ~(LONG)(1 << idx));
+                        // The top jump goes through UI Automation first: it
+                        // lands exactly and at once, where the wheel glide
+                        // was cut short in Chrome (the page moved a few
+                        // screens up and stopped, mostly on a first try).
+                        // Only where that finds nothing to scroll does the
+                        // wheel go out, as before.
+                        if (idx == 4) {
+                            POINT pt = { 0, 0 };
+
+                            if ((aimed & (1 << idx)) && target_ok)
+                                pt = target;
+                            else
+                                GetCursorPos(&pt);
+                            if (uia_scroll_end(pt, TRUE, SCROLL_END_UIA_MS)) {
+                                page_acted_at(PAGE_SCROLL, &pt);
+                                if (g_cfg.log)
+                                    app_log(L"g g: top through UI Automation "
+                                            L"at %ld,%ld", pt.x, pt.y);
+                                // Stop the vertical streams, as a wheel jump
+                                // does; the wait does not count as scrolling
+                                // time.
+                                scrActive[0] = scrActive[1] = 0;
+                                scrActive[4] = scrActive[5] = 0;
+                                scrAccY = 0.0;
+                                QueryPerformanceCounter(&now);
+                                prev = now;
+                                now_us = qpc_us_from(now, freq);
+                                continue;
+                            }
+                            if (g_cfg.log)
+                                app_log(L"g g: UI Automation found nothing to "
+                                        L"scroll at %ld,%ld; the wheel goes "
+                                        L"out", pt.x, pt.y);
+                            // The wait does not count as scrolling time, and
+                            // the wheel jump after it starts from now.
+                            QueryPerformanceCounter(&now);
+                            prev = now;
+                            now_us = qpc_us_from(now, freq);
+                        }
                         // The bottom jump goes through UI Automation first, so
                         // a held Shift does not turn it sideways. Only when
                         // that cannot scroll this area does the wheel go out,
@@ -3311,7 +3354,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                                     pt = target;
                                 else
                                     GetCursorPos(&pt);
-                                if (uia_scroll_end(pt, SCROLL_END_UIA_MS)) {
+                                if (uia_scroll_end(pt, FALSE,
+                                                   SCROLL_END_UIA_MS)) {
                                     page_acted_at(PAGE_SCROLL, &pt);
                                     after = InterlockedCompareExchange(
                                         &s_end_uia, END_UIA_DONE,

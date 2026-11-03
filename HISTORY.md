@@ -36,7 +36,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the `0 0` jump to the middle of the screen. | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `input_thread_proc` |
 | `hint.c` | 3830 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
-| `uia.c` | 6652 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `Shift+g` scroll to the bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
+| `uia.c` | 6652 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `g g` / `Shift+g` scroll to the top / bottom and the focus classifier for bare keys. All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -538,6 +538,22 @@ Invariants stated in `common.h` and enforced by history:
   anywhere, text fields included, both taps swallowed like the other Alt
   keys; `first_key_taken` warns a text shortcut starting with that key.
   `log = 1` writes why a tap did not jump.
+- "Still gg doesn't move to the top, instead some frames up. It often
+  occurs at initial try": the taps now registered (the jump started), but
+  the page moved a few screens up and stopped. The top was the one
+  scroll-to-end still sent on the wheel: 64 full-range wheel deltas glided
+  over half a second through Chrome's wheel pipeline (a latched sequence,
+  animation retargeting, whatever the page does with wheel events), while
+  `Shift+g` has gone through ScrollPattern's `SetScrollPercent` since
+  `be52799` without a report. Which step in Chrome dropped the rest was not
+  pinned down (`log = 0` on the user's machine); the route was. Now the
+  top jump asks UI Automation first too (`uia_scroll_end` with a `top`
+  flag: percent 0, "already at the top" chains to the parent like the
+  bottom), exact and at once, and the wheel glide is only the fallback
+  where it finds nothing to scroll. The movement thread waits for the
+  scroll-target lookup before a top jump as it did for the bottom, and the
+  deferred `g g` (`tap_answer`) aims like the bare path. `log = 1` writes
+  which route the top took.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -1229,6 +1245,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Do not burst a long scroll.** `aad1eaa`: with Windows animations off,
   Chrome applied a 64-event burst in one frame. Glide with growing speed, and
   split large frame amounts into several 16-bit wheel deltas.
+- **Jump to an end through UI Automation, not the wheel.** The glide to the
+  top (2 M wheel units over half a second) came out in Chrome as a few
+  screens up, then nothing, mostly on a first try, while the bottom through
+  `SetScrollPercent` (`be52799`) never did. A wheel jump is at the mercy of
+  the app's wheel handling (Chrome's latched sequence and animation
+  retargeting, a page's own wheel handler); a ScrollPattern percent lands
+  exactly and at once. Both ends go through `uia_scroll_end` first; the
+  glide is only the fallback where UI Automation finds nothing to scroll.
 - **Redirecting the wheel can scroll the wrong panel.** `729e682`: a cached
   list up to 10 s old sent the wheel to the nearest area. `e987c6a`: Teams
   does not report its conversation as scrollable, so a redirect only goes to
@@ -1399,6 +1423,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | `Alt+h` / `Alt+l` go back / forward; `Alt+,` / `Alt+.` scroll sideways (`alt_nav = 0` restores) | `b474c89` | `Alt+h/l` scrolled sideways (`09b7fdb`) |
 | `g g` / `Shift+g` scroll to the top / bottom; `Alt+g g` / `Alt+Shift+g` in text fields | `6622ce0` | `Alt+u u` / `Alt+d d` (`b54285f`) |
 | The bottom jump fires on press through UI Automation; where that cannot scroll, the wheel goes after Shift is released | `be52799`, `ba62724` | Wheel at once (sideways in browsers, before `ba62724`); wheel only after Shift release (`ba62724` to `be52799`) |
+| The top jump (`g g`) goes through UI Automation too; the wheel glide only where that finds nothing to scroll | phase 11 | The wheel glide alone (`aad1eaa` to phase 11), cut short in Chrome |
 | Scroll-to-end glides | `aad1eaa` | 64-event burst (still used with `smooth_scroll = 0`) |
 | After our own scroll or click in a Chromium window, the first scan waits for the page, at most `scan_settle` (650 ms; `scan_settle = 0` restores) | `515eb02` | Scan at once, labelling where the page had been |
 | That wait asks the browser to send its changes (`uia_flush`) and ends when they are in, about 330 ms after a scroll (back / forward keep the fixed wait); scrolls the browser reports itself start it too, up to 300 ms (`scan_flush = 0` restores the fixed wait) | `77ec7f4`, `c33324e` | A fixed `scan_settle` after our own actions only; physical scrolls labelled the old page |
@@ -1661,7 +1686,9 @@ app (`input.c` `ahead_key_passed`, `HINT_PREPARE_FORGET`).
 ### Change scrolling or movement
 
 `input.c` `movement_thread` (streams, glides, timer), `scroll_press` /
-`scroll_release`, `scroll_end_press`, `post_wheel`, `send_wheel_jump`.
+`scroll_release`, `scroll_end_press`, `post_wheel`, `send_wheel_jump`. The
+jumps to an end: `uia.c` `scroll_end_at` (`uia_scroll_end`, its `top` flag),
+asked by the movement thread before any wheel glide.
 Targeting and its cache: `uia.c` `uia_scroll_aim` (never waits; the movement
 thread polls it each tick and re-aims the streams, `aim_asking`, `scrOwed`),
 `scroll_area_answer`, `scroll_side_gap`, the `SCROLL_*_MS` constants.
