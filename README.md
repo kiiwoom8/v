@@ -36,6 +36,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press). Both go through UI Automation, exactly and at once; where that cannot scroll the area, the wheel does it (for the bottom once Shift is released, so browsers do not scroll sideways) |
 | `0` `0` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; `0` still reaches the app) |
 | `Alt+0 0` | The same anywhere, text fields included (both taps swallowed) |
+| `Esc` in a text field | Leave the field: the keyboard focus goes to the page, so `j` / `k` / `f` work at once (web browsers; `Esc` still reaches the field first) |
 | `Alt` + abbreviation | Type a [text shortcut](#text-shortcuts) (release Alt to type it) |
 | `CapsLock` tap | Toggle mouse mode |
 | `CapsLock` hold + keys | Mouse mode only while held (release returns to normal) |
@@ -108,6 +109,24 @@ presses like the other Alt keys. A second `0` that typed while vim mouse was
 still asking where the focus is still makes the jump once the answer says
 it is outside a text field (within a second, unless another key comes
 first).
+
+**Esc leaves a text field.** In a web browser, `Esc` in a search box, a
+form field, a chat box or the address bar moves the keyboard focus to the
+page itself, as if you had clicked an empty spot of it: the keys without
+Alt (`j` / `k`, `f`, `g g`) work at once, and typed letters no longer go
+into the field. Click the field, `Tab` to it or pick it with the hints to
+type again. `Esc` still reaches the field first, so it closes what it
+always closed or undid (a page's dialog, what you typed in the address
+bar); when the
+field's suggestion list is open, the first `Esc` closes the list and a
+second one leaves the field. Nothing happens when another key comes before
+`Esc` is released, when `Esc` is held, while a menu is open, or when `Esc`
+itself moved the focus. It works in Chrome, Edge, Firefox, Brave, Vivaldi,
+Opera, Whale and other browsers by process name; `esc_unfocus = 2` also
+covers apps built on web content (Electron apps such as Slack, WebView2
+apps), whose editors often use `Esc` themselves, and `esc_unfocus = 0` turns
+it off. Native apps are never touched: their windows hand the focus
+straight back to the text field.
 
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
@@ -413,7 +432,9 @@ ones:
   `scroll_end_tap_ms` (two `g` taps within this many ms scroll to the top,
   0-1000, default 500; 0 = `g g` and `Shift+g` off), `center_tap_ms` (two
   `0` taps within this many ms move the pointer to the middle of the
-  screen, 0-1000, default 300; 0 = off)
+  screen, 0-1000, default 300; 0 = off), `esc_unfocus` (`Esc` in a
+  text field moves the focus to the page: 1 = in web browsers, default;
+  2 = also in apps built on web content; 0 = off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `key_grid` (the key that switches between the element labels and the grid
   while the hints are open, default `;`; `none` = off),
@@ -681,6 +702,11 @@ user's store.
   recognise that text field. With `log = 1`, `vim.log` shows what it decided
   after each focus change ("focus: text field" or "focus: no text field").
   `bare_keys = 0` turns the Alt-less keys off.
+- **`Esc` takes me out of a text field I wanted to keep typing in.** In a
+  browser `Esc` moves the focus to the page (`esc_unfocus`); click the field
+  to type again, or set `esc_unfocus = 0`. With `log = 1`, `vim.log` says
+  what each `Esc` did ("esc: focus to the page", or "esc: the focus stays"
+  and why).
 - **A text shortcut types nothing.** Its first letter may be an Alt key of vim
   mouse (`f h j k l u d g` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either

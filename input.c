@@ -1766,6 +1766,40 @@ static BOOL alt_center_down(UINT vk, BOOL armed, BOOL alt_seen)
     return TRUE;
 }
 
+// esc_unfocus: an Esc press that reached the app with the focus perhaps in
+// a text field; its release has the focus worker move the focus to the page
+// (uia_focus_leave_up). Another key first, or a reset, drops it.
+static BOOL s_unfocus_armed = FALSE;
+
+static void unfocus_cancel(void)
+{
+    if (!s_unfocus_armed)
+        return;
+    s_unfocus_armed = FALSE;
+    uia_focus_leave_cancel();
+}
+
+// A plain Esc on its way to the app (outside mouse mode and the hints, not
+// paused). The worker decides where the focus is and whether a suggestion
+// list is open, so the hook only rules out what it already knows: a menu
+// open (that Esc is the menu's) and a focus known to be outside text
+// fields. The autorepeat of a held Esc keeps the first press's arming.
+static void unfocus_key_down(UINT vk, UINT mods)
+{
+    if (vk != VK_ESCAPE || mods != 0 || !g_cfg.esc_unfocus ||
+        s_unfocus_armed)
+        return;
+    if (popup_open(TRUE, NULL)) {
+        if (g_cfg.log)
+            app_log(L"esc: the focus stays, a menu is open");
+        return;
+    }
+    if (uia_focus_state() == FOCUS_OTHER)
+        return;
+    s_unfocus_armed = TRUE;
+    uia_focus_leave_down();
+}
+
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
 // it, so ask again once it has.
 static void focus_key_passed(UINT vk)
@@ -1859,6 +1893,7 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
     if (!is_modifier(vk)) {
         s_center_tap = FALSE;
         tap_defer_cancel();
+        unfocus_cancel();
     }
     if (handle_hotkeys(vk, mods, FALSE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1928,6 +1963,10 @@ static BOOL handle_down(UINT vk)
     s_center_tap = FALSE;
     s_end_shift = FALSE;
     tap_defer_cancel();
+    // Another key before the Esc release: that Esc leaves nothing. The
+    // autorepeat of the held Esc itself is not another key.
+    if (vk != VK_ESCAPE)
+        unfocus_cancel();
 
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -2053,6 +2092,7 @@ static BOOL handle_down(UINT vk)
         s_end_tap_tick = now;
     }
     center_key_down(vk, mods, center_tap);
+    unfocus_key_down(vk, mods);
     focus_key_passed(vk);
     ahead_key_passed();
     s_owner[vk] = OWN_PASS;
@@ -2070,6 +2110,11 @@ static BOOL handle_up(UINT vk)
     act = s_action[vk];
     s_owner[vk] = OWN_NONE;
     s_action[vk] = ACT_NONE;
+    // esc_unfocus acts after the release, once the app has had the Esc.
+    if (vk == VK_ESCAPE && s_unfocus_armed) {
+        s_unfocus_armed = FALSE;
+        uia_focus_leave_up();
+    }
     switch (owner) {
     case OWN_PASS:
         return FALSE;
@@ -2364,6 +2409,7 @@ static void reset_key_state(void)
     s_center_tap = FALSE;
     s_defer_act = DEFER_NONE;
     s_pause_tap = FALSE;
+    unfocus_cancel();
     InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
 }

@@ -151,6 +151,11 @@ typedef struct {
     int    center_tap_ms;      // key_center twice within this many ms puts the pointer in
                                // the middle of the active window's screen, default 300
                                // (0 = off)
+    int    esc_unfocus;        // Esc in a text field moves the focus to the page, so the
+                               // keys without Alt work: 1 = in web browsers (and their
+                               // address bar), default; 2 = also apps built on web
+                               // content (Electron, WebView2); 0 = off. Esc still
+                               // reaches the app first; an open suggestion list keeps it
     double fast_scroll_speed;  // Alt + u/d held, default 3600
     double fast_scroll_max_speed; // default 14400
     UINT key_left, key_down, key_up, key_right;          // h j k l
@@ -468,6 +473,16 @@ int  uia_focus_wait(DWORD max_ms);
 // answer without the hook waiting for it; tid 0 turns it off. Never waits.
 void uia_focus_notify(DWORD tid, UINT msg);
 void uia_focus_stop(void);
+// esc_unfocus: Esc in a text field of a browser page (or in its address bar)
+// moves the keyboard focus to the page, on the focus worker.
+// uia_focus_leave_down at the Esc press (the worker looks at the field at
+// once, before the app has handled the key; an open suggestion list keeps
+// the focus), uia_focus_leave_up at its release (the move follows shortly
+// after, if Esc left the focus in that field), uia_focus_leave_cancel when
+// another key came first. None waits; safe from the hook.
+void uia_focus_leave_down(void);
+void uia_focus_leave_up(void);
+void uia_focus_leave_cancel(void);
 
 // ---------------------------------------------------------------------------
 // Tray + help (tray.c). Main/UI thread.

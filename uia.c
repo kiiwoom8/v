@@ -283,7 +283,8 @@ typedef struct IUIAutomationElementVtbl {
     void *QueryInterface;
     void *AddRef;
     ULONG (STDMETHODCALLTYPE *Release)(IUIAutomationElement *This);
-    void *SetFocus;
+    // esc_unfocus: the page Document takes the focus from a text field.
+    HRESULT (STDMETHODCALLTYPE *SetFocus)(IUIAutomationElement *This);
     void *GetRuntimeId;
     void *FindFirst;
     void *FindAll;
@@ -426,7 +427,9 @@ typedef struct IUIAutomationTreeWalkerVtbl {
     HRESULT (STDMETHODCALLTYPE *GetParentElementBuildCache)(
         IUIAutomationTreeWalker *This, IUIAutomationElement *element,
         IUIAutomationCacheRequest *cacheRequest, IUIAutomationElement **parent);
-    void *GetFirstChildElementBuildCache;
+    HRESULT (STDMETHODCALLTYPE *GetFirstChildElementBuildCache)(
+        IUIAutomationTreeWalker *This, IUIAutomationElement *element,
+        IUIAutomationCacheRequest *cacheRequest, IUIAutomationElement **first);
     void *GetLastChildElementBuildCache;
     HRESULT (STDMETHODCALLTYPE *GetNextSiblingElementBuildCache)(
         IUIAutomationTreeWalker *This, IUIAutomationElement *element,
@@ -6478,10 +6481,383 @@ static const WCHAR *focus_kind_name(int kind)
     }
 }
 
+// ---------------------------------------------------------------------------
+// esc_unfocus: Esc in a text field of a web page, or in a browser's address
+// bar, moves the keyboard focus to the page itself, so the keys without Alt
+// work at once. Measured on 2026-11-08 in Chrome (managed UI Automation and
+// CDP): SetFocus on the page's Document element leaves document.activeElement
+// on <body> (Blink focuses the document element for that action), and from
+// the address bar it moves the focus into the page; the Document is the child
+// of the Pane that Chrome_RenderWidgetHostHWND answers with. Esc still reaches
+// the app first (it closes a suggestion list, reverts the address bar).
+//
+// The hook arms it at the Esc press (uia_focus_leave_down) and the worker
+// looks at the field at once, before the app has handled the key: an open
+// suggestion list (an expanded combobox, or Chromium naming the highlighted
+// option as the focus) makes that Esc the list's, so a second Esc leaves.
+// The move waits for the release (uia_focus_leave_up) plus LEAVE_AFTER_MS,
+// and only if the focus is still in a text field of that window: an Esc that
+// closed a dialog or moved the focus itself is left alone. Native apps are
+// never touched: their windows hand the focus straight back to their edit
+// control, and their Esc means too much (cancel, close).
+
+#ifndef UIA_ExpandCollapseExpandCollapseStatePropertyId
+#define UIA_ExpandCollapseExpandCollapseStatePropertyId 30070
+#endif
+#ifndef PROCESS_QUERY_LIMITED_INFORMATION
+#define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
+#endif
+
+#define LEAVE_AFTER_MS 30       // after the Esc release, let the app finish with it
+#define LEAVE_HOLD_MS 1500      // an Esc held longer than this does nothing
+#define LEAVE_DEPTH_MAX 64      // parents walked looking for the field's Document
+#define LEAVE_SETTLE_MS 50      // ask the focus again this long after the move
+
+// Guarded by g_fx_cs. g_lv_seq counts the armed presses; the worker handles
+// each once (LeaveState.done_seq).
+static LONG  g_lv_seq;
+static BOOL  g_lv_up;
+static BOOL  g_lv_dead;
+static DWORD g_lv_down_tick;
+static DWORD g_lv_up_tick;
+
+typedef struct {
+    LONG seq;                           // the press looked at
+    LONG done_seq;                      // the press finished with
+    IUIAutomationElement *target;       // where the focus goes
+    HWND focus;                         // the focus window when it was looked at
+    IUIAutomationCacheRequest *cache;   // full elements, control type and more
+} LeaveState;
+
+typedef BOOL (WINAPI *QueryImageNameFn)(HANDLE, DWORD, LPWSTR, PDWORD);
+
+// esc_unfocus = 1: a web browser's own process (not an app built on
+// Chromium, whose editors use Esc for themselves: VS Code, Slack).
+static BOOL browser_process(DWORD pid)
+{
+    static const WCHAR *const names[] = {
+        L"chrome.exe", L"msedge.exe", L"firefox.exe", L"brave.exe",
+        L"vivaldi.exe", L"opera.exe", L"whale.exe", L"chromium.exe",
+        L"arc.exe", L"thorium.exe", L"librewolf.exe", L"waterfox.exe",
+        L"floorp.exe", L"zen.exe", NULL
+    };
+    static QueryImageNameFn query;
+    static DWORD last_pid;
+    static BOOL last_answer;
+    WCHAR path[MAX_PATH];
+    DWORD len = MAX_PATH;
+    const WCHAR *base;
+    HANDLE proc;
+    BOOL ok;
+    int i;
+
+    if (pid == last_pid && pid)
+        return last_answer;
+    if (!query)
+        query = (QueryImageNameFn)(PVOID)GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
+    if (!query)
+        return FALSE;
+    proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc)
+        return FALSE;
+    ok = query(proc, 0, path, &len);
+    CloseHandle(proc);
+    if (!ok)
+        return FALSE;
+    base = wcsrchr(path, L'\\');
+    base = base ? base + 1 : path;
+    last_pid = pid;
+    last_answer = FALSE;
+    for (i = 0; names[i]; ++i)
+        if (_wcsicmp(base, names[i]) == 0)
+            last_answer = TRUE;
+    return last_answer;
+}
+
+static BOOL leave_cache_ready(IUIAutomation *automation, LeaveState *lv)
+{
+    static const int props[] = {
+        UIA_ControlTypePropertyId, UIA_IsPasswordPropertyId,
+        UIA_IsValuePatternAvailablePropertyId, UIA_ValueIsReadOnlyPropertyId,
+        UIA_IsTextPatternAvailablePropertyId,
+        UIA_IsLegacyIAccessiblePatternAvailablePropertyId,
+        UIA_LegacyIAccessibleStatePropertyId,
+        UIA_IsExpandCollapsePatternAvailablePropertyId,
+        UIA_ExpandCollapseExpandCollapseStatePropertyId
+    };
+    size_t i;
+
+    if (lv->cache)
+        return TRUE;
+    if (!automation ||
+        FAILED(automation->lpVtbl->CreateCacheRequest(automation,
+                                                      &lv->cache)) ||
+        !lv->cache) {
+        lv->cache = NULL;
+        return FALSE;
+    }
+    for (i = 0; i < sizeof(props) / sizeof(props[0]); ++i)
+        lv->cache->lpVtbl->AddProperty(lv->cache, props[i]);
+    lv->cache->lpVtbl->put_AutomationElementMode(lv->cache, UIA_MODE_FULL);
+    return TRUE;
+}
+
+static int cached_control_type(IUIAutomationElement *el)
+{
+    int ct = 0;
+
+    el->lpVtbl->get_CachedControlType(el, &ct);
+    return ct;
+}
+
+// The nearest Document above el: the page, or the frame, the field is in.
+static IUIAutomationElement *leave_document_above(
+    IUIAutomation *automation, IUIAutomationCacheRequest *cache,
+    IUIAutomationElement *el)
+{
+    IUIAutomationTreeWalker *walker = NULL;
+    IUIAutomationElement *cur = el, *parent;
+    int depth;
+
+    if (FAILED(automation->lpVtbl->get_RawViewWalker(automation, &walker)) ||
+        !walker)
+        return NULL;
+    // cur is el (the caller's) at first, then a parent of our own.
+    for (depth = 0; depth < LEAVE_DEPTH_MAX; ++depth) {
+        parent = NULL;
+        if (FAILED(walker->lpVtbl->GetParentElementBuildCache(
+                walker, cur, cache, &parent)) || !parent)
+            break;
+        if (cur != el)
+            cur->lpVtbl->Release(cur);
+        cur = parent;
+        if (cached_control_type(cur) == UIA_DocumentControlTypeId) {
+            walker->lpVtbl->Release(walker);
+            return cur;
+        }
+    }
+    if (cur != el)
+        cur->lpVtbl->Release(cur);
+    walker->lpVtbl->Release(walker);
+    return NULL;
+}
+
+// A Chromium window's page Document, for a field outside the page (the
+// address bar): the child of the Pane its largest page window answers with.
+static IUIAutomationElement *leave_page_document(
+    IUIAutomation *automation, IUIAutomationCacheRequest *cache, HWND root)
+{
+    IUIAutomationTreeWalker *walker = NULL;
+    IUIAutomationElement *pane = NULL, *c = NULL, *next;
+    PageWindowSearch s;
+    int n;
+
+    s.best = NULL;
+    s.area = 0;
+    EnumChildWindows(root, page_window_proc, (LPARAM)&s);
+    if (!s.best ||
+        FAILED(automation->lpVtbl->ElementFromHandle(automation, s.best,
+                                                     &pane)) || !pane)
+        return NULL;
+    if (FAILED(automation->lpVtbl->get_RawViewWalker(automation, &walker)) ||
+        !walker) {
+        pane->lpVtbl->Release(pane);
+        return NULL;
+    }
+    if (FAILED(walker->lpVtbl->GetFirstChildElementBuildCache(
+            walker, pane, cache, &c)))
+        c = NULL;
+    for (n = 0; c && n < 8; ++n) {
+        if (cached_control_type(c) == UIA_DocumentControlTypeId)
+            break;
+        next = NULL;
+        if (FAILED(walker->lpVtbl->GetNextSiblingElementBuildCache(
+                walker, c, cache, &next)))
+            next = NULL;
+        c->lpVtbl->Release(c);
+        c = next;
+    }
+    if (c && cached_control_type(c) != UIA_DocumentControlTypeId) {
+        c->lpVtbl->Release(c);
+        c = NULL;
+    }
+    walker->lpVtbl->Release(walker);
+    pane->lpVtbl->Release(pane);
+    return c;
+}
+
+// ExpandCollapseState: 1 expanded, 2 partially (0 collapsed, 3 a leaf).
+static BOOL leave_expanded(IUIAutomationElement *el)
+{
+    LONG state = cached_long_property(
+        el, UIA_ExpandCollapseExpandCollapseStatePropertyId);
+
+    return state == 1 || state == 2;
+}
+
+static void leave_drop(LeaveState *lv)
+{
+    if (lv->target)
+        lv->target->lpVtbl->Release(lv->target);
+    lv->target = NULL;
+    lv->focus = NULL;
+}
+
+// Whether typing goes into a text field in focus (the window with the
+// keyboard focus) now; *el gets the focused element when asked for.
+static BOOL leave_in_text(IUIAutomation *automation, LeaveState *lv,
+                          HWND focus, const GUITHREADINFO *gti,
+                          IUIAutomationElement **el)
+{
+    BOOL caret = gti->hwndCaret || (gti->flags & GUI_CARETBLINKING) ||
+                 caret_visible(focus);
+    IUIAutomationElement *e = NULL;
+    BOOL text;
+
+    if (FAILED(automation->lpVtbl->GetFocusedElementBuildCache(
+            automation, lv->cache, &e)))
+        e = NULL;
+    text = caret || (e && focus_element_kind(e) == FOCUS_TEXT);
+    if (el)
+        *el = e;
+    else if (e)
+        e->lpVtbl->Release(e);
+    return text;
+}
+
+// At the Esc press: is the focus in a text field we may leave, and where
+// does the focus go? Sets lv->target, or logs why not.
+static void leave_look(IUIAutomation *automation, LeaveState *lv)
+{
+    IUIAutomationElement *el = NULL;
+    GUITHREADINFO gti;
+    HWND focus, root;
+    DWORD pid;
+    const WCHAR *why = NULL;
+    int ct;
+
+    leave_drop(lv);
+    if (!automation || !leave_cache_ready(automation, lv)) {
+        why = L"no UI Automation";
+    } else if (!focus_window(&focus, &gti, &pid) ||
+               pid == GetCurrentProcessId()) {
+        why = L"no focus window";
+    } else if (gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE |
+                            GUI_SYSTEMMENUMODE)) {
+        why = L"a menu is open";
+    } else if (!(root = GetAncestor(focus, GA_ROOT)) ||
+               !uia_browser_window(root) ||
+               (g_cfg.esc_unfocus < 2 && !browser_process(pid))) {
+        why = g_cfg.esc_unfocus < 2 ? L"not a web browser"
+                                    : L"no web content";
+    } else if (!leave_in_text(automation, lv, focus, &gti, &el)) {
+        why = L"not in a text field";
+    } else if (el && ((ct = cached_control_type(el)) ==
+                          UIA_ListItemControlTypeId ||
+                      ct == UIA_MenuItemControlTypeId ||
+                      ct == UIA_TreeItemControlTypeId ||
+                      ct == UIA_DataItemControlTypeId)) {
+        // Chromium names an input's aria-activedescendant option.
+        why = L"the field's suggestion list is open";
+    } else if (el && cached_bool_property(
+                         el, UIA_IsExpandCollapsePatternAvailablePropertyId) &&
+               leave_expanded(el)) {
+        why = L"the field's suggestion list is open";
+    } else {
+        if (el)
+            lv->target = leave_document_above(automation, lv->cache, el);
+        if (!lv->target && uia_chromium_window(root))
+            lv->target = leave_page_document(automation, lv->cache, root);
+        if (!lv->target)
+            why = L"no page to move the focus to";
+        else
+            lv->focus = focus;
+    }
+    if (el)
+        el->lpVtbl->Release(el);
+    if (why && g_cfg.log)
+        app_log(L"esc: the focus stays, %ls", why);
+}
+
+// After the release: move the focus to the page, if Esc left it in the field.
+static void leave_act(IUIAutomation *automation, LeaveState *lv)
+{
+    GUITHREADINFO gti;
+    HWND focus;
+    DWORD pid;
+    HRESULT hr;
+
+    if (!focus_window(&focus, &gti, &pid) || focus != lv->focus) {
+        if (g_cfg.log)
+            app_log(L"esc: the focus stays, it moved to another window");
+        return;
+    }
+    if (!leave_in_text(automation, lv, focus, &gti, NULL)) {
+        if (g_cfg.log)
+            app_log(L"esc: the focus stays, Esc already took it out of the "
+                    L"field");
+        return;
+    }
+    hr = lv->target->lpVtbl->SetFocus(lv->target);
+    if (g_cfg.log)
+        app_log(L"esc: focus to the page (hr 0x%08lx)", (unsigned long)hr);
+    uia_focus_changed(LEAVE_SETTLE_MS);
+}
+
+// Runs what is due for the latest armed Esc; returns how long until the
+// next step is due (0 = nothing pending; a key-up wakes the worker anyway).
+static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
+{
+    LONG seq;
+    BOOL up, dead;
+    DWORD down_tick, up_tick, now;
+
+    EnterCriticalSection(&g_fx_cs);
+    seq = g_lv_seq;
+    up = g_lv_up;
+    dead = g_lv_dead;
+    down_tick = g_lv_down_tick;
+    up_tick = g_lv_up_tick;
+    LeaveCriticalSection(&g_fx_cs);
+    if (seq == lv->done_seq)
+        return 0;
+    if (dead) {
+        leave_drop(lv);
+        lv->done_seq = seq;
+        return 0;
+    }
+    if (lv->seq != seq) {
+        lv->seq = seq;
+        leave_look(automation, lv);
+        if (!lv->target) {
+            lv->done_seq = seq;
+            return 0;
+        }
+    }
+    now = GetTickCount();
+    if (!up) {
+        if ((DWORD)(now - down_tick) < LEAVE_HOLD_MS)
+            return LEAVE_HOLD_MS - (DWORD)(now - down_tick);
+        if (g_cfg.log)
+            app_log(L"esc: the focus stays, Esc was held");
+        leave_drop(lv);
+        lv->done_seq = seq;
+        return 0;
+    }
+    if ((DWORD)(now - up_tick) < LEAVE_AFTER_MS)
+        return LEAVE_AFTER_MS - (DWORD)(now - up_tick);
+    leave_act(automation, lv);
+    leave_drop(lv);
+    lv->done_seq = seq;
+    return 0;
+}
+
 static DWORD WINAPI focus_worker(void *arg)
 {
     IUIAutomation *automation = NULL;
     IUIAutomationCacheRequest *cache = NULL;
+    LeaveState lv;
     HRESULT hr;
     HWND last_hwnd = NULL;
     int last_kind = -1;
@@ -6491,6 +6867,7 @@ static DWORD WINAPI focus_worker(void *arg)
     DWORD retry_at = 0;
     (void)arg;
 
+    memset(&lv, 0, sizeof(lv));
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (hr == S_OK || hr == S_FALSE) {
         engine_lock();
@@ -6501,9 +6878,12 @@ static DWORD WINAPI focus_worker(void *arg)
     while (!InterlockedCompareExchange(&g_fx_quit, 0, 0)) {
         LONG gen;
         BOOL pending, retrying;
-        DWORD wait = 0, now;
+        DWORD wait = 0, now, leave_wait;
         HWND hwnd;
         int kind;
+
+        // esc_unfocus first: its look has to beat the app's handling of Esc.
+        leave_wait = leave_step(automation, &lv);
 
         EnterCriticalSection(&g_fx_cs);
         gen = g_fx_gen;
@@ -6519,16 +6899,23 @@ static DWORD WINAPI focus_worker(void *arg)
         LeaveCriticalSection(&g_fx_cs);
 
         if (wait > 0) {
-            WaitForSingleObject(g_fx_wake, wait);
+            WaitForSingleObject(g_fx_wake,
+                                leave_wait && leave_wait < wait ? leave_wait
+                                                                : wait);
             continue;
         }
         // Answered: poll now and then. The old answer stays valid while the
         // poll asks again; any change wakes us and invalidates it.
         if (!pending && !retrying) {
             BOOL active = g_cfg.bare_keys && user_active();
+            DWORD idle = active ? FOCUS_POLL_MS : 5000;
 
-            if (WaitForSingleObject(g_fx_wake, active ? FOCUS_POLL_MS : 5000) !=
-                    WAIT_TIMEOUT || !active)
+            if (leave_wait && leave_wait < idle) {
+                WaitForSingleObject(g_fx_wake, leave_wait);
+                continue;
+            }
+            if (WaitForSingleObject(g_fx_wake, idle) != WAIT_TIMEOUT ||
+                !active)
                 continue;
         }
 
@@ -6610,6 +6997,9 @@ static DWORD WINAPI focus_worker(void *arg)
         }
     }
 
+    leave_drop(&lv);
+    if (lv.cache)
+        lv.cache->lpVtbl->Release(lv.cache);
     if (cache)
         cache->lpVtbl->Release(cache);
     if (automation)
@@ -6624,6 +7014,9 @@ static BOOL focus_worker_init(void)
     InitializeCriticalSection(&g_fx_cs);
     g_fx_gen = 0;
     g_fx_answer_gen = -1;
+    g_lv_seq = 0;
+    g_lv_up = FALSE;
+    g_lv_dead = FALSE;
     g_fx_hwnd = NULL;
     g_fx_answer = FOCUS_UNKNOWN;
     g_fx_not_before = GetTickCount();
@@ -6653,13 +7046,53 @@ static BOOL focus_worker_init(void)
     return TRUE;
 }
 
+// Starts the focus worker on first use; TRUE once it runs.
+static BOOL focus_worker_ready(void)
+{
+    if (InterlockedCompareExchange(&g_fx_state, 1, 0) == 0)
+        InterlockedExchange(&g_fx_state, focus_worker_init() ? 2 : 3);
+    return InterlockedCompareExchange(&g_fx_state, 2, 2) == 2;
+}
+
+void uia_focus_leave_down(void)
+{
+    if (!focus_worker_ready())
+        return;
+    EnterCriticalSection(&g_fx_cs);
+    ++g_lv_seq;
+    g_lv_up = FALSE;
+    g_lv_dead = FALSE;
+    g_lv_down_tick = GetTickCount();
+    LeaveCriticalSection(&g_fx_cs);
+    SetEvent(g_fx_wake);
+}
+
+void uia_focus_leave_up(void)
+{
+    if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+        return;
+    EnterCriticalSection(&g_fx_cs);
+    g_lv_up = TRUE;
+    g_lv_up_tick = GetTickCount();
+    LeaveCriticalSection(&g_fx_cs);
+    SetEvent(g_fx_wake);
+}
+
+void uia_focus_leave_cancel(void)
+{
+    if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+        return;
+    EnterCriticalSection(&g_fx_cs);
+    g_lv_dead = TRUE;
+    LeaveCriticalSection(&g_fx_cs);
+    SetEvent(g_fx_wake);
+}
+
 void uia_focus_changed(DWORD delay_ms)
 {
     DWORD at;
 
-    if (InterlockedCompareExchange(&g_fx_state, 1, 0) == 0)
-        InterlockedExchange(&g_fx_state, focus_worker_init() ? 2 : 3);
-    if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+    if (!focus_worker_ready())
         return;
     at = GetTickCount() + delay_ms;
     EnterCriticalSection(&g_fx_cs);

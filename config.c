@@ -585,6 +585,7 @@ void config_set_defaults(Config *c)
     c->fast_scroll_lines = 5;
     c->scroll_end_tap_ms = 500;
     c->center_tap_ms = 300;
+    c->esc_unfocus = 1;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
 
@@ -909,6 +910,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->scroll_end_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"center_tap_ms") == 0)
         apply_int_range(&c->center_tap_ms, line, key, val, 0, 1000);
+    else if (_wcsicmp(key, L"esc_unfocus") == 0)
+        apply_int_range(&c->esc_unfocus, line, key, val, 0, 2);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
         apply_double_positive(&c->fast_scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_max_speed") == 0)
@@ -1612,6 +1615,13 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; In mouse mode, and outside it where the focus is not in a text field\r\n");
     appendf(buf, cch, L"; (needs bare_keys). 0 = off.\r\n");
     appendf(buf, cch, L"center_tap_ms = %d\r\n", d.center_tap_ms);
+    appendf(buf, cch, L"; Esc in a text field leaves it: the keyboard focus goes to the page, so\r\n");
+    appendf(buf, cch, L"; j k f and the other keys without Alt work at once (click or Tab to type\r\n");
+    appendf(buf, cch, L"; again). Esc still reaches the app first; with the field's suggestion\r\n");
+    appendf(buf, cch, L"; list open, the first Esc closes the list and a second one leaves.\r\n");
+    appendf(buf, cch, L"; 1 = in web browsers (and their address bar), 2 = also in apps built on\r\n");
+    appendf(buf, cch, L"; web content (Electron, WebView2), 0 = off.\r\n");
+    appendf(buf, cch, L"esc_unfocus = %d\r\n", d.esc_unfocus);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
     add_key_line(buf, cch, L"Move the mouse down.", L"key_down", d.key_down);

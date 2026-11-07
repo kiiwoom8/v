@@ -890,6 +890,11 @@ static void build_help_rows(void)
         buf[127] = L'\0';
         help_add_row(buf, L"The same anywhere, text fields included (both taps swallowed)");
     }
+    if (g_cfg.esc_unfocus)
+        help_add_row(L"Esc in a text field",
+                     g_cfg.esc_unfocus >= 2
+                     ? L"Leave it: the focus goes to the page (browsers and web apps)"
+                     : L"Leave it: the focus goes to the page (web browsers)");
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.lock_hotkey.vk)
         help_add_hotkey(&g_cfg.lock_hotkey,
