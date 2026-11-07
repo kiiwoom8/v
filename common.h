@@ -239,6 +239,12 @@ typedef struct {
                                // animation effects are off (Chrome then scrolls at once and
                                // the first flush has the page where it stopped), default;
                                // 2 = always; 0 = never.
+    int   scan_loading;        // 1 = while the active browser's page is still loading (its
+                               // document says busy and holds nothing yet), the hints stay
+                               // open up to 10 s instead of 3, say so in the status bar, and
+                               // rescan as soon as the browser reports the page's content;
+                               // the labels are made afresh then if no label key was typed.
+                               // Default 1. 0 = the page is scanned like any other.
     int   scan_focusable;      // 1 = in a browser window, elements that UI Automation calls
                                // keyboard-focusable but that have no clickable control type
                                // or pattern (a div with tabindex whose click handler sits on
@@ -376,6 +382,10 @@ typedef struct ClickList {
     BOOL done;      // FALSE = partial result, more windows still being scanned
     BOOL fg_done;   // the foreground window is in (or is not scanned); TRUE when done
     int  pending;   // windows still being scanned (0 when done)
+    // The foreground window is a Chromium page still loading: its document
+    // says busy (MSAA STATE_SYSTEM_BUSY), which it does from the navigation
+    // until its first content is in the tree. Valid once fg_done.
+    BOOL page_busy;
     int  count;
     ClickTarget items[];   // cumulative: every post contains everything found so far
 } ClickList;

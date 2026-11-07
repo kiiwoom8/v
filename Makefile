@@ -53,6 +53,17 @@ flushprobe: tools/flush_probe.exe
 tools/flush_probe.exe: tools/flush_probe.c uia.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/flush_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32 -lwinmm
 
+# Console tool that watches a Chromium page load: uia.c's page_busy and the
+# content events hint.c's page watch takes (load_probe.mjs drives it), and
+# vim_post, which opens or closes the running vim mouse's hints by message
+loadprobe: tools/load_probe.exe tools/vim_post.exe
+
+tools/load_probe.exe: tools/load_probe.c uia.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/load_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32
+
+tools/vim_post.exe: tools/vim_post.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/vim_post.c -luser32
+
 # Console tool that compares Chrome's DOM with what the scan finds (hint_check.mjs)
 check: tools/hint_check.exe
 
@@ -72,8 +83,10 @@ clean:
 	-@del /Q vim-uiaccess.exe 2>nul || true
 	-@del /Q tools\uia_probe.exe 2>nul || true
 	-@del /Q tools\hint_check.exe 2>nul || true
-	-@del /Q toolslush_probe.exe 2>nul || true
+	-@del /Q tools\flush_probe.exe 2>nul || true
+	-@del /Q tools\load_probe.exe 2>nul || true
+	-@del /Q tools\vim_post.exe 2>nul || true
 	-@del /Q tools\make_icon.exe 2>nul || true
 	-@del /Q tools\shutdown_test.exe 2>nul || true
 
-.PHONY: all clean probe check icon shutdown-test flushprobe uiaccess
+.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe uiaccess

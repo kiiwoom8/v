@@ -177,7 +177,14 @@ are up gets labels too); to relabel everything, press the hotkey again. With `ke
 their elements instead and disappear when an element goes away (when labels
 run out one may grow a letter, and a label whose element went away is never
 reused). A scan that finds nothing keeps trying for up to 3 s, then closes
-the hints. Chrome, Edge and apps built on them tell UI Automation about moved
+the hints. While a page in Chrome, Edge or an app built on them is still
+loading and shows nothing yet, the status bar says "Page loading", the
+hints wait up to 10 s for it instead of 3, and the browser's own report of
+the page's content starts a new search the moment it arrives. Until then
+only the browser's tabs and toolbar have labels, so if you have not typed a
+label key yet, every label is made afresh then and the page's links get
+short ones (`scan_loading`). A page that already shows its content is not
+waited for, even while an image or an ad still loads. Chrome, Edge and apps built on them tell UI Automation about moved
 and new elements up to half a second late, so when vim mouse scrolls or
 clicks there, or the browser reports a scroll of its own (mouse wheel,
 touchpad, keys), vim mouse asks the browser right then to send its changes
@@ -413,7 +420,8 @@ ones:
   `scan_scope` (`monitor` or `window`), `scan_timeout` (100-5000 ms, default
   400: how long to wait for every window's elements before showing the ones
   found so far. The active window's elements are always waited for, up to
-  3 s; with nothing found by then, the hints close),
+  3 s, or 10 s for a browser page still loading (`scan_loading`); with
+  nothing found by then, the hints close),
   `browser_first` (1 = with a browser active, show its labels as soon as it
   answered and add the other windows' as they answer, default; 0 = wait for
   every window up to `scan_timeout` as for other apps),
@@ -455,7 +463,13 @@ ones:
   the elements from the first answer on when Windows' animation effects
   are off, since Chrome and Edge then scroll without animating, default;
   2 = always, for a browser whose smooth scrolling is off some other way;
-  0 = search only once the page is confirmed still), `scan_focusable` (1 = in a browser, also label elements
+  0 = search only once the page is confirmed still), `scan_loading` (1 =
+  while the browser's page is still loading and shows nothing yet, keep the
+  hints open up to 10 s instead of 3, say "Page loading" in the status bar
+  and search again the moment the browser reports the page's content; if no
+  label key was typed by then, the labels are made afresh, so the page's
+  links get short ones, default; 0 = treat the page like any other, which
+  labels only the browser's toolbar until the next refresh), `scan_focusable` (1 = in a browser, also label elements
   that only say they can take the keyboard focus, such as a `div` with
   `tabindex` whose click handler sits on an ancestor or a range slider,
   unless they are text, scroll areas, lie outside the page or cover over a
@@ -611,6 +625,13 @@ user's store.
   right after scrolling, set `scan_flush = 0` and tell us (with `log = 1`,
   `vim.log` says how each wait ended and whether it ended ahead of the
   hotkey).
+- **Only the browser's tabs and toolbar have labels while a page loads.**
+  A page still loading has nothing in its accessibility tree until its
+  first content arrives. vim mouse sees that ("Page loading" in the status
+  bar), waits for the content and labels it as soon as the browser reports
+  it (`scan_loading`). With `log = 1`, `vim.log` says when the page was seen
+  loading, when its content was reported and whether the labels were made
+  afresh; a label key typed before then keeps the labels as they are.
 - **The hints take long to appear in a browser right after scrolling.** With
   `log = 1`, `vim.log` says how long each wait for the page took and how it
   ended: "stopped" or "asked" is the browser answering (a few dozen

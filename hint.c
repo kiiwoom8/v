@@ -53,6 +53,7 @@
 #define TIMER_SETTLE_ID 4
 #define TIMER_ACT_ID    5
 #define TIMER_AHEAD_ID  6
+#define TIMER_LOAD_ID   7
 #define ACT_POLL_MS     10
 #define ACT_WAIT_MAX_MS 3000
 #define REFRESH_RETRY_MS 200
@@ -64,6 +65,16 @@
 #define DOT             L"\x00B7"
 #define SCAN_DEFAULT_MS 400
 #define SCAN_HARD_LIMIT_MS 3000
+// A Chromium page still loading (ClickList.page_busy, scan_loading): the hints
+// wait for its content this long from the open instead of SCAN_HARD_LIMIT_MS,
+// and watch for it no longer than that. The content reports of one burst
+// (the new document's root, then one per element) are folded into one rescan
+// this long after the first.
+#define LOAD_LIMIT_MS     10000
+#define LOAD_GATHER_MS    40
+#ifndef IA2_EVENT_DOCUMENT_LOAD_COMPLETE
+#define IA2_EVENT_DOCUMENT_LOAD_COMPLETE 0x105
+#endif
 // A scan made before the hotkey (Alt held, or ahead of it after the screen
 // changed) serves an open this long after it started; older, the open scans
 // afresh. One older than AHEAD_REFRESH_MS when adopted is refreshed at once
@@ -226,6 +237,25 @@ static BOOL      g_scan_retry;       // last scan found nothing: retry after TIM
 static BOOL      g_refresh_on;       // background scans keep the labels up to date
 static BOOL      g_scan_browser;     // the scan's active window is a browser: show it first
 
+// The active browser's page is still loading (scan_loading, load_note). A
+// busy page has nothing in its tree yet, so the scan found only the
+// browser's toolbar, or nothing. The browser reports the content as it
+// reaches the tree (measured 2026-11-08, tools/load_probe.c): the new
+// document's root shows (EVENT_OBJECT_SHOW, OBJID_CLIENT, on its
+// Chrome_RenderWidgetHostHWND), later parts reorder it and show each new
+// element, and IA2_EVENT_DOCUMENT_LOAD_COMPLETE comes with the load event,
+// which a slow image can hold back for seconds. The hooks run only while a
+// page is watched: busy pages show elements all the time.
+static HWINEVENTHOOK g_load_hook;      // EVENT_OBJECT_SHOW .. EVENT_OBJECT_REORDER
+static HWINEVENTHOOK g_load_done_hook; // IA2_EVENT_DOCUMENT_LOAD_COMPLETE
+static HWND      g_load_root;        // the watched browser window
+static DWORD     g_load_t0;
+static BOOL      g_load_busy;        // the newest scan found that page busy
+static BOOL      g_load_relabel;     // labels went up while busy: make them afresh once it is in
+static BOOL      g_load_gather;      // TIMER_LOAD_ID runs for a burst of reports
+static BOOL      g_load_missed;      // a report came while the first scan was out
+static BOOL      g_load_done;        // the load event came: one last rescan, then stop
+
 // Chromium reports every scroll it hands to UI Automation as
 // EVENT_SYSTEM_SCROLLINGEND (BrowserAccessibilityManager::OnLocationChanges),
 // whoever scrolled: the last report per top-level window, and when a wait
@@ -324,6 +354,10 @@ static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
 static void schedule_refresh(void);
 static void start_refresh_scan(void);
+static void load_reset(void);
+static void load_note(const ClickList *list);
+static void load_content_in(void);
+static DWORD scan_hard_limit(void);
 static void enter_grid_mode(void);
 static void start_element_mode(void);
 static BOOL mods_held(void);
@@ -1587,7 +1621,8 @@ static void build_status(WCHAR *buf, int cch)
 
     if (g_mode == HINT_MODE_ELEMENTS) {
         if (g_scanning) {
-            lstrcatW(buf, L"Finding clickable elements " DOT L" ");
+            lstrcatW(buf, g_load_busy ? L"Page loading " DOT L" "
+                                      : L"Finding clickable elements " DOT L" ");
             lstrcatW(buf, hk);
             lstrcatW(buf, L" again: reload");
             status_grid_key(buf, L"grid");
@@ -1596,6 +1631,7 @@ static void build_status(WCHAR *buf, int cch)
         }
         if (drop) lstrcatW(buf, L"Drop target: ");
         if (g_prefix_len == 0) {
+            if (g_load_busy) lstrcatW(buf, L"Page loading " DOT L" ");
             lstrcatW(buf, L"Type a label");
             if (!drop) lstrcatW(buf, L" " DOT L" " STATUS_KINDS);
             lstrcatW(buf, L" " DOT L" ");
@@ -2065,6 +2101,9 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             if (!g_scanning && g_refresh_on)
                 start_refresh_scan();
+        } else if (wp == TIMER_LOAD_ID) {
+            KillTimer(hwnd, TIMER_LOAD_ID);
+            load_content_in();
         } else if (wp == TIMER_SETTLE_ID) {
             KillTimer(hwnd, TIMER_SETTLE_ID);
             settle_step(FALSE);
@@ -2098,7 +2137,8 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             {
                 DWORD elapsed = GetTickCount() - g_scan_t0;
-                if (elapsed >= SCAN_HARD_LIMIT_MS) {
+                DWORD limit = scan_hard_limit();
+                if (elapsed >= limit) {
                     finalize_scan();
                 } else {
                     // Nothing yet, or not the active window's elements (a
@@ -2106,8 +2146,7 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     // keep the status text and wait, but not past the hard
                     // limit.
                     g_scan_wait_first = TRUE;
-                    SetTimer(hwnd, TIMER_SCAN_ID,
-                             SCAN_HARD_LIMIT_MS - elapsed, NULL);
+                    SetTimer(hwnd, TIMER_SCAN_ID, limit - elapsed, NULL);
                 }
             }
         }
@@ -2292,6 +2331,7 @@ static void cancel_scan(void)
         free(g_scan_list);
         g_scan_list = NULL;
     }
+    load_reset();
 }
 
 static UINT scan_limit_ms(void)
@@ -2872,6 +2912,211 @@ static void start_refresh_scan(void)
     uia_scan(g_mon, g_scan_id, FALSE);
 }
 
+// ---------------------------------------------------------------------------
+// A page still loading (scan_loading). The scan says whether the active
+// browser's page is busy (ClickList.page_busy, uia.c page_busy); while it is,
+// the hints wait for it up to LOAD_LIMIT_MS, the status bar says so, and the
+// browser's reports of the page's content start a rescan at once
+// (load_event_proc, load_content_in) instead of in scan_refresh ms. Labels
+// that went up while it was busy are made afresh by the first full refresh
+// that finds it in (hint_on_elements), unless a label key was typed.
+
+static DWORD scan_hard_limit(void)
+{
+    return g_load_busy ? LOAD_LIMIT_MS : SCAN_HARD_LIMIT_MS;
+}
+
+static void load_unhook(void)
+{
+    if (g_load_hook) {
+        UnhookWinEvent(g_load_hook);
+        g_load_hook = NULL;
+    }
+    if (g_load_done_hook) {
+        UnhookWinEvent(g_load_done_hook);
+        g_load_done_hook = NULL;
+    }
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_LOAD_ID);
+    g_load_root = NULL;
+    g_load_gather = FALSE;
+    g_load_done = FALSE;
+}
+
+static void load_reset(void)
+{
+    load_unhook();
+    g_load_busy = FALSE;
+    g_load_relabel = FALSE;
+    g_load_missed = FALSE;
+}
+
+// Out of context, on this thread: only the watched window's page counts.
+// EVENT_OBJECT_SHOW and EVENT_OBJECT_REORDER of the page itself carry
+// OBJID_CLIENT and the page window; a window shown carries OBJID_WINDOW.
+static void CALLBACK load_event_proc(HWINEVENTHOOK hook, DWORD event,
+                                     HWND hwnd, LONG obj, LONG child,
+                                     DWORD thread, DWORD time)
+{
+    WCHAR cls[64];
+
+    (void)hook; (void)child; (void)thread; (void)time;
+    if (!g_load_root || !hwnd || obj != (LONG)OBJID_CLIENT)
+        return;
+    if (event != EVENT_OBJECT_SHOW && event != EVENT_OBJECT_REORDER &&
+        event != IA2_EVENT_DOCUMENT_LOAD_COMPLETE)
+        return;
+    if (GetAncestor(hwnd, GA_ROOT) != g_load_root ||
+        !GetClassNameW(hwnd, cls, (int)(sizeof(cls) / sizeof(cls[0]))) ||
+        wcscmp(cls, L"Chrome_RenderWidgetHostHWND") != 0)
+        return;
+    if (event == IA2_EVENT_DOCUMENT_LOAD_COMPLETE)
+        g_load_done = TRUE;
+    if (!g_load_gather && g_hint_wnd) {
+        g_load_gather = TRUE;
+        SetTimer(g_hint_wnd, TIMER_LOAD_ID, LOAD_GATHER_MS, NULL);
+    }
+}
+
+typedef struct {
+    HWND best;
+    LONG64 area;
+} PageWnd;
+
+static BOOL CALLBACK page_wnd_proc(HWND hwnd, LPARAM lp)
+{
+    PageWnd *p = (PageWnd *)lp;
+    WCHAR cls[64];
+    RECT r;
+    LONG64 area;
+
+    if (!IsWindowVisible(hwnd) ||
+        !GetClassNameW(hwnd, cls, (int)(sizeof(cls) / sizeof(cls[0]))) ||
+        wcscmp(cls, L"Chrome_RenderWidgetHostHWND") != 0 ||
+        !GetWindowRect(hwnd, &r))
+        return TRUE;
+    area = (LONG64)(r.right - r.left) * (LONG64)(r.bottom - r.top);
+    if (area > p->area) {
+        p->area = area;
+        p->best = hwnd;
+    }
+    return TRUE;
+}
+
+// Starts listening to the active browser window's page. The hooks are bound
+// to the process that owns its page window (the browser process; a WebView2
+// page runs in one of its own), so other apps' events never reach us.
+static void load_watch(void)
+{
+    HWND fg = GetForegroundWindow();
+    HWND root = fg ? GetAncestor(fg, GA_ROOT) : NULL;
+    PageWnd page;
+    DWORD pid = 0;
+
+    if (!root) return;
+    if (root == g_load_root && g_load_hook) return;
+    load_unhook();
+    page.best = NULL;
+    page.area = 0;
+    EnumChildWindows(root, page_wnd_proc, (LPARAM)&page);
+    GetWindowThreadProcessId(page.best ? page.best : root, &pid);
+    if (!pid) return;
+    g_load_hook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER,
+                                  NULL, load_event_proc, pid, 0,
+                                  WINEVENT_OUTOFCONTEXT |
+                                  WINEVENT_SKIPOWNPROCESS);
+    if (!g_load_hook) {
+        app_log(L"hint: page content hook failed (%lu)", GetLastError());
+        return;
+    }
+    g_load_done_hook = SetWinEventHook(IA2_EVENT_DOCUMENT_LOAD_COMPLETE,
+                                       IA2_EVENT_DOCUMENT_LOAD_COMPLETE,
+                                       NULL, load_event_proc, pid, 0,
+                                       WINEVENT_OUTOFCONTEXT |
+                                       WINEVENT_SKIPOWNPROCESS);
+    g_load_root = root;
+    g_load_t0 = GetTickCount();
+    app_log(L"hint: page still loading; waiting for its content");
+}
+
+// Every scan result that has the active window in says whether its page is
+// still loading. Only an open showing elements of a browser watches it.
+static void load_note(const ClickList *list)
+{
+    BOOL busy;
+
+    if (!list->fg_done) return;
+    busy = list->page_busy && g_cfg.scan_loading && g_open &&
+           g_mode == HINT_MODE_ELEMENTS && g_scan_browser;
+    if (busy != g_load_busy) {
+        if (!busy && g_load_root)
+            app_log(L"hint: page no longer loading after %lu ms (scan %u%ls)",
+                    (unsigned long)(GetTickCount() - g_load_t0),
+                    list->scan_id, list->done ? L", done" : L"");
+        g_load_busy = busy;
+        invalidate();       // the status bar's "Page loading"
+    }
+    if (busy)
+        load_watch();
+    else if (g_load_hook && !g_load_relabel &&
+             GetTickCount() - g_load_t0 >= LOAD_LIMIT_MS)
+        load_unhook();      // in and quiet: stop listening
+}
+
+// A burst of content reports is over (TIMER_LOAD_ID): scan again now. An
+// empty first scan retries at once; one still out is too early, so its
+// result counts as a report (g_load_missed, finalize_scan). Shown labels
+// get a refresh, which makes them afresh if they went up while busy.
+static void load_content_in(void)
+{
+    g_load_gather = FALSE;
+    if (!g_open || g_mode != HINT_MODE_ELEMENTS) {
+        load_reset();
+        return;
+    }
+    app_log(L"hint: page content reported after %lu ms%ls%ls",
+            (unsigned long)(GetTickCount() - g_load_t0),
+            g_load_done ? L" (loaded)" : L"",
+            g_scanning ? L"; first scan still out" : L"");
+    if (g_scanning) {
+        if (g_scan_retry && g_hint_wnd)
+            SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+        else
+            g_load_missed = TRUE;
+    } else if (g_refresh_on && g_hint_wnd) {
+        SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+    }
+    // The load event, or watched long enough: this was the last rescan.
+    if (g_load_done || GetTickCount() - g_load_t0 >= LOAD_LIMIT_MS)
+        load_unhook();
+}
+
+// Replaces every label with fresh ones for list, as a reload by the hotkey
+// would, without the overlay going back to "Finding clickable elements".
+static void relabel_all(const ClickList *list)
+{
+    ClickTarget *targets;
+    HintLabel *labels;
+    int n = list->count;
+
+    if (n > MAX_TARGETS) n = MAX_TARGETS;
+    if (n <= 0) return;
+    targets = (ClickTarget *)malloc((size_t)n * sizeof(*targets));
+    if (!targets) return;
+    memcpy(targets, list->items, (size_t)n * sizeof(*targets));
+    qsort(targets, (size_t)n, sizeof(*targets), target_cmp);
+    free_elements();
+    g_targets = targets;
+    g_target_count = n;
+    labels = build_labels(n, 0);
+    if (!labels) {
+        hint_close();
+        return;
+    }
+    g_labels = labels;
+    app_log(L"hint: page in; %d targets labelled afresh", n);
+    invalidate();
+}
+
 static void clear_prescan(void)
 {
     if (g_pre_list) {
@@ -2986,6 +3231,7 @@ static BOOL adopt_prescan(void)
 
     reset_input();
     free_elements();
+    load_reset();
     g_refresh_on = FALSE;
     g_scan_retry = FALSE;
     if (g_scan_list) {
@@ -3050,6 +3296,7 @@ static void start_scan(BOOL repaint)
     discard_prescan();
     reset_input();
     free_elements();
+    load_reset();
     if (g_hint_wnd)
         KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
     g_refresh_on = FALSE;
@@ -3135,13 +3382,14 @@ static void finalize_scan(void)
     g_scan_list = NULL;
     n = list ? list->count : 0;
     if (n > MAX_TARGETS) n = MAX_TARGETS;
+    if (list) load_note(list);
 
     // A page or app still starting may expose nothing yet: retry on the
     // refresh timer instead of closing straight away. g_scanning, g_scan_t0
     // and the queued keys stay as they are, so keys keep being queued and the
-    // 3 s hard limit still ends this.
+    // hard limit still ends this (3 s, or 10 s for a page still loading).
     if (n <= 0 && g_cfg.scan_refresh > 0 && g_scanning &&
-        GetTickCount() - g_scan_t0 < SCAN_HARD_LIMIT_MS) {
+        GetTickCount() - g_scan_t0 < scan_hard_limit()) {
         DWORD elapsed = GetTickCount() - g_scan_t0;
 
         free(list);
@@ -3158,9 +3406,12 @@ static void finalize_scan(void)
             } else {
                 g_scan_wait_first = TRUE;
                 SetTimer(g_hint_wnd, TIMER_SCAN_ID,
-                         SCAN_HARD_LIMIT_MS - elapsed, NULL);
+                         scan_hard_limit() - elapsed, NULL);
             }
-            SetTimer(g_hint_wnd, TIMER_REFRESH_ID, REFRESH_RETRY_MS, NULL);
+            // A content report already in starts the retry at once.
+            SetTimer(g_hint_wnd, TIMER_REFRESH_ID,
+                     g_load_missed ? 1 : REFRESH_RETRY_MS, NULL);
+            g_load_missed = FALSE;
         }
         return;
     }
@@ -3215,6 +3466,15 @@ static void finalize_scan(void)
     g_prefix[0] = 0;
     g_flash = FALSE;
     g_state = 0;
+    // Labels of a page still loading are the browser's toolbar: once the
+    // page is in, they are made afresh (load_content_in, hint_on_elements).
+    // A report that came while this scan was out may already be that.
+    g_load_relabel = g_load_busy;
+    if (g_load_busy && g_load_missed && g_hint_wnd) {
+        g_load_missed = FALSE;
+        g_load_gather = TRUE;
+        SetTimer(g_hint_wnd, TIMER_LOAD_ID, 1, NULL);
+    }
     invalidate();
     if (g_hint_wnd) UpdateWindow(g_hint_wnd);
 
@@ -3231,6 +3491,9 @@ static void element_append(int ch, UINT mods)
     }
     g_prefix[g_prefix_len++] = (WCHAR)ch;
     g_prefix[g_prefix_len] = 0;
+    // A label being typed is never taken away by a relabel, not even after
+    // Backspace: the user has read these labels.
+    g_load_relabel = FALSE;
 
     idx = exact_match();
     if (idx >= 0) {
@@ -3488,6 +3751,7 @@ void hint_shutdown(void)
         UnhookWinEvent(g_focus_hook);
         g_focus_hook = NULL;
     }
+    load_reset();
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_AHEAD_ID);
     g_settle_on = FALSE;
     g_settle_wait = FALSE;
@@ -3864,6 +4128,7 @@ void hint_on_elements(ClickList *list)
         free(list);
         return;
     }
+    load_note(list);
 
     // A background refresh merges straight into the shown labels: g_scanning
     // stays FALSE so keys are handled immediately and the status does not
@@ -3875,6 +4140,17 @@ void hint_on_elements(ClickList *list)
             // Mid-type: leave the shown labels alone; catch up next time.
             free(list);
             if (done) schedule_refresh();
+            return;
+        }
+        // The labels went up while the page was loading and nothing was
+        // typed since: the first full refresh that finds the page in makes
+        // them afresh, so its links get short labels instead of the few
+        // codes keep_labels left free.
+        if (g_load_relabel && done && !list->page_busy && list->count > 0) {
+            g_load_relabel = FALSE;
+            relabel_all(list);
+            free(list);
+            if (g_open) schedule_refresh();
             return;
         }
         merge_scan(list);

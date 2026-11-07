@@ -635,6 +635,7 @@ void config_set_defaults(Config *c)
     c->scan_settle = 650;
     c->scan_flush = 1;
     c->scan_early = 1;
+    c->scan_loading = 1;
     c->scan_focusable = 1;
     c->scan_hidden_checkbox = 1;
     c->labels_apart = 1;
@@ -1011,6 +1012,8 @@ static void process_hints(Config *c, int line, const WCHAR *key,
         apply_bool(&c->scan_flush, line, key, val);
     else if (_wcsicmp(key, L"scan_early") == 0)
         apply_int_range(&c->scan_early, line, key, val, 0, 2);
+    else if (_wcsicmp(key, L"scan_loading") == 0)
+        apply_bool(&c->scan_loading, line, key, val);
     else if (_wcsicmp(key, L"scan_focusable") == 0)
         apply_bool(&c->scan_focusable, line, key, val);
     else if (_wcsicmp(key, L"scan_hidden_checkbox") == 0)
@@ -1741,6 +1744,12 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; for a browser whose smooth scrolling is off some other way; 0 = never\r\n");
     appendf(buf, cch, L"; (search only once the page is confirmed still). Default 1.\r\n");
     appendf(buf, cch, L"scan_early = %d\r\n", d.scan_early);
+    appendf(buf, cch, L"; 1 = while the browser's page is still loading and shows nothing yet,\r\n");
+    appendf(buf, cch, L"; keep the hints open up to 10 s (not 3), say \"Page loading\" in the\r\n");
+    appendf(buf, cch, L"; status bar and search again the moment the page's content arrives;\r\n");
+    appendf(buf, cch, L"; if no label key was typed yet, the labels are made afresh then, so\r\n");
+    appendf(buf, cch, L"; the page's links get short ones. 0 = treat the page like any other.\r\n");
+    appendf(buf, cch, L"scan_loading = %d\r\n", d.scan_loading);
     appendf(buf, cch, L"; 1 = in a browser, also label elements that only say they can take the\r\n");
     appendf(buf, cch, L"; keyboard focus (a div with tabindex whose click handler sits on an\r\n");
     appendf(buf, cch, L"; ancestor, a range slider), unless they are text, scroll areas, lie\r\n");

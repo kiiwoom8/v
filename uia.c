@@ -561,9 +561,12 @@ typedef struct {
     int count;
     int cap;
     BOOL fg_done;               // uia_scan_monitor: foreground window merged
+    BOOL page_busy;             // uia_scan_monitor: it is a Chromium page still loading
     int pending;                // uia_scan_monitor: windows not merged yet
     DetailText detail;          // log = 2: what the scan made of each element
 } ScanResult;
+
+static BOOL page_busy(HWND root);
 
 typedef struct {
     HWND hwnd;
@@ -4028,6 +4031,12 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
     if (fg_index >= 0)
         fg_task = task_of_win[fg_index];
     result->fg_done = (fg_task < 0);
+    // Asked before the foreground window's search starts, so the flag is
+    // never newer than its elements: a page whose content came in during the
+    // search counts as busy and is labelled afresh after (hint.c), while the
+    // other way round its toolbar-only labels would stay.
+    if (fg_task >= 0)
+        result->page_busy = page_busy(ctx.items[fg_index].hwnd);
     result->pending = task_count;
 
     // Every visible window on the monitor, top first. An owned popup (a
@@ -4593,6 +4602,7 @@ static ClickList *make_click_list(UINT scan_id, BOOL done,
     list->scan_id = scan_id;
     list->done = done;
     list->fg_done = done || result->fg_done;
+    list->page_busy = result->page_busy;
     list->pending = done ? 0 : result->pending;
     list->count = result->count;
     for (i = 0; i < result->count; ++i)
@@ -6045,6 +6055,10 @@ BOOL uia_scroll_end(POINT pt, BOOL top, DWORD timeout_ms)
 #define FOCUS_WAIT_FRESH_MS 400 // a pending ask older than this is not waited for
 #define FOCUS_ENGINE_RETRY_MS 5000  // retry a failed engine init this often
 #define FOCUS_CARET_TIMEOUT_MS 200  // how long a window may take to name its caret
+#define PAGE_BUSY_TIMEOUT_MS 50     // how long a page window may take to say it is loading
+#ifndef STATE_SYSTEM_BUSY
+#define STATE_SYSTEM_BUSY 0x00000800
+#endif
 #define FOCUS_FAILED (-1)       // internal: the ask failed, not a classification
 
 static CRITICAL_SECTION g_fx_cs;
@@ -6242,6 +6256,57 @@ static const GUID g_iid_iaccessible = {
 typedef HRESULT (WINAPI *ObjectFromLresultFn)(LRESULT, REFIID, WPARAM,
                                               void **);
 
+// oleacc's ObjectFromLresult, loaded once; the focus and scan workers both
+// call this, so the pointer is published with an interlocked exchange.
+static ObjectFromLresultFn oleacc_from_lresult(void)
+{
+    static PVOID fn;
+    static LONG tried;
+
+    if (!InterlockedCompareExchange(&tried, 1, 0)) {
+        HMODULE oleacc = LoadLibraryW(L"oleacc.dll");
+
+        if (oleacc)
+            InterlockedExchangePointer(
+                &fn, (PVOID)GetProcAddress(oleacc, "ObjectFromLresult"));
+    }
+    return (ObjectFromLresultFn)InterlockedCompareExchangePointer(&fn, NULL,
+                                                                  NULL);
+}
+
+// The MSAA state of hwnd's object objid (OBJID_CARET, OBJID_CLIENT), asked
+// with WM_GETOBJECT under a timeout so a hung window cannot hold a worker.
+static BOOL msaa_state(HWND hwnd, LONG objid, UINT timeout_ms, LONG *out)
+{
+    ObjectFromLresultFn from_lresult = oleacc_from_lresult();
+    DWORD_PTR result = 0;
+    IAccessibleCaret *acc = NULL;
+    VARIANT self, state;
+    BOOL ok = FALSE;
+
+    if (!from_lresult || !hwnd)
+        return FALSE;
+    if (!SendMessageTimeoutW(hwnd, WM_GETOBJECT, 0, (LPARAM)objid,
+                             SMTO_ABORTIFHUNG, timeout_ms, &result) ||
+        (LONG_PTR)result <= 0)
+        return FALSE;
+    if (FAILED(from_lresult((LRESULT)result, &g_iid_iaccessible, 0,
+                            (void **)&acc)) || !acc)
+        return FALSE;
+    VariantInit(&self);
+    self.vt = VT_I4;
+    self.lVal = CHILDID_SELF;
+    VariantInit(&state);
+    if (SUCCEEDED(acc->lpVtbl->get_accState(acc, self, &state)) &&
+        state.vt == VT_I4) {
+        *out = state.lVal;
+        ok = TRUE;
+    }
+    VariantClear(&state);
+    acc->lpVtbl->Release(acc);
+    return ok;
+}
+
 // Chromium (Chrome, Edge, Electron apps, WebView2) makes no Win32 caret, but
 // its window answers OBJID_CARET with a caret that is visible exactly while
 // typing goes into a text input. That holds where UI Automation names
@@ -6251,41 +6316,60 @@ typedef HRESULT (WINAPI *ObjectFromLresultFn)(LRESULT, REFIID, WPARAM,
 // already in the GUI thread info. Runs on the focus worker only.
 static BOOL caret_visible(HWND hwnd)
 {
-    static ObjectFromLresultFn from_lresult;
-    static BOOL loaded;
-    DWORD_PTR result = 0;
-    IAccessibleCaret *caret = NULL;
-    VARIANT self, state;
-    BOOL visible = FALSE;
+    LONG state;
 
-    if (!loaded) {
-        HMODULE oleacc = LoadLibraryW(L"oleacc.dll");
+    if (!msaa_state(hwnd, OBJID_CARET, FOCUS_CARET_TIMEOUT_MS, &state))
+        return FALSE;
+    return (state & STATE_SYSTEM_INVISIBLE) == 0;
+}
 
-        loaded = TRUE;
-        if (oleacc)
-            from_lresult = (ObjectFromLresultFn)(void *)GetProcAddress(
-                oleacc, "ObjectFromLresult");
+// Finds the largest visible Chromium page window (Chrome_RenderWidgetHostHWND)
+// under a top-level window: the page, not DevTools or a side panel.
+typedef struct {
+    HWND best;
+    LONG64 area;
+} PageWindowSearch;
+
+static BOOL CALLBACK page_window_proc(HWND hwnd, LPARAM lp)
+{
+    PageWindowSearch *s = (PageWindowSearch *)lp;
+    WCHAR cls[64];
+    RECT r;
+
+    if (!IsWindowVisible(hwnd) ||
+        !GetClassNameW(hwnd, cls, (int)(sizeof(cls) / sizeof(cls[0]))) ||
+        wcscmp(cls, L"Chrome_RenderWidgetHostHWND") != 0 ||
+        !GetWindowRect(hwnd, &r))
+        return TRUE;
+    if (rect_area(&r) > s->area) {
+        s->area = rect_area(&r);
+        s->best = hwnd;
     }
-    if (!from_lresult || !hwnd)
+    return TRUE;
+}
+
+// A Chromium page still loading. Measured on 2026-11-08
+// (tools/load_probe.c): from the navigation until its first content reaches
+// the accessibility tree (1.5 s on a page streamed slowly), the document
+// answers with STATE_SYSTEM_BUSY and has no children, so a scan finds only
+// the browser's own toolbar. The flag clears as the content comes in; the
+// page's load event (images and all) comes later and is not waited for.
+// The old page stays, not busy, until the new one commits. Runs on the scan
+// worker; one call is a message and a state query, about a millisecond.
+static BOOL page_busy(HWND root)
+{
+    PageWindowSearch s;
+    LONG state;
+
+    if (!g_cfg.scan_loading || !root || !uia_chromium_window(root))
         return FALSE;
-    if (!SendMessageTimeoutW(hwnd, WM_GETOBJECT, 0, (LPARAM)OBJID_CARET,
-                             SMTO_ABORTIFHUNG, FOCUS_CARET_TIMEOUT_MS,
-                             &result) ||
-        (LONG_PTR)result <= 0)
+    s.best = NULL;
+    s.area = 0;
+    EnumChildWindows(root, page_window_proc, (LPARAM)&s);
+    if (!s.best ||
+        !msaa_state(s.best, OBJID_CLIENT, PAGE_BUSY_TIMEOUT_MS, &state))
         return FALSE;
-    if (FAILED(from_lresult((LRESULT)result, &g_iid_iaccessible, 0,
-                            (void **)&caret)) || !caret)
-        return FALSE;
-    VariantInit(&self);
-    self.vt = VT_I4;
-    self.lVal = CHILDID_SELF;
-    VariantInit(&state);
-    if (SUCCEEDED(caret->lpVtbl->get_accState(caret, self, &state)) &&
-        state.vt == VT_I4)
-        visible = (state.lVal & STATE_SYSTEM_INVISIBLE) == 0;
-    VariantClear(&state);
-    caret->lpVtbl->Release(caret);
-    return visible;
+    return (state & STATE_SYSTEM_BUSY) != 0;
 }
 
 static int focus_classify(IUIAutomation *automation,
