@@ -107,6 +107,9 @@ typedef struct {
                                // (not while paused): turned off at start and whenever it
                                // comes on (Shift+CapsLock, an admin window, the lock
                                // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
+    int    touchpad_off;       // 1 = the precision touchpad is switched off while vim mouse
+                               // runs and is not paused, and back on when paused or quit
+                               // (Ctrl+Win+F24, the Settings toggle); default 1. 0 = left alone.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    hide_pointer;       // outside mouse mode the pointer is hidden (every system
                                // cursor is swapped for a blank one, session-wide, and put
@@ -467,6 +470,12 @@ BOOL tray_on_command(WORD id);          // WM_COMMAND from the tray menu; TRUE i
 void tray_on_taskbar_created(void);     // Explorer restarted: re-add icon
 void tray_balloon(const WCHAR *title, const WCHAR *text);
 void help_toggle(void);
+
+// ---------------------------------------------------------------------------
+// Touchpad (touchpad.c). Main/UI thread.
+
+void touchpad_update(void);             // after start, pause / resume and reload: off while active
+void touchpad_stop(void);               // at quit: back on if we turned it off (may wait 2 s)
 
 // ---------------------------------------------------------------------------
 // Text shortcut editor (snippet.c). Main/UI thread.

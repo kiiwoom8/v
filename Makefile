@@ -2,7 +2,7 @@ CC = gcc
 WINDRES ?= windres
 CFLAGS = -Wall -Wextra -O2 -std=gnu11
 LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid -lcomdlg32 -lwininet
-SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c
+SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c touchpad.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
 TARGET = vim.exe

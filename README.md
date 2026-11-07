@@ -63,6 +63,16 @@ it. (Every program sees the same blank pointer: vim mouse swaps the system
 cursors. If vim mouse crashes while they are blank, start it again or sign
 out and in.)
 
+**The touchpad is off while vim mouse runs** (`touchpad_off`, default 1), so
+a palm on it cannot move the pointer or click while you type. Pausing vim
+mouse (`Alt+p p` or the tray menu) or quitting it turns the touchpad back on,
+and resuming turns it off again. It is the same switch as the Touchpad
+toggle in Windows Settings (and a laptop's touchpad key, Ctrl+Win+F24): vim
+mouse presses that shortcut once no modifier key is held, so after pausing
+with `Alt+p p` the touchpad comes back when you let go of Alt. It needs a
+precision touchpad and Windows 11 24H2 or later. `touchpad_off = 0` leaves
+the touchpad alone (and turns it back on if vim mouse had turned it off).
+
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
 Alt: `f` opens the hints, `j` / `k` scroll, `h` / `l` go back / forward,
@@ -377,6 +387,8 @@ ones:
 - `capslock_off` (1 = keep the CapsLock state off while vim mouse runs, not
   while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
   off)
+- `touchpad_off` (1 = the touchpad is off while vim mouse runs and back on
+  while paused or after quitting, default; 0 = left alone)
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
@@ -657,6 +669,14 @@ user's store.
   `hide_pointer = 0`. If it stays blank after vim mouse was killed or
   crashed, start vim mouse again (it puts the cursors back when it quits)
   or sign out and in.
+- **The touchpad does not work.** vim mouse turns it off while it runs
+  (`touchpad_off`). Pause vim mouse (`Alt+p p`), quit it, or set
+  `touchpad_off = 0`. If vim mouse was killed, crashed or Windows shut down
+  while the touchpad was off, it stays off (like the Settings toggle): start
+  vim mouse and pause or quit it, press the laptop's touchpad key, or turn
+  it on in Settings, Bluetooth & devices, Touchpad. With an administrator
+  window in front, Windows drops the shortcut; `vim.log` says so with
+  `log = 1`, and the next pause or resume tries again.
 - **A hover menu closes after a hint click.** The pointer goes back to where
   it was after the click, so a menu that stays open only while the pointer
   is over it closes. `Alt` + label moves the pointer there without clicking,

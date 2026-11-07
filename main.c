@@ -348,6 +348,7 @@ void app_reload_config(BOOL notify)
     input_config_changed();
     shutdown_config_changed();
     tray_update();
+    touchpad_update();
     app_log(L"config: reloaded");
 
     if (notify) {
@@ -410,6 +411,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         return 0;
     case WM_APP_STATE_CHANGED:
         tray_update();
+        touchpad_update();
         return 0;
     case WM_APP_QUIT:
         app_quit();
@@ -452,6 +454,8 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         // Stop input first: its movement thread calls into UIA until joined.
         input_stop();
         uia_stop();
+        // After input_stop: the wait for the quit hotkey's keys blocks no hook.
+        touchpad_stop();
         tray_shutdown();
         PostQuitMessage(0);
         return 0;
@@ -552,6 +556,7 @@ int main(void)
 
     start_watch_thread();
     shutdown_init();
+    touchpad_update();
 
     if (created) {
         WCHAR hint[64], mode[64], text[512];
