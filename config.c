@@ -1617,8 +1617,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"center_tap_ms = %d\r\n", d.center_tap_ms);
     appendf(buf, cch, L"; Esc in a text field leaves it: the keyboard focus goes to the page, so\r\n");
     appendf(buf, cch, L"; j k f and the other keys without Alt work at once (click or Tab to type\r\n");
-    appendf(buf, cch, L"; again). Esc still reaches the app first; with the field's suggestion\r\n");
-    appendf(buf, cch, L"; list open, the first Esc closes the list and a second one leaves.\r\n");
+    appendf(buf, cch, L"; again). Esc still reaches the app first, so the same press also closes\r\n");
+    appendf(buf, cch, L"; the field's suggestion list.\r\n");
     appendf(buf, cch, L"; 1 = in web browsers (and their address bar), 2 = also in apps built on\r\n");
     appendf(buf, cch, L"; web content (Electron, WebView2), 0 = off.\r\n");
     appendf(buf, cch, L"esc_unfocus = %d\r\n", d.esc_unfocus);

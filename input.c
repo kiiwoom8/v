@@ -1780,8 +1780,8 @@ static void unfocus_cancel(void)
 }
 
 // A plain Esc on its way to the app (outside mouse mode and the hints, not
-// paused). The worker decides where the focus is and whether a suggestion
-// list is open, so the hook only rules out what it already knows: a menu
+// paused). The worker decides where the focus is and where it goes, so
+// the hook only rules out what it already knows: a menu
 // open (that Esc is the menu's) and a focus known to be outside text
 // fields. The autorepeat of a held Esc keeps the first press's arming.
 static void unfocus_key_down(UINT vk, UINT mods)

@@ -6489,21 +6489,18 @@ static const WCHAR *focus_kind_name(int kind)
 // on <body> (Blink focuses the document element for that action), and from
 // the address bar it moves the focus into the page; the Document is the child
 // of the Pane that Chrome_RenderWidgetHostHWND answers with. Esc still reaches
-// the app first (it closes a suggestion list, reverts the address bar).
+// the app first (it closes a suggestion list, reverts the address bar), and
+// the same press then leaves the field: Google's search box opens its
+// suggestions on every click, and giving the first Esc to an open list
+// meant two presses there (removed on the user's report).
 //
 // The hook arms it at the Esc press (uia_focus_leave_down) and the worker
-// looks at the field at once, before the app has handled the key: an open
-// suggestion list (an expanded combobox, or Chromium naming the highlighted
-// option as the focus) makes that Esc the list's, so a second Esc leaves.
-// The move waits for the release (uia_focus_leave_up) plus LEAVE_AFTER_MS,
+// finds the field and where the focus goes at once. The move waits for the release (uia_focus_leave_up) plus LEAVE_AFTER_MS,
 // and only if the focus is still in a text field of that window: an Esc that
 // closed a dialog or moved the focus itself is left alone. Native apps are
 // never touched: their windows hand the focus straight back to their edit
 // control, and their Esc means too much (cancel, close).
 
-#ifndef UIA_ExpandCollapseExpandCollapseStatePropertyId
-#define UIA_ExpandCollapseExpandCollapseStatePropertyId 30070
-#endif
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
 #endif
@@ -6582,9 +6579,7 @@ static BOOL leave_cache_ready(IUIAutomation *automation, LeaveState *lv)
         UIA_IsValuePatternAvailablePropertyId, UIA_ValueIsReadOnlyPropertyId,
         UIA_IsTextPatternAvailablePropertyId,
         UIA_IsLegacyIAccessiblePatternAvailablePropertyId,
-        UIA_LegacyIAccessibleStatePropertyId,
-        UIA_IsExpandCollapsePatternAvailablePropertyId,
-        UIA_ExpandCollapseExpandCollapseStatePropertyId
+        UIA_LegacyIAccessibleStatePropertyId
     };
     size_t i;
 
@@ -6687,15 +6682,6 @@ static IUIAutomationElement *leave_page_document(
     return c;
 }
 
-// ExpandCollapseState: 1 expanded, 2 partially (0 collapsed, 3 a leaf).
-static BOOL leave_expanded(IUIAutomationElement *el)
-{
-    LONG state = cached_long_property(
-        el, UIA_ExpandCollapseExpandCollapseStatePropertyId);
-
-    return state == 1 || state == 2;
-}
-
 static void leave_drop(LeaveState *lv)
 {
     if (lv->target)
@@ -6735,7 +6721,6 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
     HWND focus, root;
     DWORD pid;
     const WCHAR *why = NULL;
-    int ct;
 
     leave_drop(lv);
     if (!automation || !leave_cache_ready(automation, lv)) {
@@ -6753,17 +6738,6 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
                                     : L"no web content";
     } else if (!leave_in_text(automation, lv, focus, &gti, &el)) {
         why = L"not in a text field";
-    } else if (el && ((ct = cached_control_type(el)) ==
-                          UIA_ListItemControlTypeId ||
-                      ct == UIA_MenuItemControlTypeId ||
-                      ct == UIA_TreeItemControlTypeId ||
-                      ct == UIA_DataItemControlTypeId)) {
-        // Chromium names an input's aria-activedescendant option.
-        why = L"the field's suggestion list is open";
-    } else if (el && cached_bool_property(
-                         el, UIA_IsExpandCollapsePatternAvailablePropertyId) &&
-               leave_expanded(el)) {
-        why = L"the field's suggestion list is open";
     } else {
         if (el)
             lv->target = leave_document_above(automation, lv->cache, el);

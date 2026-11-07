@@ -660,9 +660,7 @@ Invariants stated in `common.h` and enforced by history:
   holds it back. The hook arms at a plain `Esc` press outside mouse mode
   and the hints (`unfocus_key_down`) unless a menu is open or the focus is
   known to be outside text fields, and the focus worker looks at the field
-  at once (`leave_look`), before the app has handled the key: a focused
-  option (Chromium's `aria-activedescendant`) or an expanded combobox
-  means a suggestion list is open, and that `Esc` is the list's. At the
+  at once (`leave_look`): the field and where the focus goes. At the
   release (`handle_up`, `uia_focus_leave_up`) plus `LEAVE_AFTER_MS` (30) it
   checks again that the focus is still in a text field of the same window,
   so an `Esc` that closed a dialog or moved the focus itself is left
@@ -679,6 +677,15 @@ Invariants stated in `common.h` and enforced by history:
   a sent `Esc` cannot drive it): page input to `<body>`, the expanded
   combobox kept, a link left alone, the iframe input to the frame's body,
   the address bar to the page Document.
+- "Works well but on google search, i have to press esc twice". The first
+  version gave an `Esc` to an open suggestion list (an expanded combobox,
+  or Chromium naming the highlighted option as the focus), so a second
+  `Esc` left the field. Measured on the results page in the temporary
+  Chrome: a click into Google's search box opens its suggestions every
+  time (`aria-expanded="true"`, one listbox shown), while a JS `focus()`
+  does not, so every click-then-`Esc` paid two presses. The exception is
+  gone: the page still gets the `Esc` first and closes its list, and the
+  same press leaves the field (`esc: focus to the page`, `<body>` active).
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -988,10 +995,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
   and a slightly old list that would redirect waits only 150 ms for its
   refresh.
 - **`Esc` leaves a text field only in what is a browser, and only after
-  the app has had it.** `esc_unfocus` looks at the field at the `Esc`
-  press (an open suggestion list makes that `Esc` the list's; after the
-  key the list is already gone) and moves the focus after the release,
-  checking again that `Esc` left the focus in the field. The look and the
+  the app has had it.** `esc_unfocus` finds the field at the `Esc` press
+  and moves the focus after the release, checking again that `Esc` left
+  the focus in the field. One press: do not hand the first `Esc` to an
+  open suggestion list (Google's box opens one on every click, phase 15). The look and the
   move run on the focus worker; the hook only arms, posts and cancels.
   Electron apps are not browsers here (VS Code's editor closes its widgets
   with `Esc`), and native apps cannot be left this way at all.
@@ -1621,7 +1628,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | `Alt+P P` pauses and resumes everything (`pause_tap_ms = 0` makes it one press; `pause_hotkey = none` restores) | phase 10 | The pause hotkey was unbound; pausing only from the tray menu |
 | An element label drops its typed characters and shrinks to what is still to type | phase 10 | The whole label stayed, the typed prefix coloured `match_fg` (the grid still does that) |
 | The touchpad is off while vim mouse runs, back on while paused and after quitting (`touchpad_off = 0` restores) | phase 13 | The touchpad was left alone |
-| In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`; a suggestion list open takes the first `Esc` (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
+| In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 
 ## 7. Open threads

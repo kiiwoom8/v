@@ -117,9 +117,8 @@ Alt (`j` / `k`, `f`, `g g`) work at once, and typed letters no longer go
 into the field. Click the field, `Tab` to it or pick it with the hints to
 type again. `Esc` still reaches the field first, so it closes what it
 always closed or undid (a page's dialog, what you typed in the address
-bar); when the
-field's suggestion list is open, the first `Esc` closes the list and a
-second one leaves the field. Nothing happens when another key comes before
+bar, the field's suggestion list), and the same press leaves the field.
+Nothing happens when another key comes before
 `Esc` is released, when `Esc` is held, while a menu is open, or when `Esc`
 itself moved the focus. It works in Chrome, Edge, Firefox, Brave, Vivaldi,
 Opera, Whale and other browsers by process name; `esc_unfocus = 2` also
