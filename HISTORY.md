@@ -687,6 +687,39 @@ Invariants stated in `common.h` and enforced by history:
   gone: the page still gets the `Esc` first and closes its list, and the
   same press leaves the field (`esc: focus to the page`, `<body>` active).
 
+### Phase 16: the magnet (2026-11-08)
+
+- "when mouse pointer changes to finger (on clickable elements) during
+  moving it using capslock (hjkl), slightly stop instead of just passing by
+  the element ... like magnetize function of adobe premiere pro. this
+  function also should not disrupt smooth usability." `magnet` (default
+  200 ms, 0 = off): in `movement_thread`, while a move key is held, a tick
+  that finds the cursor turned into the system hand (`cursor_is_hand`:
+  `GetCursorInfo` against `LoadCursor(NULL, IDC_HAND)`, one shared handle
+  in every process; Chromium, Firefox and Win32 links use it) pauses the
+  pointer for that long. The pause only inserts time: the velocity is zero
+  and the acceleration's hold time waits, so after it the pointer goes on
+  at the speed it came (the velocity smoothing ramps it back in about
+  20 ms). What keeps it out of the way: releasing ends it (the pointer
+  stays on the element, which is the point), another move key, `Shift` or
+  the left button held end it at once, a burst that starts on the hand
+  never pauses there, and the next pause needs the cursor seen off the
+  hand first (one pause per element entered; adjacent hand areas with no
+  arrow between them are one).
+- An app shows the hand only after it handled the move, and Chromium hit
+  tests in the page on its next frame, so at 2400 px/s the pointer is tens
+  of pixels on when the hand shows, past a short link. The thread keeps
+  where it put the pointer (`MagTrail`, 256 moves); if the hand goes off
+  during the pause (the pointer stands still, so the app caught up and
+  found it outside), the time from the last move to that is the app's
+  lag, and the pointer goes back to where it was put that long before the
+  hand showed (`mag_trail_at`, at most `MAG_MAX_LAG_US`, 100 ms), with
+  the pause restarted there. Off the hand for longer than that ends the
+  pause. `GetCursorInfo` does not wait (section 5: never wait in the
+  movement thread) and is asked only while a move key is held or a pause
+  runs. The hook ignores injected keys, so the pause could not be driven
+  from a script here; it was built and handed to the user to try.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1459,6 +1492,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   it cannot see: physical mouse clicks and wheel scrolls outside
   Chromium, and a page changing by itself; `keep_labels` holds a label
   where it was drawn, so those cost at most 3 s of staleness.
+- **The cursor shape trails the pointer.** An app sets the hand only once
+  it has handled the move (Chromium on its next frame), so the shape seen
+  in a tick describes where the pointer was, not where it is. Anything
+  that reacts to the shape (the magnet, phase 16) must expect to be past
+  the element by then and keep the recent path to go back along.
 - **Anything that follows the pointer moves with it, not on a timer.** The
   `MOUSE` pill on a 15 ms timer trailed a pointer that moves every
   millisecond and stepped after it. `indicator_moved` posts an update from
@@ -1630,6 +1668,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | An element label drops its typed characters and shrinks to what is still to type | phase 10 | The whole label stayed, the typed prefix coloured `match_fg` (the grid still does that) |
 | The touchpad is off while vim mouse runs, back on while paused and after quitting (`touchpad_off = 0` restores) | phase 13 | The touchpad was left alone |
 | In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
+| A held move key pauses the pointer `magnet` ms (200) where the cursor turns into the hand (`magnet = 0` restores) | phase 16 | The pointer passed links at full speed |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 
 ## 7. Open threads
@@ -1898,7 +1937,10 @@ Targeting and its cache: `uia.c` `uia_scroll_aim` (never waits; the movement
 thread polls it each tick and re-aims the streams, `aim_asking`, `scrOwed`),
 `scroll_area_answer`, `scroll_side_gap`, the `SCROLL_*_MS` constants.
 Re-check the Teams cases in section 5 after any targeting change. The mode
-indicator: `indicator_update`, `indicator_moved`.
+indicator: `indicator_update`, `indicator_moved`. The magnet (phase 16):
+`magHold` and its neighbours in `movement_thread`, `cursor_is_hand`,
+`MagTrail`; a pause must stay something the user can always leave at once
+(release, another key, `Shift`).
 
 ### Add a tray menu item
 

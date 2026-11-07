@@ -134,6 +134,9 @@ typedef struct {
     double accel_time;         // seconds to reach max_speed, default 0.45
     double accel_curve;        // easing exponent, default 1.8
     double slow_speed;         // while Shift is held (no acceleration), default 120
+    int    magnet;             // ms a held move key pauses the pointer where the cursor
+                               // turns into the pointing hand (a link, a button), so it
+                               // is easy to stop on; 0-1000, default 200 (0 = off)
     double scroll_speed;       // default 1200  (10 notches/s)
     double scroll_max_speed;   // default 4800  (40 notches/s)
     int    smooth_scroll;      // 1 = small steps once per display frame; default 1

@@ -163,6 +163,7 @@ a pass-through modifier.
 |---|---|
 | `h j k l` | Move left / down / up / right, accelerating (hold two for diagonals) |
 | `Shift` + `hjkl` | Slow, precise movement |
+| (moving onto a link) | The pointer pauses where the cursor turns into the hand, so it is easy to stop on (`magnet`) |
 | `a` | Left button: tap = click, tap twice = double click, hold = drag |
 | `s` | Right click |
 | `m` | Middle click |
@@ -417,6 +418,14 @@ ones:
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
+- `magnet` (ms a held move key pauses the pointer where the cursor turns
+  into the pointing hand, over a link or a button, 0-1000, default 200;
+  0 = off). Releasing the key in that time leaves the pointer on the
+  element; holding on carries on at the same speed, and another move key
+  or `Shift` goes on at once. A move that starts on a link does not pause
+  there, and `Shift` (slow) movement and drags never pause. Where an app
+  shows the hand only after the pointer has passed a short link (a browser
+  notices one frame late), the pointer goes back onto it
 - `scroll_speed`, `scroll_max_speed`, `smooth_scroll` (1 = small steps once
   per display frame, default; 0 = whole notches only)
 - `alt_scroll` (1 = Alt + `jk` scroll, Alt + `hl` back / forward, Alt +

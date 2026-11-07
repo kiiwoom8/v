@@ -2982,6 +2982,75 @@ static BOOL scroll_flush_pending(double accX, double accY)
            accY >= 120.0 - SCROLL_EPS || accY <= -120.0 + SCROLL_EPS;
 }
 
+// The magnet (g_cfg.magnet): while a move key is held, the pointer pauses
+// where the cursor turns into the pointing hand, the one browsers and most
+// apps show over something clickable, so a link is easy to stop on.
+#ifndef IDC_HAND
+#define IDC_HAND MAKEINTRESOURCE(32649)
+#endif
+#ifndef CURSOR_SHOWING
+#define CURSOR_SHOWING 0x00000001
+#endif
+// An app turns the hand on only once it has handled the move: Chromium hit
+// tests in its page, on the next frame, so a fast pointer is already past a
+// short link when the hand shows. If the hand goes off again while the
+// pointer stands still, the pause went past the element; the time the app
+// took to notice says how far back it was entered, up to this.
+#define MAG_MAX_LAG_US 100000
+#define MAG_TRAIL      256
+
+// Where the pointer was put lately, oldest first in a ring.
+typedef struct {
+    DWORD us[MAG_TRAIL];
+    int x[MAG_TRAIL], y[MAG_TRAIL];
+    int head, count;
+} MagTrail;
+
+static void mag_trail_add(MagTrail *t, DWORD us, int x, int y)
+{
+    t->us[t->head] = us;
+    t->x[t->head] = x;
+    t->y[t->head] = y;
+    t->head = (t->head + 1) % MAG_TRAIL;
+    if (t->count < MAG_TRAIL)
+        t->count++;
+}
+
+// The first place the pointer was put at or after `us`; FALSE when the
+// trail does not reach back that far.
+static BOOL mag_trail_at(const MagTrail *t, DWORD us, POINT *pt)
+{
+    int i, oldest = (t->head - t->count + MAG_TRAIL) % MAG_TRAIL;
+
+    if (t->count == 0 || (LONG)(us - t->us[oldest]) < 0)
+        return FALSE;
+    for (i = 0; i < t->count; i++) {
+        int k = (oldest + i) % MAG_TRAIL;
+
+        if ((LONG)(t->us[k] - us) >= 0) {
+            pt->x = t->x[k];
+            pt->y = t->y[k];
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+// The system's hand is one shared cursor, so its handle is the same in
+// every process (Chromium, Firefox and Win32 links all use it).
+static BOOL cursor_is_hand(HCURSOR hand)
+{
+    CURSORINFO ci;
+
+    if (!hand)
+        return FALSE;
+    ZeroMemory(&ci, sizeof(ci));
+    ci.cbSize = sizeof(ci);
+    if (!GetCursorInfo(&ci))
+        return FALSE;
+    return (ci.flags & CURSOR_SHOWING) && ci.hCursor == hand;
+}
+
 static DWORD WINAPI movement_thread(LPVOID param)
 {
     LARGE_INTEGER freq, prev, now;
@@ -3018,6 +3087,17 @@ static DWORD WINAPI movement_thread(LPVOID param)
     DWORD aim_start_us = 0;
     double scrOwed[6] = { 0 };
     DWORD last_prefetch = 0;
+    // The magnet: magArmed once the cursor was seen without the hand;
+    // magHold while the pointer pauses (since magStartUs, entered at
+    // magHandUs, with the keys magKeys); magFixed once a pause that went past
+    // the element was moved back; magBack is where to (magBackDue).
+    HCURSOR hand = NULL;
+    BOOL magArmed = FALSE, magHold = FALSE, magFixed = FALSE;
+    BOOL magBackDue = FALSE;
+    POINT magBack = { 0, 0 };
+    LONG magKeys = 0;
+    DWORD magStartUs = 0, magHandUs = 0, magLastMoveUs = 0;
+    static MagTrail trail;
     HANDLE timer;
 
     (void)param;
@@ -3062,6 +3142,11 @@ static DWORD WINAPI movement_thread(LPVOID param)
         scrFrameValid = FALSE;
         prevSignX = prevSignY = 0;
         have_ref = FALSE;
+        // A burst that starts on a link does not pause there.
+        hand = LoadCursor(NULL, IDC_HAND);
+        magArmed = !cursor_is_hand(hand);
+        magHold = magFixed = magBackDue = FALSE;
+        trail.count = 0;
         QueryPerformanceCounter(&prev);
 
         if (!timer && !timing) {
@@ -3078,7 +3163,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
             double speed, max_speed, accel_time, curve, slow_speed;
             double scroll_base, scroll_max, fast_base, fast_max;
             int signX, signY, idx;
-            BOOL slow, had_streams, any_streams;
+            BOOL slow, had_streams, any_streams, was_still;
+            DWORD tick_us;
             POINT cur;
             int vx, vy, vw, vh;
             BOOL have_cur;
@@ -3172,6 +3258,9 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 scrAccX = scrAccY = 0.0;
                 prevSignX = prevSignY = 0;
                 aim_asking = FALSE;
+                magHold = magBackDue = FALSE;
+                magArmed = FALSE;
+                trail.count = 0;
                 // A glide does not survive a suspend; the gap would otherwise
                 // arrive all at once.
                 for (idx = 0; idx < 6; idx++) {
@@ -3187,6 +3276,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
             signX = ((mf & MOVE_RIGHT) ? 1 : 0) - ((mf & MOVE_LEFT) ? 1 : 0);
             signY = ((mf & MOVE_DOWN) ? 1 : 0) - ((mf & MOVE_UP) ? 1 : 0);
+            was_still = prevSignX == 0 && prevSignY == 0;
             if (prevSignX != 0 && signX == 0) {
                 velX = holdX = 0.0;
             }
@@ -3217,7 +3307,61 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 fast_max = fast_base;
             slow = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
-            remaining = dt;
+            // The magnet: a held move key pauses the pointer for g_cfg.magnet
+            // ms where the cursor turns into the hand. Nothing else changes:
+            // the acceleration waits too, so the pointer goes on as it came.
+            // Releasing, Shift, the left button held or another move key end
+            // the pause at once; a burst that starts on a link does not stop
+            // there, and the next pause needs the cursor off the hand first.
+            tick_us = qpc_us_from(now, freq);
+            if (g_cfg.magnet > 0 && (signX != 0 || signY != 0 || magHold)) {
+                BOOL is_hand = cursor_is_hand(hand);
+                BOOL drag = flag_get(&s_left_held);
+                LONG keys = mf & (MOVE_LEFT | MOVE_DOWN | MOVE_UP | MOVE_RIGHT);
+
+                if (magHold) {
+                    // The hand went off with the pointer standing still: the
+                    // app had seen the element only on its way past. Back to
+                    // where it was put that long before the hand showed.
+                    if (!is_hand && !magFixed &&
+                        (DWORD)(tick_us - magHandUs) <= MAG_MAX_LAG_US) {
+                        DWORD lag = tick_us - magLastMoveUs;
+
+                        if (lag <= MAG_MAX_LAG_US &&
+                            mag_trail_at(&trail, magHandUs - lag, &magBack)) {
+                            magBackDue = TRUE;
+                            magStartUs = tick_us;
+                        }
+                        magFixed = TRUE;
+                    }
+                    // Still off the hand well after that: nothing to stop on
+                    // here (the page changed, or the way back missed).
+                    if (keys == 0 || slow || drag || (keys & ~magKeys) ||
+                        (!is_hand && (DWORD)(tick_us - magStartUs) >
+                                         MAG_MAX_LAG_US) ||
+                        (DWORD)(tick_us - magStartUs) >=
+                            (DWORD)g_cfg.magnet * 1000u) {
+                        magHold = FALSE;
+                        magArmed = FALSE;
+                    }
+                } else if (is_hand) {
+                    if (magArmed && !was_still && !slow && !drag) {
+                        magHold = TRUE;
+                        magFixed = FALSE;
+                        magStartUs = magHandUs = tick_us;
+                        magKeys = keys;
+                    }
+                    magArmed = FALSE;
+                } else {
+                    magArmed = TRUE;
+                }
+            } else if (g_cfg.magnet <= 0) {
+                magHold = FALSE;
+            }
+
+            remaining = magHold ? 0.0 : dt;
+            if (magHold)
+                velX = velY = 0.0;
             while (remaining > 0.0) {
                 double step = remaining > MAX_SIM_STEP_SEC ? MAX_SIM_STEP_SEC : remaining;
                 double targetX, targetY;
@@ -3278,6 +3422,16 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     have_ref = TRUE;
                 }
             }
+            if (magBackDue) {
+                magBackDue = FALSE;
+                if (have_ref && (magBack.x != ref.x || magBack.y != ref.y)) {
+                    send_absolute_move(magBack.x, magBack.y, vx, vy, vw, vh);
+                    posX = magBack.x;
+                    posY = magBack.y;
+                    ref = magBack;
+                    indicator_moved();
+                }
+            }
             if ((tickDX != 0.0 || tickDY != 0.0) && have_ref) {
                 int px, py;
 
@@ -3301,6 +3455,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     send_absolute_move(px, py, vx, vy, vw, vh);
                     ref.x = px;
                     ref.y = py;
+                    mag_trail_add(&trail, tick_us, px, py);
+                    magLastMoveUs = tick_us;
                     indicator_moved();
                 }
             }
