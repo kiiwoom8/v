@@ -34,9 +34,9 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
-| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the `0 0` jump to the middle of the screen, `Esc` leaving a text field (`esc_unfocus`: armed at the press, sent to the focus worker at the release). | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `unfocus_key_down`, `unfocus_cancel`, `input_thread_proc` |
+| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the `0 0` jump to the middle of the screen, `Esc` leaving a text field (`esc_unfocus`: armed at the press, sent to the focus worker at the release), a held `j k u d` leaving it (`hold_unfocus`: armed at the press, `OWN_HOLD` holds its repeats back, the scroll starts from the worker's answer). | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `unfocus_key_down`, `unfocus_cancel`, `hold_key_down`, `hold_repeat`, `hold_key_up`, `hold_answer`, `hold_cancel`, `input_thread_proc` |
 | `hint.c` | 4186 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, the watch on a browser page still loading (status "Page loading", content reports, one relabel), monitor cycling, the grid key, clicks held back until Shift and Ctrl are up. | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `load_note`, `load_watch`, `load_event_proc`, `load_content_in`, `relabel_all`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
-| `uia.c` | 6768 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `g g` / `Shift+g` scroll to the top / bottom and the focus classifier for bare keys (which also moves the focus from a text field to the page on `Esc`). All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `page_busy`, `msaa_state`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait`, `uia_focus_leave_down`, `leave_step`, `leave_look`, `leave_act`, `leave_page_document`, `browser_process` |
+| `uia.c` | 6768 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `g g` / `Shift+g` scroll to the top / bottom and the focus classifier for bare keys (which also moves the focus from a text field to the page on `Esc`). All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `page_busy`, `msaa_state`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait`, `uia_focus_leave_down`, `uia_focus_leave_hold`, `uia_focus_leave_result`, `leave_step`, `leave_erase`, `leave_look`, `leave_act`, `leave_page_document`, `browser_process` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
 | `update.c` | 483 | Self-update (tray, "Update to latest version"): WinINet download of the latest release's `vim.exe` on a worker, byte comparison with the running exe, rename-then-restart with `--updated`, startup cleanup of `<exe>.old` / `<exe>.new`. | `update_start`, `update_worker`, `download`, `check_download`, `update_on_done`, `install_and_restart`, `update_wait_for_old`, `update_cleanup` |
@@ -63,7 +63,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | UIA scan + 8 helpers | `uia.c` `uia_worker`, `uia_helper` | Scans windows in parallel (a classic window's parts too: one queue of work items per scan), merges in completion order, posts cumulative `ClickList`s to the main window (`WM_APP_ELEMENTS`). |
 | UIA scroll worker | `uia.c` `scroll_worker` | Per-window cache (8 windows, LRU) of scrollable areas for Alt and bare scrolling, kept warm after a press. |
 | UIA scroll-end worker | `uia.c` `scroll_end_worker` | `Shift+g`: `ScrollPattern.SetScrollPercent` to 100 on the scrollable area at a point. Started on first use. |
-| UIA focus worker | `uia.c` `focus_worker` | Decides whether the focus is in a text field, after focus and foreground events and polls; the hook reads the cached answer. On `Esc` (`esc_unfocus`) looks at the field at the press and moves the focus to the page after the release. |
+| UIA focus worker | `uia.c` `focus_worker` | Decides whether the focus is in a text field, after focus and foreground events and polls; the hook reads the cached answer. On `Esc` (`esc_unfocus`) looks at the field at the press and moves the focus to the page after the release; for a held `j k u d` (`hold_unfocus`) looks once the key has been held long enough, takes the typed letter back and moves the focus. |
 | Settings watcher | `main.c` `watch_thread_proc` | Notices `vim.ini` changes and posts `WM_APP_RELOAD_CONFIG`. |
 | Update download (on demand) | `update.c` `update_worker` | Downloads `<exe>.new`, compares it with the running exe, posts `WM_APP_UPDATE_DONE`. The swap and restart run on the main thread. |
 
@@ -720,6 +720,47 @@ Invariants stated in `common.h` and enforced by history:
   runs. The hook ignores injected keys, so the pause could not be driven
   from a script here; it was built and handed to the user to try.
 
+### Phase 17: hold a scroll key to leave a text field (2026-11-08)
+
+- "let pressing d, j, k, u for long enough disable text input focus. focus
+  on usability so the duration must not be too long." `hold_unfocus`
+  (default 300 ms, 0-2000, 0 = off): in a text field where `Esc` would
+  leave (`leave_look`'s rules: browsers, or web apps with `esc_unfocus =
+  2`), the bare scroll keys held that long leave the field like `Esc` and
+  then scroll while still held. 300 ms is under Windows' default repeat
+  delay (500 ms; the fastest setting is 250) and well over a typing key's
+  hold (about 100 ms, rarely past 200).
+- Typing never waits. The alternative, holding the letter back until the
+  release or the next key, would have delayed every `j k u d` typed in a
+  browser and reordered rolled-over keys. So the press types as usual
+  (`hold_key_down` on the pass-through path of `handle_down` marks the key
+  `OWN_HOLD` and arms the worker with `uia_focus_leave_hold`), and the
+  leave takes the letter back: a Backspace in a page, an `Esc` in the
+  browser's own UI (the address bar's inline completion would eat a
+  Backspace; `Esc` reverts the typing there), sent by the focus worker
+  (`leave_erase`) `LEAVE_ERASE_MS` (30) before the `SetFocus`, since
+  typed input waits behind the sent messages a UI Automation call arrives
+  as. A field whose selection the letter replaced loses that selection;
+  undo would need Ctrl, which is never injected.
+- The worker looks only once the key has been held long enough
+  (`leave_step` returns the time left before `leave_look`), so the look's
+  UI Automation calls are not paid on every typed letter; the hook only
+  pre-filters by window (`hold_window_ok`: `uia_browser_window` of the
+  foreground window, cached). Its repeats are held back while the hold is
+  pending (`hold_repeat`), so a key held in Notepad still repeats once the
+  worker says "no" (`uia_focus_leave_result` = `LEAVE_NO`). Another key, a
+  modifier included (it would make the Backspace Ctrl+Backspace), or the
+  release cancels (`hold_cancel`, also in `alt_resolve` and
+  `reset_key_state`). On `LEAVE_DONE` the worker posts the focus answer's
+  message; `hold_answer` on the input thread starts the key's scroll
+  (`scroll_press`, like a bare key) if it is still down, and its release
+  stops it and still reaches the app (the app saw the press).
+- The Esc and the hold share the worker's leave state (`g_lv_*`, a new
+  press replaces the old one); `g_lv_hold_ms` tells them apart, and every
+  press now records how it ended (`g_lv_res_seq`, `g_lv_res`). Not tested
+  by key injection (the hook ignores injected keys); built and handed to
+  the user to try.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1037,6 +1078,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
   move run on the focus worker; the hook only arms, posts and cancels.
   Electron apps are not browsers here (VS Code's editor closes its widgets
   with `Esc`), and native apps cannot be left this way at all.
+- **A held scroll key leaves a text field without delaying typing.**
+  `hold_unfocus` lets the press type and takes the letter back when it
+  leaves; do not hold the press back to avoid the erase (every typed
+  `j k u d` would lag, and rolled-over keys would come out of order). Keep
+  the look on the worker and after the hold time, not at every press, and
+  cancel on any other key, modifiers included, so the erase key is always
+  a bare Backspace or Esc.
 - **Text shortcuts always need Alt**, and a shortcut whose first letter is an
   Alt-key letter cannot start. `snippet.c` `first_key_taken` warns; update it
   when you add an Alt key (`6622ce0` added `g`).
@@ -1670,6 +1718,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The touchpad is off while vim mouse runs, back on while paused and after quitting (`touchpad_off = 0` restores) | phase 13 | The touchpad was left alone |
 | In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
 | A held move key pauses the pointer `magnet` ms (200) where the cursor turns into the hand (`magnet = 0` restores) | phase 16 | The pointer passed links at full speed |
+| In a browser text field, `j k u d` held `hold_unfocus` ms (300) take their letter back, leave the field like `Esc` and scroll (`hold_unfocus = 0` restores) | phase 17 | A held letter repeated in the field; leaving needed `Esc` or a click |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 
 ## 7. Open threads
@@ -1826,7 +1875,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
    key that reaches the app and acts after its release (`Esc` for
    `esc_unfocus`) arms in `handle_down`, cancels on any other key
    (`unfocus_cancel`, both paths and `reset_key_state`) and fires from
-   `handle_up`.
+   `handle_up`. A key that reaches the app and acts once held
+   (`hold_unfocus`) takes an owner of its own (`OWN_HOLD`) for its repeats
+   and release, and its action comes back from the worker as a message to
+   the input thread (`hold_answer`).
 4. `snippet.c` `first_key_taken`: if it is a new Alt-key letter.
 5. `tray.c` `build_help_rows`: the help window.
 6. `README.md`: the Keys tables, Settings, and Troubleshooting if it takes a

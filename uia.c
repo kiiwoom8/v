@@ -6509,14 +6509,20 @@ static const WCHAR *focus_kind_name(int kind)
 #define LEAVE_HOLD_MS 1500      // an Esc held longer than this does nothing
 #define LEAVE_DEPTH_MAX 64      // parents walked looking for the field's Document
 #define LEAVE_SETTLE_MS 50      // ask the focus again this long after the move
+#define LEAVE_ERASE_MS 30       // hold_unfocus: let the field take the erase key first
 
 // Guarded by g_fx_cs. g_lv_seq counts the armed presses; the worker handles
-// each once (LeaveState.done_seq).
+// each once (LeaveState.done_seq). g_lv_hold_ms: 0 for an Esc, else a held
+// scroll key (hold_unfocus) that leaves once held this long, without a
+// release. g_lv_res is how the press g_lv_res_seq ended (LEAVE_NO, _DONE).
 static LONG  g_lv_seq;
 static BOOL  g_lv_up;
 static BOOL  g_lv_dead;
 static DWORD g_lv_down_tick;
 static DWORD g_lv_up_tick;
+static DWORD g_lv_hold_ms;
+static LONG  g_lv_res_seq;
+static int   g_lv_res;
 
 typedef struct {
     LONG seq;                           // the press looked at
@@ -6524,6 +6530,8 @@ typedef struct {
     IUIAutomationElement *target;       // where the focus goes
     HWND focus;                         // the focus window when it was looked at
     IUIAutomationCacheRequest *cache;   // full elements, control type and more
+    BOOL in_page;                       // the field is in a page, not the browser's own UI
+    BOOL hold;                          // a held scroll key, not an Esc
 } LeaveState;
 
 typedef BOOL (WINAPI *QueryImageNameFn)(HANDLE, DWORD, LPWSTR, PDWORD);
@@ -6688,6 +6696,7 @@ static void leave_drop(LeaveState *lv)
         lv->target->lpVtbl->Release(lv->target);
     lv->target = NULL;
     lv->focus = NULL;
+    lv->in_page = FALSE;
 }
 
 // Whether typing goes into a text field in focus (the window with the
@@ -6712,8 +6721,8 @@ static BOOL leave_in_text(IUIAutomation *automation, LeaveState *lv,
     return text;
 }
 
-// At the Esc press: is the focus in a text field we may leave, and where
-// does the focus go? Sets lv->target, or logs why not.
+// At the press: is the focus in a text field we may leave, and where does
+// the focus go? Sets lv->target, or logs why not.
 static void leave_look(IUIAutomation *automation, LeaveState *lv)
 {
     IUIAutomationElement *el = NULL;
@@ -6741,6 +6750,7 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
     } else {
         if (el)
             lv->target = leave_document_above(automation, lv->cache, el);
+        lv->in_page = lv->target != NULL;
         if (!lv->target && uia_chromium_window(root))
             lv->target = leave_page_document(automation, lv->cache, root);
         if (!lv->target)
@@ -6751,12 +6761,37 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
     if (el)
         el->lpVtbl->Release(el);
     if (why && g_cfg.log)
-        app_log(L"esc: the focus stays, %ls", why);
+        app_log(L"%ls: the focus stays, %ls", lv->hold ? L"hold" : L"esc",
+                why);
 }
 
-// After the release: move the focus to the page, if Esc left it in the field.
-static void leave_act(IUIAutomation *automation, LeaveState *lv)
+// hold_unfocus: the held key typed its letter into the field when it went
+// down; take it back before leaving. In a page that is a Backspace; in the
+// browser's own UI (the address bar, whose inline completion a Backspace
+// would only remove) an Esc, which reverts what was typed there.
+static void leave_erase(const LeaveState *lv)
 {
+    INPUT in[2];
+    WORD vk = lv->in_page ? VK_BACK : VK_ESCAPE;
+
+    ZeroMemory(in, sizeof(in));
+    in[0].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = vk;
+    in[1].type = INPUT_KEYBOARD;
+    in[1].ki.wVk = vk;
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, in, sizeof(INPUT));
+    // Typed input waits behind the app's sent messages, which a UI
+    // Automation SetFocus arrives as: give the field the key first.
+    Sleep(LEAVE_ERASE_MS);
+}
+
+// Esc: after the release, if Esc left the focus in the field. A held key:
+// once held hold_unfocus ms, if the focus is still in the field. Moves the
+// focus to the page; TRUE when it asked the page to take it.
+static BOOL leave_act(IUIAutomation *automation, LeaveState *lv)
+{
+    const WCHAR *name = lv->hold ? L"hold" : L"esc";
     GUITHREADINFO gti;
     HWND focus;
     DWORD pid;
@@ -6764,28 +6799,49 @@ static void leave_act(IUIAutomation *automation, LeaveState *lv)
 
     if (!focus_window(&focus, &gti, &pid) || focus != lv->focus) {
         if (g_cfg.log)
-            app_log(L"esc: the focus stays, it moved to another window");
-        return;
+            app_log(L"%ls: the focus stays, it moved to another window",
+                    name);
+        return FALSE;
     }
     if (!leave_in_text(automation, lv, focus, &gti, NULL)) {
         if (g_cfg.log)
-            app_log(L"esc: the focus stays, Esc already took it out of the "
-                    L"field");
-        return;
+            app_log(lv->hold ? L"hold: the focus stays, it already left "
+                               L"the field"
+                             : L"esc: the focus stays, Esc already took it "
+                               L"out of the field");
+        return FALSE;
     }
+    if (lv->hold)
+        leave_erase(lv);
     hr = lv->target->lpVtbl->SetFocus(lv->target);
     if (g_cfg.log)
-        app_log(L"esc: focus to the page (hr 0x%08lx)", (unsigned long)hr);
+        app_log(L"%ls: focus to the page (hr 0x%08lx)%ls", name,
+                (unsigned long)hr,
+                !lv->hold ? L"" : lv->in_page ? L", letter erased by Backspace"
+                                              : L", typing reverted by Esc");
     uia_focus_changed(LEAVE_SETTLE_MS);
+    return SUCCEEDED(hr);
 }
 
-// Runs what is due for the latest armed Esc; returns how long until the
+// How the press seq ended, for uia_focus_leave_result; the input thread
+// hears of a held key's leave through the focus answer's message.
+static void leave_result(LONG seq, int res)
+{
+    EnterCriticalSection(&g_fx_cs);
+    g_lv_res_seq = seq;
+    g_lv_res = res;
+    LeaveCriticalSection(&g_fx_cs);
+    if (res == LEAVE_DONE)
+        focus_notify();
+}
+
+// Runs what is due for the latest armed press; returns how long until the
 // next step is due (0 = nothing pending; a key-up wakes the worker anyway).
 static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
 {
     LONG seq;
     BOOL up, dead;
-    DWORD down_tick, up_tick, now;
+    DWORD down_tick, up_tick, hold_ms, now;
 
     EnterCriticalSection(&g_fx_cs);
     seq = g_lv_seq;
@@ -6793,23 +6849,41 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
     dead = g_lv_dead;
     down_tick = g_lv_down_tick;
     up_tick = g_lv_up_tick;
+    hold_ms = g_lv_hold_ms;
     LeaveCriticalSection(&g_fx_cs);
     if (seq == lv->done_seq)
         return 0;
     if (dead) {
         leave_drop(lv);
         lv->done_seq = seq;
+        leave_result(seq, LEAVE_NO);
         return 0;
     }
+    now = GetTickCount();
     if (lv->seq != seq) {
+        // A held key is looked at only once held long enough: most presses
+        // are typing, and the look costs UI Automation calls into the app.
+        // Esc is looked at now, before the app's handling of it moves things.
+        if (hold_ms && !up && (DWORD)(now - down_tick) < hold_ms)
+            return hold_ms - (DWORD)(now - down_tick);
         lv->seq = seq;
+        lv->hold = hold_ms != 0;
         leave_look(automation, lv);
         if (!lv->target) {
             lv->done_seq = seq;
+            leave_result(seq, LEAVE_NO);
             return 0;
         }
+        now = GetTickCount();
     }
-    now = GetTickCount();
+    if (lv->hold) {
+        // The hook cancels at the release; up here means it came first.
+        leave_result(seq, !up && leave_act(automation, lv) ? LEAVE_DONE
+                                                           : LEAVE_NO);
+        leave_drop(lv);
+        lv->done_seq = seq;
+        return 0;
+    }
     if (!up) {
         if ((DWORD)(now - down_tick) < LEAVE_HOLD_MS)
             return LEAVE_HOLD_MS - (DWORD)(now - down_tick);
@@ -6817,11 +6891,12 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
             app_log(L"esc: the focus stays, Esc was held");
         leave_drop(lv);
         lv->done_seq = seq;
+        leave_result(seq, LEAVE_NO);
         return 0;
     }
     if ((DWORD)(now - up_tick) < LEAVE_AFTER_MS)
         return LEAVE_AFTER_MS - (DWORD)(now - up_tick);
-    leave_act(automation, lv);
+    leave_result(seq, leave_act(automation, lv) ? LEAVE_DONE : LEAVE_NO);
     leave_drop(lv);
     lv->done_seq = seq;
     return 0;
@@ -7028,17 +7103,48 @@ static BOOL focus_worker_ready(void)
     return InterlockedCompareExchange(&g_fx_state, 2, 2) == 2;
 }
 
-void uia_focus_leave_down(void)
+static LONG leave_arm(DWORD hold_ms)
 {
+    LONG seq;
+
     if (!focus_worker_ready())
-        return;
+        return 0;
     EnterCriticalSection(&g_fx_cs);
-    ++g_lv_seq;
+    if (++g_lv_seq == 0)
+        ++g_lv_seq;
+    seq = g_lv_seq;
     g_lv_up = FALSE;
     g_lv_dead = FALSE;
     g_lv_down_tick = GetTickCount();
+    g_lv_hold_ms = hold_ms;
     LeaveCriticalSection(&g_fx_cs);
     SetEvent(g_fx_wake);
+    return seq;
+}
+
+void uia_focus_leave_down(void)
+{
+    leave_arm(0);
+}
+
+LONG uia_focus_leave_hold(DWORD hold_ms)
+{
+    return leave_arm(hold_ms ? hold_ms : 1);
+}
+
+int uia_focus_leave_result(LONG seq)
+{
+    int res = LEAVE_PENDING;
+
+    if (!seq || InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+        return LEAVE_NO;
+    EnterCriticalSection(&g_fx_cs);
+    if (g_lv_res_seq == seq)
+        res = g_lv_res;
+    else if (g_lv_seq != seq)
+        res = LEAVE_NO;     // a later press replaced it
+    LeaveCriticalSection(&g_fx_cs);
+    return res;
 }
 
 void uia_focus_leave_up(void)

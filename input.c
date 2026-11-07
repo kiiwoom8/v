@@ -232,7 +232,10 @@ enum {
     ACT_BACK, ACT_FORWARD, ACT_SCROLL_END
 };
 
-enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS, OWN_ALT_HELD };
+// OWN_HOLD: a scroll key that typed into a text field and may leave it
+// (hold_unfocus); its release still reaches the app.
+enum { OWN_NONE = 0, OWN_PASS, OWN_SWALLOW, OWN_MOVE, OWN_LEFT, OWN_CAPS, OWN_ALT_HELD,
+       OWN_HOLD };
 
 #define LEFT_SRC_NONE 0
 #define LEFT_SRC_KEY  1
@@ -1601,6 +1604,8 @@ static void bare_log(int kind, HWND popup)
 // (still asking, or a classification that failed), not because it is in a
 // text field or a menu is open. A lone g in that state still arms g g.
 static BOOL s_bare_asked = FALSE;
+// Set by bare_key_ok: the key types because a menu is open.
+static BOOL s_bare_popup = FALSE;
 
 // Checked only for an unmodified press of one of those keys. Anything not
 // known to be outside a text field (still asking, a menu open) types as usual.
@@ -1610,12 +1615,14 @@ static BOOL bare_key_ok(UINT vk)
     int kind;
 
     s_bare_asked = FALSE;
+    s_bare_popup = FALSE;
     if (!g_cfg.bare_keys || flag_get(&s_mouse_mode))
         return FALSE;
     if (!bare_hint_key(vk) && alt_key_action(vk) == ACT_NONE)
         return FALSE;
     // No wait while a menu is open; otherwise give a pending answer a moment.
     if (popup_open(TRUE, &popup)) {
+        s_bare_popup = TRUE;
         if (g_cfg.log)
             bare_log(FOCUS_UNKNOWN, popup);
         return FALSE;
@@ -1800,6 +1807,117 @@ static void unfocus_key_down(UINT vk, UINT mods)
     uia_focus_leave_down();
 }
 
+// hold_unfocus: j k u d (the bare scroll keys) held in a browser's text
+// field. The press types its letter as usual, so typing never waits; the
+// focus worker counts the hold. Held hold_unfocus ms with no other key, it
+// takes the letter back, moves the focus to the page like Esc and tells
+// the input thread (hold_answer), which starts the key's scroll while it is
+// still held. Autorepeat waits meanwhile and goes on scrolling after.
+static UINT s_hold_vk;          // the held key, 0 = none
+static int  s_hold_act;         // its scroll action
+static LONG s_hold_seq;         // its press at the focus worker
+static BOOL s_hold_scroll;      // it left the field and scrolls now
+
+// Another key, Esc included, or a reset: a hold still waiting leaves nothing
+// and the key types on. A hold that already scrolls keeps scrolling to its
+// release, like any held scroll key.
+static void hold_cancel(void)
+{
+    if (!s_hold_vk || s_hold_scroll)
+        return;
+    s_hold_vk = 0;
+    uia_focus_leave_cancel();
+}
+
+// Foreground windows only a browser's: the worker decides for real, this
+// keeps typing elsewhere from arming at all. Cached per window.
+static BOOL hold_window_ok(void)
+{
+    static HWND last;
+    static BOOL answer;
+    HWND fg = GetForegroundWindow();
+
+    if (fg != last) {
+        last = fg;
+        answer = fg && uia_browser_window(fg);
+    }
+    return answer;
+}
+
+// On the pass-through path of handle_down: the key has typed.
+static void hold_key_down(UINT vk, UINT mods)
+{
+    int act;
+    LONG seq;
+
+    if (g_cfg.hold_unfocus <= 0 || !g_cfg.bare_keys || mods != 0 ||
+        flag_get(&s_mouse_mode) || s_bare_popup)
+        return;
+    act = alt_key_action(vk);
+    if (act != ACT_SCROLL_DOWN && act != ACT_SCROLL_UP &&
+        act != ACT_FAST_DOWN && act != ACT_FAST_UP)
+        return;
+    if (uia_focus_state() == FOCUS_OTHER || !hold_window_ok())
+        return;
+    seq = uia_focus_leave_hold((DWORD)g_cfg.hold_unfocus);
+    if (!seq)
+        return;
+    s_hold_vk = vk;
+    s_hold_act = act;
+    s_hold_seq = seq;
+    s_hold_scroll = FALSE;
+    s_owner[vk] = OWN_HOLD;
+}
+
+// An autorepeat of an OWN_HOLD key: held back while the hold may still leave
+// the field (or has, and the scroll is about to start), typed otherwise.
+static BOOL hold_repeat(UINT vk)
+{
+    if (s_hold_vk != vk)
+        return FALSE;
+    if (s_hold_scroll)
+        return TRUE;
+    if (uia_focus_leave_result(s_hold_seq) == LEAVE_NO) {
+        s_hold_vk = 0;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// The release of an OWN_HOLD key, which reaches the app either way.
+static void hold_key_up(UINT vk)
+{
+    if (s_hold_vk != vk)
+        return;
+    if (s_hold_scroll)
+        scroll_release(s_hold_act);
+    else
+        uia_focus_leave_cancel();
+    s_hold_vk = 0;
+    s_hold_scroll = FALSE;
+}
+
+// On the input thread after a focus answer or a leave: once the held key
+// has left the field, it scrolls like the key outside a text field.
+static void hold_answer(void)
+{
+    UINT vk = s_hold_vk;
+
+    if (!vk || s_hold_scroll || !s_down[vk] || s_owner[vk] != OWN_HOLD)
+        return;
+    if (uia_focus_leave_result(s_hold_seq) != LEAVE_DONE)
+        return;
+    if (flag_get(&s_paused) || flag_get(&s_capture) ||
+        flag_get(&s_mouse_mode)) {
+        s_hold_vk = 0;
+        return;
+    }
+    s_hold_scroll = TRUE;
+    if (g_cfg.log)
+        app_log(L"hold: left the field, scrolling while the key is held");
+    scroll_press(s_hold_act, g_cfg.alt_scroll_auto, FALSE);
+}
+
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
 // it, so ask again once it has.
 static void focus_key_passed(UINT vk)
@@ -1894,6 +2012,7 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
         s_center_tap = FALSE;
         tap_defer_cancel();
         unfocus_cancel();
+        hold_cancel();
     }
     if (handle_hotkeys(vk, mods, FALSE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -1967,6 +2086,7 @@ static BOOL handle_down(UINT vk)
     // autorepeat of the held Esc itself is not another key.
     if (vk != VK_ESCAPE)
         unfocus_cancel();
+    hold_cancel();
 
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
@@ -2096,6 +2216,7 @@ static BOOL handle_down(UINT vk)
     focus_key_passed(vk);
     ahead_key_passed();
     s_owner[vk] = OWN_PASS;
+    hold_key_down(vk, mods);
     return FALSE;
 }
 
@@ -2117,6 +2238,9 @@ static BOOL handle_up(UINT vk)
     }
     switch (owner) {
     case OWN_PASS:
+        return FALSE;
+    case OWN_HOLD:
+        hold_key_up(vk);
         return FALSE;
     case OWN_CAPS:
         caps_key_up();
@@ -2315,10 +2439,14 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
         BOOL repeat = s_down[vk] != 0;
         s_down[vk] = 1;
         if (!repeat) {
-            if (is_modifier(vk))
+            // A modifier during a hold: the erase key it sends would be
+            // Ctrl + Backspace (a word) or worse; it types on instead.
+            if (is_modifier(vk)) {
+                hold_cancel();
                 prescan_mod_down(vk);
-            else if (vk != g_cfg.hint_hotkey.vk)
+            } else if (vk != g_cfg.hint_hotkey.vk) {
                 prescan_cancel();
+            }
         }
         if (vk == VK_LMENU) {
             if (repeat) {
@@ -2357,6 +2485,8 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
         }
         if (repeat) {
             owner = s_owner[vk];
+            if (owner == OWN_HOLD)
+                return hold_repeat(vk);
             return owner != OWN_PASS && owner != OWN_NONE;
         }
         return handle_down(vk);
@@ -2410,6 +2540,9 @@ static void reset_key_state(void)
     s_defer_act = DEFER_NONE;
     s_pause_tap = FALSE;
     unfocus_cancel();
+    hold_cancel();
+    s_hold_vk = 0;
+    s_hold_scroll = FALSE;
     InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
 }
@@ -4337,6 +4470,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
             }
             if (msg.message == WM_INPUT_FOCUS_ANSWER) {
                 tap_answer();
+                hold_answer();
                 continue;
             }
             continue;

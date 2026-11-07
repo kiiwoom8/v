@@ -895,6 +895,12 @@ static void build_help_rows(void)
                      g_cfg.esc_unfocus >= 2
                      ? L"Leave it: the focus goes to the page (browsers and web apps)"
                      : L"Leave it: the focus goes to the page (web browsers)");
+    if (g_cfg.hold_unfocus > 0 && g_cfg.bare_keys && g_cfg.alt_scroll) {
+        _snwprintf(buf, 127, L"j k u d held %d ms in a text field",
+                   g_cfg.hold_unfocus);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Leave it like Esc (the letter is taken back) and scroll");
+    }
     help_add_hotkey(&g_cfg.quit_hotkey, L"Quit vim mouse");
     if (g_cfg.lock_hotkey.vk)
         help_add_hotkey(&g_cfg.lock_hotkey,

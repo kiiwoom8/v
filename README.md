@@ -127,6 +127,19 @@ apps), whose editors often use `Esc` themselves, and `esc_unfocus = 0` turns
 it off. Native apps are never touched: their windows hand the focus
 straight back to the text field.
 
+**Hold `j`, `k`, `u` or `d` to leave a text field.** In the same text
+fields, holding one of the scroll keys for `hold_unfocus` ms (default
+300 ms, about the time before a held key starts repeating) does what `Esc`
+does, without reaching for it: the letter the press typed is taken back
+(a Backspace; in the address bar an `Esc`, which reverts what you typed
+there), the focus goes to the page, and the key goes on scrolling for as
+long as you hold it. Normal typing never waits: the letter still appears
+on the press, and a quicker release, or any other key (Shift and Ctrl
+included) before the time is up, types as usual. Its repeats are held back
+for that short time only, so holding the key to type `jjjj` in a browser
+field needs a moment longer than before. It needs `bare_keys`;
+`hold_unfocus = 0` turns it off.
+
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
 keyboard** item also unlocks it with the mouse. Windows still handles
@@ -442,7 +455,9 @@ ones:
   `0` taps within this many ms move the pointer to the middle of the
   screen, 0-1000, default 300; 0 = off), `esc_unfocus` (`Esc` in a
   text field moves the focus to the page: 1 = in web browsers, default;
-  2 = also in apps built on web content; 0 = off)
+  2 = also in apps built on web content; 0 = off), `hold_unfocus` (`j`
+  `k` `u` `d` held this many ms in such a text field leave it and scroll,
+  0-2000, default 300; 0 = off)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `key_grid` (the key that switches between the element labels and the grid
   while the hints are open, default `;`; `none` = off),
@@ -715,6 +730,9 @@ user's store.
   to type again, or set `esc_unfocus = 0`. With `log = 1`, `vim.log` says
   what each `Esc` did ("esc: focus to the page", or "esc: the focus stays"
   and why).
+- **Holding `j` or `k` in a search box leaves it.** That is `hold_unfocus`
+  (300 ms): type a held letter quicker, raise `hold_unfocus`, or set it to 0.
+  With `log = 1`, `vim.log` says "hold: focus to the page" for each one.
 - **A text shortcut types nothing.** Its first letter may be an Alt key of vim
   mouse (`f h j k l u d g` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either

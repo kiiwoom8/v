@@ -587,6 +587,7 @@ void config_set_defaults(Config *c)
     c->scroll_end_tap_ms = 500;
     c->center_tap_ms = 300;
     c->esc_unfocus = 1;
+    c->hold_unfocus = 300;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
 
@@ -915,6 +916,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->center_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"esc_unfocus") == 0)
         apply_int_range(&c->esc_unfocus, line, key, val, 0, 2);
+    else if (_wcsicmp(key, L"hold_unfocus") == 0)
+        apply_int_range(&c->hold_unfocus, line, key, val, 0, 2000);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
         apply_double_positive(&c->fast_scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_max_speed") == 0)
@@ -1630,6 +1633,12 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; 1 = in web browsers (and their address bar), 2 = also in apps built on\r\n");
     appendf(buf, cch, L"; web content (Electron, WebView2), 0 = off.\r\n");
     appendf(buf, cch, L"esc_unfocus = %d\r\n", d.esc_unfocus);
+    appendf(buf, cch, L"; j k u d held this many ms in such a text field leave it the same way:\r\n");
+    appendf(buf, cch, L"; the letter the press typed is taken back, the focus goes to the page\r\n");
+    appendf(buf, cch, L"; and the key scrolls while still held. Another key before then, or a\r\n");
+    appendf(buf, cch, L"; quicker release, types as usual. Where esc_unfocus works (browsers, or\r\n");
+    appendf(buf, cch, L"; with 2 also web apps); needs bare_keys. 0 = off.\r\n");
+    appendf(buf, cch, L"hold_unfocus = %d\r\n", d.hold_unfocus);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
     add_key_line(buf, cch, L"Move the mouse down.", L"key_down", d.key_down);

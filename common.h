@@ -159,6 +159,9 @@ typedef struct {
                                // address bar), default; 2 = also apps built on web
                                // content (Electron, WebView2); 0 = off. Esc still
                                // reaches the app first (it closes a suggestion list)
+    int    hold_unfocus;       // ms: a scroll key (j k u d) held this long in such a text
+                               // field takes its letter back, leaves the field like Esc
+                               // and scrolls; default 300 (0 = off; needs bare_keys)
     double fast_scroll_speed;  // Alt + u/d held, default 3600
     double fast_scroll_max_speed; // default 14400
     UINT key_left, key_down, key_up, key_right;          // h j k l
@@ -485,6 +488,18 @@ void uia_focus_stop(void);
 void uia_focus_leave_down(void);
 void uia_focus_leave_up(void);
 void uia_focus_leave_cancel(void);
+// hold_unfocus: a scroll key held in such a field. uia_focus_leave_hold at
+// its press (it typed its letter); the worker looks at the field at once and,
+// once the key has been held hold_ms with no cancel (another key, the
+// release), erases that letter and moves the focus to the page. Returns the
+// press's number for uia_focus_leave_result (0 = the worker is not running):
+// LEAVE_PENDING while it waits, LEAVE_NO when it left nothing (not a field
+// it may leave, cancelled, replaced by a later press), LEAVE_DONE once the
+// focus went to the page; the uia_focus_notify message follows a
+// LEAVE_DONE. Never waits for the worker; safe from the hook.
+enum { LEAVE_PENDING = 0, LEAVE_NO = 1, LEAVE_DONE = 2 };
+LONG uia_focus_leave_hold(DWORD hold_ms);
+int  uia_focus_leave_result(LONG seq);
 
 // ---------------------------------------------------------------------------
 // Tray + help (tray.c). Main/UI thread.
