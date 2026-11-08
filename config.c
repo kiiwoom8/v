@@ -1522,8 +1522,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; 0 = Shift+CapsLock turns the real CapsLock on and off.\r\n");
     appendf(buf, cch, L"capslock_off = %d\r\n", d.capslock_off ? 1 : 0);
     appendf(buf, cch, L"; 1 = the touchpad is off while vim mouse runs, and back on while\r\n");
-    appendf(buf, cch, L"; paused and after quitting (a precision touchpad, Windows 11 24H2 or\r\n");
-    appendf(buf, cch, L"; later). 0 = vim mouse leaves the touchpad alone.\r\n");
+    appendf(buf, cch, L"; paused, while the keyboard is locked and after quitting (a precision\r\n");
+    appendf(buf, cch, L"; touchpad, Windows 11 24H2 or later). 0 = vim mouse leaves it alone.\r\n");
     appendf(buf, cch, L"touchpad_off = %d\r\n", d.touchpad_off ? 1 : 0);
     appendf(buf, cch, L"; Where the MOUSE/DRAG indicator is shown: cursor, corner or off.\r\n");
     switch (d.indicator) {

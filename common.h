@@ -333,6 +333,9 @@ BOOL input_is_paused(void);
 // Keyboard lock: every key is swallowed except the lock hotkey, which unlocks.
 void input_set_locked(BOOL locked);
 BOOL input_is_locked(void);
+// A modifier is physically down by the hook's own key state, which also
+// sees the modifiers the lock (or a hotkey) swallowed from GetAsyncKeyState.
+BOOL input_modifier_held(void);
 void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)

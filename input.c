@@ -4583,6 +4583,21 @@ BOOL input_is_locked(void)
     return flag_get(&s_locked);
 }
 
+BOOL input_modifier_held(void)
+{
+    static const UINT vks[] = {
+        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL,
+        VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN
+    };
+    const volatile unsigned char *down = s_down;
+    size_t i;
+
+    for (i = 0; i < sizeof(vks) / sizeof(vks[0]); i++)
+        if (down[vks[i]])
+            return TRUE;
+    return FALSE;
+}
+
 void input_set_mouse_mode(BOOL on)
 {
     if (on) {

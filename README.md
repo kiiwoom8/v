@@ -66,8 +66,9 @@ out and in.)
 
 **The touchpad is off while vim mouse runs** (`touchpad_off`, default 1), so
 a palm on it cannot move the pointer or click while you type. Pausing vim
-mouse (`Alt+p p` or the tray menu) or quitting it turns the touchpad back on,
-and resuming turns it off again. It is the same switch as the Touchpad
+mouse (`Alt+p p` or the tray menu), locking the keyboard (`Ctrl+Alt+L`) or
+quitting it turns the touchpad back on, and resuming or unlocking turns it
+off again. It is the same switch as the Touchpad
 toggle in Windows Settings (and a laptop's touchpad key, Ctrl+Win+F24): vim
 mouse presses that shortcut once no modifier key is held, so after pausing
 with `Alt+p p` the touchpad comes back when you let go of Alt. It needs a
@@ -143,7 +144,9 @@ field needs a moment longer than before. It needs `bare_keys`;
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
 keyboard** item also unlocks it with the mouse. Windows still handles
-`Ctrl+Alt+Del` itself, and the mouse keeps working.
+`Ctrl+Alt+Del` itself, and the mouse keeps working, the touchpad too: with
+`touchpad_off` it comes back on once you let go of `Ctrl+Alt`, and goes off
+again after the unlocking `Ctrl+Alt+L` is released.
 
 Alt scrolling uses the mouse-mode keys (`key_left`, `key_down`, `key_up`,
 `key_right`, `key_scroll_up`, `key_scroll_down`, `key_scroll_left`,
@@ -427,7 +430,8 @@ ones:
   while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
   off)
 - `touchpad_off` (1 = the touchpad is off while vim mouse runs and back on
-  while paused or after quitting, default; 0 = left alone)
+  while paused, while the keyboard is locked or after quitting, default;
+  0 = left alone)
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
@@ -743,7 +747,8 @@ user's store.
   crashed, start vim mouse again (it puts the cursors back when it quits)
   or sign out and in.
 - **The touchpad does not work.** vim mouse turns it off while it runs
-  (`touchpad_off`). Pause vim mouse (`Alt+p p`), quit it, or set
+  (`touchpad_off`). Pause vim mouse (`Alt+p p`), lock the keyboard
+  (`Ctrl+Alt+L`), quit it, or set
   `touchpad_off = 0`. If vim mouse was killed, crashed or Windows shut down
   while the touchpad was off, it stays off (like the Settings toggle): start
   vim mouse and pause or quit it, press the laptop's touchpad key, or turn

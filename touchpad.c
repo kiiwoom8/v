@@ -1,8 +1,9 @@
 // touchpad.c - the touchpad is off while vim mouse is active (touchpad_off).
 //
 // Main/UI thread only. While vim mouse runs and is not paused the precision
-// touchpad is switched off; pausing, quitting or turning touchpad_off to 0
-// switches it back on.
+// touchpad is switched off; pausing, locking the keyboard (lock_hotkey),
+// quitting or turning touchpad_off to 0 switches it back on, and resuming
+// or unlocking switches it off again.
 //
 // Reading the state: SystemParametersInfo(SPI_GETTOUCHPADPARAMETERS)
 // (Windows 11 24H2 and later). Writing it: SPI_SETTOUCHPADPARAMETERS changes
@@ -12,7 +13,9 @@
 // same setting as the Settings app's toggle (and its registry value). It is
 // a toggle, so we read the state first and press only when it differs, and
 // read it again afterwards. The shortcut is injected only while no modifier
-// is physically down (never mix injected modifiers with held ones), in one
+// is physically down (never mix injected modifiers with held ones; the
+// hook's key state counts too, since the lock swallows the unlock chord's
+// Ctrl and Alt before GetAsyncKeyState sees them), in one
 // SendInput call so no real key lands inside it; our hook passes injected
 // keys untouched. Where it cannot work (no precision touchpad, older
 // Windows, an elevated window in front swallowing the keys) we log and give
@@ -88,7 +91,7 @@ static BOOL modifiers_down(void)
     for (i = 0; i < sizeof(vks) / sizeof(vks[0]); i++)
         if (GetAsyncKeyState(vks[i]) & 0x8000)
             return TRUE;
-    return FALSE;
+    return input_modifier_held();
 }
 
 static void key_input(INPUT *in, WORD vk, DWORD flags)
@@ -203,7 +206,7 @@ void touchpad_update(void)
     int goal;
 
     if (g_cfg.touchpad_off)
-        goal = input_is_paused() ? GOAL_ON : GOAL_OFF;
+        goal = (input_is_paused() || input_is_locked()) ? GOAL_ON : GOAL_OFF;
     else
         goal = (s_ours || (s_busy && s_goal == GOAL_OFF)) ? GOAL_ON : GOAL_NONE;
     set_goal(goal);
