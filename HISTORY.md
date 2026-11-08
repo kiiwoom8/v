@@ -1040,6 +1040,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 127 | `c8d1868` | 11-08 | 19 | `log = 1` traces the pinch: `zoom_key_down` logs every `=` `-` `+` press with its modifiers and match, `grip_end` each lift (reason, ms, frames, spread); a failed `InjectTouchInput` (down, move, up) is logged with its error always | "not work at all", while the build with the previous fix had 0 downloads |
 | 128 | `58b40b4` | 11-08 | 19 | The help window's title and `vim.log`'s "main: started" line carry the build's date and time | "not at all" from a build that had not been downloaded; nothing showed which build ran |
 | 129 | `1560515` | 11-08 | 19 | `zoom_layout_vk` (top of `handle_key`): a key on a zoom key's scan code with another VK counts as that zoom key when the zoom takes it (Alt alone or with Shift, not paused), its release while that key is down; the Korean layout sends `Alt` + `=` as `VK_JUNJA`. `tools/zoom_probe` (zoom.c without the hook), `tools/key_probe` (hotkey owners; hook and raw input view of Alt, `=`, `-`), `vim_post quit`; Makefile `zoomprobe` / `keyprobe` | "on the main keyboard, - works but still not =" (number pad worked)
+| 130 | `e067401` | 11-09 | 20 | `magnet_skip` (default 500 ms, 0-5000): `movement_thread` starts no magnet pause once the longer of `holdX` / `holdY` (the acceleration's hold time, frozen while paused, zero after a release) has reached it (`far_move`); a running pause is not cut short | "if pressing key is longer than a specific time, skip magnetize" |
 
 ## 5. Lessons learned: rules not to break
 
