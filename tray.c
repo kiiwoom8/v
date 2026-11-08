@@ -16,8 +16,12 @@
 #define TRAY_ICON_ID   1
 #define HELP_CLASS     L"VimMouseHelpWindow"
 
+// The build time tells one build of the rolling release from another (the
+// version number stays 1.0.0): it says whether an update or a local build
+// is really the one running.
 static const WCHAR HELP_TITLE[] =
-    L"vim mouse " VIM_VERSION_STR L" - keyboard shortcuts";
+    L"vim mouse " VIM_VERSION_STR L" (built " __DATE__ L" " __TIME__
+    L") - keyboard shortcuts";
 
 #define IDM_HINTS      1001
 #define IDM_MOUSE      1002

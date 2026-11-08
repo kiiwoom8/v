@@ -574,7 +574,8 @@ int main(void)
     if (config_warnings()[0])
         tray_balloon(L"Settings problem", config_warnings());
 
-    app_log(L"main: started");
+    // Which build is running (also in the help window's title).
+    app_log(L"main: started, built " __DATE__ L" " __TIME__);
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (snippet_editor_dialog_message(&msg) ||

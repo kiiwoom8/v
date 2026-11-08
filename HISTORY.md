@@ -835,6 +835,10 @@ Invariants stated in `common.h` and enforced by history:
   (`grip_end`); a failed `InjectTouchInput` is logged with its error even
   without `log`. One test then says whether the key, Windows or the app
   stops it.
+- "not at all", and that build too had 0 downloads. The version number
+  never changes on the rolling release, so nothing showed which build was
+  running. The help window's title and `vim.log`'s "main: started" line
+  now carry the build's date and time (`__DATE__` / `__TIME__`).
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -1950,7 +1954,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
   page that keeps `aria-busy` on its root would keep the hints waiting
   up to 10 s when nothing is found. Only tested on local mock pages in
   Chrome; not yet seen on a real slow site.
-- **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet.
+- **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet. Which build runs
+  shows in the help window's title and `vim.log`'s first line (build time).
 
 ## 8. How to change things efficiently
 
