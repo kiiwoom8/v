@@ -1026,6 +1026,19 @@ static BOOL hotkey_match(const Hotkey *hk, UINT vk, UINT mods)
     return hk->vk != 0 && hk->vk == vk && hk->mods == mods;
 }
 
+// key_zoom_in / key_zoom_out, and with the defaults (= and -) also the
+// number pad's + and -.
+static int zoom_key_action(UINT vk)
+{
+    UINT in = g_cfg.key_zoom_in, out = g_cfg.key_zoom_out;
+
+    if (in && (vk == in || (in == VK_OEM_PLUS && vk == VK_ADD)))
+        return ACT_ZOOM_IN;
+    if (out && (vk == out || (out == VK_OEM_MINUS && vk == VK_SUBTRACT)))
+        return ACT_ZOOM_OUT;
+    return ACT_NONE;
+}
+
 static int binding_action(UINT vk)
 {
     if (g_cfg.key_left && vk == g_cfg.key_left)
@@ -1061,11 +1074,7 @@ static int binding_action(UINT vk)
         return ACT_EXIT;
     if (g_cfg.key_help && vk == g_cfg.key_help)
         return ACT_HELP;
-    if (g_cfg.key_zoom_in && vk == g_cfg.key_zoom_in)
-        return ACT_ZOOM_IN;
-    if (g_cfg.key_zoom_out && vk == g_cfg.key_zoom_out)
-        return ACT_ZOOM_OUT;
-    return ACT_NONE;
+    return zoom_key_action(vk);
 }
 
 static void move_press(int act)
@@ -1392,16 +1401,16 @@ static int alt_key_action(UINT vk)
 // around the pointer while the key is held, like on a touchpad (zoom.c);
 // not the page zoom of Ctrl + = / Ctrl + -. With Alt only, never as a bare
 // key: = and - type where the focus check sees no text field (a spreadsheet
-// cell starts a formula with =).
-static BOOL zoom_key_down(UINT vk, BOOL alt_seen)
+// cell starts a formula with =). Shift may be held too: = is the + key, and
+// Alt + + is what many press to zoom in.
+static BOOL zoom_key_down(UINT vk, UINT mods, BOOL alt_seen)
 {
-    int act = ACT_NONE;
+    int act;
 
-    if (g_cfg.key_zoom_in && vk == g_cfg.key_zoom_in)
-        act = ACT_ZOOM_IN;
-    else if (g_cfg.key_zoom_out && vk == g_cfg.key_zoom_out)
-        act = ACT_ZOOM_OUT;
-    else
+    if ((mods & ~KMOD_SHIFT) != KMOD_ALT)
+        return FALSE;
+    act = zoom_key_action(vk);
+    if (act == ACT_NONE)
         return FALSE;
     if (alt_seen)
         send_mask_key();
@@ -2088,11 +2097,15 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
             s_end_tap = FALSE;
             s_end_shift = FALSE;
             if (alt_action_down(vk, act, shift, end_tap, FALSE) ||
-                alt_center_down(vk, center_tap, FALSE) ||
-                (!shift && zoom_key_down(vk, FALSE))) {
+                alt_center_down(vk, center_tap, FALSE)) {
                 s_alt_consumed = TRUE;
                 return TRUE;
             }
+        }
+        if (zoom_key_down(vk, mods, FALSE)) {
+            s_end_tap = FALSE;
+            s_alt_consumed = TRUE;
+            return TRUE;
         }
     }
     send_alt_replay(vk, scan, flags);
@@ -2155,6 +2168,10 @@ static BOOL handle_down(UINT vk)
     act = alt_key_action(vk);
     shift = act == ACT_SCROLL_END && (mods & KMOD_SHIFT);
     base = shift ? mods & ~KMOD_SHIFT : mods;
+    // Alt (+ Shift) + = / -: the pinch zoom, before anything else takes
+    // the key.
+    if (zoom_key_down(vk, mods, TRUE))
+        return TRUE;
     // Outside text fields the Alt keys below work without Alt.
     bare = base == 0 && bare_key_ok(vk);
     if (bare && bare_hint_key(vk)) {
@@ -2168,8 +2185,6 @@ static BOOL handle_down(UINT vk)
         if (alt_action_down(vk, act, shift, end_tap, !bare))
             return TRUE;
         if (!bare && alt_center_down(vk, center_tap, TRUE))
-            return TRUE;
-        if (!bare && base == KMOD_ALT && !shift && zoom_key_down(vk, TRUE))
             return TRUE;
         if (!bare && shortcut_begin(vk)) {
             send_mask_key();

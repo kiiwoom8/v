@@ -183,7 +183,8 @@ typedef struct {
     UINT key_hints;            // f  (open click hints)
     UINT key_exit;             // i  (leave mouse mode; Esc always works too)
     UINT key_help;             // /  (also shown as ?)
-    UINT key_zoom_in;          // =  (with Alt anywhere, alone in mouse mode: two fingers
+    UINT key_zoom_in;          // =  (with Alt, or Alt + Shift, anywhere, alone in mouse
+                               // mode; the defaults also take the number pad's + and -: two fingers
                                // spread around the pointer while held, a touchpad pinch
                                // zoom, not Ctrl + ='s page zoom)
     UINT key_zoom_out;         // -  (the same, the fingers pinching together)

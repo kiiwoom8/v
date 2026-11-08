@@ -34,7 +34,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
 | `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press). Both go through UI Automation, exactly and at once; where that cannot scroll the area, the wheel does it (for the bottom once Shift is released, so browsers do not scroll sideways) |
-| `Alt+=` / `Alt+-` | Zoom in / out around the pointer like spreading / pinching two fingers on a touchpad (hold = keep zooming, tap = one step). Not the page zoom of `Ctrl+=` / `Ctrl+-` |
+| `Alt+=` / `Alt+-` | Zoom in / out around the pointer like spreading / pinching two fingers on a touchpad (hold = keep zooming, tap = one step). Not the page zoom of `Ctrl+=` / `Ctrl+-`. `Alt+Shift+=` (`Alt` + `+`) and the number pad's `+` / `-` work too |
 | `0` `0` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; `0` still reaches the app) |
 | `Alt+0 0` | The same anywhere, text fields included (both taps swallowed) |
 | `Esc` in a text field | Leave the field: the keyboard focus goes to the page, so `j` / `k` / `f` work at once (web browsers; `Esc` still reaches the field first) |
@@ -127,7 +127,9 @@ second), and when the fingers reach the end of their reach they lift and
 grip again. The pointer stays where it was. The fingers are injected
 touch contacts (Windows 8 and up, no touch screen needed), so the keys
 always need Alt, even outside text fields (`=` starts a formula in a
-spreadsheet cell); in mouse mode `=` and `-` alone do it.
+spreadsheet cell); in mouse mode `=` and `-` alone do it. Shift may be
+held as well (`Alt` + `+` zooms in), and the number pad's `+` and `-` do
+the same.
 `key_zoom_in` / `key_zoom_out` pick other keys, `none` turns them off.
 
 **Esc leaves a text field.** In a web browser, `Esc` in a search box, a

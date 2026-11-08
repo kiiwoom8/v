@@ -814,6 +814,18 @@ Invariants stated in `common.h` and enforced by history:
   pointer. Built for 32 and 64 bit; touch injection does not run under
   Wine and the hook ignores injected keys, so it was handed to the user to
   try in a browser.
+- "alt + - works well while = doesn't". The key path of the two is the
+  same, so the fix covers both ways the press differs. `=` is the `+` key,
+  and Alt + Shift + `=` matched nothing (only Alt alone was accepted), so
+  it reached the app: `zoom_key_down` now takes Alt with or without Shift,
+  checked in `handle_down` before the other Alt keys and in `alt_resolve`,
+  and with the default keys also the number pad's `+` / `-`
+  (`zoom_key_action`). And zoom in started with the fingers 160 DIP apart,
+  near Chromium's 125 DIP minimum for a pinch (a browser may count the
+  fingers' size against the spread, a wrong DPI shrinks it), while zoom
+  out started at 640: `ZOOM_NEAR_DIP` is now 240 and `ZOOM_FAR_DIP` 800.
+  Which of the two it was is not known; with `log = 1` a pinch that ran
+  writes "zoom: in at x,y", so a missing line means the key did not match.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -1613,6 +1625,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
   visible at the next tick, with ticks of 1.66 ms. Measure before tuning
   speeds.
 
+- **A key that people press with Shift must match with Shift.** `=` is
+  the `+` key, and Alt + `+` is how many people ask to zoom in; a zoom key
+  that took Alt alone looked broken in one direction only (phase 19).
 - **A touchpad gesture is injected as touch, from its own thread.**
   Windows injects touch contacts but not touchpad ones, and apps take a
   two-finger touch pinch for their touchpad pinch (phase 19). Contacts in

@@ -956,7 +956,7 @@ static void build_help_rows(void)
         format_key(g_cfg.key_zoom_out, k2, 16);
         _snwprintf(buf, 127, L"Alt + %s / %s", k1, k2);
         buf[127] = L'\0';
-        help_add_row(buf, L"Zoom in / out at the pointer like two fingers on a touchpad (hold; always with Alt)");
+        help_add_row(buf, L"Zoom in / out at the pointer like two fingers on a touchpad (hold; always with Alt; Shift and the number pad's + - work too)");
     }
     help_add_row(L"Alt + abbreviation",
                  L"Type a text shortcut (tray: Text shortcuts...)");

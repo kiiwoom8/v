@@ -82,11 +82,15 @@ typedef BOOL (WINAPI *InjectTouchFn)(UINT, const VmTouchInfo *);
 // The fingers' spread in pixels at 100% scaling (the monitor's DPI scales
 // them). Chromium starts a pinch only between fingers at least 125 apart
 // (min_scaling_span) and only once their spread has changed by 30
-// (span_slop, twice its touch slop), so the near limit stays above the
-// first and the first frame moves the fingers past the second at once:
-// what follows is the zoom itself, not slop eaten by the browser.
-#define ZOOM_NEAR_DIP   160.0
-#define ZOOM_FAR_DIP    640.0
+// (span_slop, twice its touch slop), so the near limit stays well above
+// the first and the first frame moves the fingers past the second at once:
+// what follows is the zoom itself, not slop eaten by the browser. Zoom in
+// starts at the near limit: at 160 (its first value) it did nothing for
+// the user while zoom out, starting at the far one, worked, so the near
+// limit is 240, clear of where a browser may count the fingers' own size
+// against the spread or a DPI read wrong shrinks it under 125.
+#define ZOOM_NEAR_DIP   240.0
+#define ZOOM_FAR_DIP    800.0
 #define ZOOM_SLOP_DIP   32.0
 // Kept clear of the monitor's edges.
 #define ZOOM_MARGIN_DIP 8.0
