@@ -296,6 +296,25 @@ static double grip_span(const Grip *g, int dir, DWORD ms)
     return (g->far_px - g->slop_px) / f;
 }
 
+// The fingers come up and the pointer goes back. log = 1 says how the grip
+// went: a pinch that ran here but did not zoom is the app's, one that
+// stopped on an error is Windows refusing the touch.
+static void grip_end(const Grip *g, POINT at, int dir, const WCHAR *why,
+                     DWORD ms, int frames)
+{
+    BOOL up = touch_send(g, VM_POINTER_FLAG_UP);
+    DWORD err = up ? 0 : GetLastError();
+
+    pointer_back(at);
+    if (g_cfg.log || !up)
+        app_log(L"zoom: %ls lifted (%ls) after %lu ms, %d frames, spread "
+                L"now %.0f px%ls", dir > 0 ? L"in" : L"out", why,
+                (unsigned long)ms, frames, g->span,
+                up ? L"" : L"; the lift failed");
+    if (!up)
+        app_log(L"zoom: InjectTouchInput (up) failed (%lu)", err);
+}
+
 // One press, held or tapped, from the first grip to the last lift. Returns
 // when the fingers are up.
 static void pinch(int dir, LONG *seen_gen, LONG seen_cancel,
@@ -304,9 +323,10 @@ static void pinch(int dir, LONG *seen_gen, LONG seen_cancel,
     static DWORD fail_logged_gen;
     POINT at = { 0, 0 };
     Grip g;
-    DWORD start, ms;
+    DWORD start, ms = 0;
     double tap_target, limit;
     BOOL held, lift, tapped;
+    int frames;
 
     for (;;) {
         if (!GetCursorPos(&at) || !grip_place(&g, at)) {
@@ -338,14 +358,14 @@ static void pinch(int dir, LONG *seen_gen, LONG seen_cancel,
         start = now_ms(freq);
         tapped = FALSE;
         lift = FALSE;
+        frames = 0;
         for (;;) {
             LONG gen;
 
             Sleep(ZOOM_FRAME_MS);
             if (read_long(&s_zoom_exit) ||
                 read_long(&s_zoom_cancel) != seen_cancel) {
-                touch_send(&g, VM_POINTER_FLAG_UP);
-                pointer_back(at);
+                grip_end(&g, at, dir, L"cancelled", ms, frames);
                 return;
             }
             // A new press, either way: this grip ends and the press starts
@@ -353,9 +373,8 @@ static void pinch(int dir, LONG *seen_gen, LONG seen_cancel,
             gen = read_long(&s_zoom_gen);
             if (gen != *seen_gen) {
                 *seen_gen = gen;
+                grip_end(&g, at, dir, L"a new press", ms, frames);
                 dir = read_long(&s_zoom_press_dir);
-                touch_send(&g, VM_POINTER_FLAG_UP);
-                pointer_back(at);
                 if (dir == 0)
                     return;
                 Sleep(ZOOM_REGRIP_MS);
@@ -375,13 +394,15 @@ static void pinch(int dir, LONG *seen_gen, LONG seen_cancel,
             if (!touch_send(&g, VM_POINTER_FLAG_UPDATE |
                                     VM_POINTER_FLAG_INRANGE |
                                     VM_POINTER_FLAG_INCONTACT)) {
-                touch_send(&g, VM_POINTER_FLAG_UP);
-                pointer_back(at);
+                app_log(L"zoom: InjectTouchInput (move, frame %d) failed "
+                        L"(%lu)", frames + 1, GetLastError());
+                grip_end(&g, at, dir, L"a failed move", ms, frames);
                 return;
             }
+            frames++;
             if (lift) {
-                touch_send(&g, VM_POINTER_FLAG_UP);
-                pointer_back(at);
+                grip_end(&g, at, dir, held ? L"at the limit"
+                                           : L"key released", ms, frames);
                 // Still held at the limit: grip again, as a hand would.
                 if (!held)
                     return;

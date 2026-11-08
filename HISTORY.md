@@ -826,6 +826,15 @@ Invariants stated in `common.h` and enforced by history:
   out started at 640: `ZOOM_NEAR_DIP` is now 240 and `ZOOM_FAR_DIP` 800.
   Which of the two it was is not known; with `log = 1` a pinch that ran
   writes "zoom: in at x,y", so a missing line means the key did not match.
+- "not work at all": the release with that fix had not been downloaded
+  yet (its `vim.exe` showed 0 downloads, and the tray update fetches that
+  file), so the report may be of the older build. Since the pinch cannot be
+  run here, `log = 1` now traces each step: every press of `=` `-` `+`
+  with its modifiers and whether it matched (`zoom_key_down`), each grip's
+  start, and each lift with its reason, time, frames and spread
+  (`grip_end`); a failed `InjectTouchInput` is logged with its error even
+  without `log`. One test then says whether the key, Windows or the app
+  stops it.
 
 ## 4. Complete commit log (non-merge, oldest first)
 

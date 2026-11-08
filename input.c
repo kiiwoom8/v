@@ -1407,6 +1407,17 @@ static BOOL zoom_key_down(UINT vk, UINT mods, BOOL alt_seen)
 {
     int act;
 
+    // log = 1: every press of the = - + keys, matched or not, so a key
+    // that never reaches the pinch shows in vim.log.
+    if (g_cfg.log && (vk == VK_OEM_PLUS || vk == VK_OEM_MINUS ||
+                      vk == VK_ADD || vk == VK_SUBTRACT ||
+                      (vk && (vk == g_cfg.key_zoom_in ||
+                              vk == g_cfg.key_zoom_out))))
+        app_log(L"zoom: key 0x%02X, modifiers 0x%X: %ls", vk, mods,
+                (mods & ~KMOD_SHIFT) != KMOD_ALT ? L"no Alt, not a zoom"
+                : zoom_key_action(vk) == ACT_ZOOM_IN ? L"zoom in"
+                : zoom_key_action(vk) == ACT_ZOOM_OUT ? L"zoom out"
+                : L"not key_zoom_in / key_zoom_out");
     if ((mods & ~KMOD_SHIFT) != KMOD_ALT)
         return FALSE;
     act = zoom_key_action(vk);
