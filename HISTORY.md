@@ -839,6 +839,22 @@ Invariants stated in `common.h` and enforced by history:
   never changes on the rolling release, so nothing showed which build was
   running. The help window's title and `vim.log`'s "main: started" line
   now carry the build's date and time (`__DATE__` / `__TIME__`).
+- Tested on the user's PC (Windows 11, Korean input, ASUS laptop) in a
+  session there. `tools/zoom_probe` runs `zoom.c` itself without the hook:
+  in a separate Chrome window whose page writes `visualViewport.scale`
+  into its title, a tap zoomed 1.00 to 1.27 around the pointer, a hold
+  went to 4.0 with re-grips, `out` back to 1.00, the pointer stayed put
+  and no injection failed. So the pinch was never the problem. A trace at
+  the top of `kb_proc` then showed the number pad's `Alt` + `+` / `-` and
+  the main row's `Alt+-` zooming, while the main row's `=` with Alt held
+  never arrived as `VK_OEM_PLUS`: the Korean layout turns `Alt` + `=` into
+  `VK_JUNJA` (0x17, its full-width toggle) on the same scan code 0x0D,
+  key-up included. `zoom_layout_vk` (top of `handle_key`, after the lock)
+  now takes a key on a zoom key's scan code with another VK as that zoom
+  key, only when the zoom will take it (Alt alone or with Shift, not
+  paused), so `send_alt_replay` never replays `=` in place of the layout's
+  key, and its release while that zoom key is down. `key_zoom_in = none`
+  leaves the toggle to the IME. The user confirmed main-row `Alt+=` zooms.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -1112,6 +1128,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   the tray cannot open hints while the keyboard is locked, because no key
   could close them. `4b04fd5`: hints opened from the tray while paused get
   their keys, Esc included.
+- **A layout may change a key's VK while a modifier is held.** The Korean
+  layout sends `Alt` + `=` as `VK_JUNJA` (scan code unchanged), so a VK
+  match on `VK_OEM_PLUS` never saw it (phase 19). Match a modified key by
+  its scan code too (`zoom_layout_vk`), and only where the program takes
+  the key, since a replay would send the remapped VK.
 
 ### Bare keys (keys without Alt outside text fields)
 
@@ -2162,7 +2183,16 @@ The keys: `input.c` `zoom_key_down` (both Alt paths, `handle_down` and
 `handle_up`, `zoom_cancel` in `reset_key_state`; `zoom_start` /
 `zoom_stop` beside the movement thread. Test in Chrome on a real page: a
 held `Alt+=` magnifies around the pointer without reflowing, a tap zooms
-one step, `Alt+-` back to normal, and the pointer stays put.
+one step, `Alt+-` back to normal, and the pointer stays put. A layout that
+remaps `Alt` + a zoom key: `zoom_layout_vk`. Without pressing keys
+(the hook ignores injected ones): `mingw32-make zoomprobe`, then
+`tools/zoom_probe in|out [hold_ms] [x y]` runs `zoom.c` and prints its
+log; read the page's `visualViewport.scale` before and after (a page that
+writes it into `document.title` can be read from outside the browser).
+`tools/key_probe [seconds]` (`mingw32-make keyprobe`) says whether another
+program owns `Alt` + `=` / `-` as a hotkey and prints what its own hook and
+raw input see of Alt, `=` and `-` only. `tools/vim_post quit` quits the
+running vim mouse to replace `vim.exe`.
 
 ### Bump the version or change the icon
 
@@ -2184,7 +2214,10 @@ when the manifest changes.
 
 - Local (Windows): `mingw32-make`, or double-click `build.bat` (finds MinGW in
   `C:\MinGW` or `C:\msys64\mingw32`). Tools: `mingw32-make probe check icon
-  shutdown-test`.
+  shutdown-test zoomprobe keyprobe`. Quit vim mouse first (`tools/vim_post
+  quit`), or linking `vim.exe` fails with "Permission denied". In Git Bash
+  a bare `vim.exe` / `start vim.exe` may start Git's own vim; start it by
+  its full path.
 - Linux cross-compile, the same as CI (needs `gcc-mingw-w64-i686`):
   `make CC=i686-w64-mingw32-gcc WINDRES=i686-w64-mingw32-windres CFLAGS="-Wall -Wextra -O2 -std=gnu11 -Werror"`,
   then the same with `probe check`. Also try `x86_64-w64-mingw32-*`, since CI

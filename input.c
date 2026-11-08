@@ -1039,6 +1039,36 @@ static int zoom_key_action(UINT vk)
     return ACT_NONE;
 }
 
+// A keyboard layout may turn Alt + a zoom key into another key on the same
+// scan code: Korean turns Alt + = into VK_JUNJA (its full-width toggle), so
+// the hook never saw = and Alt + = did nothing while Alt + - worked. Such a
+// press counts as the zoom key, but only when the zoom will take it (Alt
+// alone or with Shift, input not paused), so nothing is replayed as = in
+// place of the layout's key; key_zoom_in = none leaves the toggle to the IME.
+// A release follows its press while that zoom key is down.
+static UINT zoom_layout_vk(UINT vk, UINT scan, DWORD flags, BOOL down)
+{
+    UINT keys[2];
+    int i;
+
+    if (scan == 0 || (flags & LLKHF_EXTENDED))
+        return vk;
+    keys[0] = g_cfg.key_zoom_in;
+    keys[1] = g_cfg.key_zoom_out;
+    for (i = 0; i < 2; i++) {
+        UINT z = keys[i];
+
+        if (!z || z == vk || z > 255 ||
+            scan != MapVirtualKeyW(z, MAPVK_VK_TO_VSC))
+            continue;
+        if (down ? !flag_get(&s_paused) &&
+                       (current_mods() & ~KMOD_SHIFT) == KMOD_ALT
+                 : s_down[z] != 0)
+            return z;
+    }
+    return vk;
+}
+
 static int binding_action(UINT vk)
 {
     if (g_cfg.key_left && vk == g_cfg.key_left)
@@ -2508,6 +2538,7 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
         s_down[vk] = down ? 1 : 0;
         return handle_locked(vk, down, repeat);
     }
+    vk = zoom_layout_vk(vk, scan, flags, down);
     if (down) {
         BOOL repeat = s_down[vk] != 0;
         s_down[vk] = 1;

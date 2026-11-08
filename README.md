@@ -674,7 +674,8 @@ user's store.
   it (as with clicks, below), Windows 7 has none (`vim.log` says so), and an
   app that takes no touch gestures and ignores `Ctrl` + wheel does not zoom.
   Excel's AutoSum (`Alt+=`) and other apps' `Alt+=` / `Alt+-` no longer reach
-  them; `key_zoom_in = none` / `key_zoom_out = none` give them back.
+  them, nor does the Korean input's full-width toggle (전자/반자, `Alt+=`);
+  `key_zoom_in = none` / `key_zoom_out = none` give them back.
 - **A window cannot be clicked.** Programs running as administrator cannot be
   controlled from a normal process (Windows UIPI). Run vim mouse as
   administrator too if you need to drive those windows.

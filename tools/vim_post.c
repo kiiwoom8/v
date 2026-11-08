@@ -1,5 +1,6 @@
 // vim_post.c - drives the running vim mouse for tests (make loadprobe).
 // usage: vim_post open|close|again   posts WM_APP_HINT_OPEN / _CLOSE / _AGAIN
+//        vim_post quit                quits vim mouse (WM_APP_QUIT)
 //        vim_post front <pid>         brings that process's browser window to
 //                                     the front; prints the window that was
 //        vim_post back <hwnd>         gives the front back to that window
@@ -95,6 +96,7 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "open") == 0) msg = WM_APP_HINT_OPEN;
     else if (strcmp(argv[1], "close") == 0) msg = WM_APP_HINT_CLOSE;
     else if (strcmp(argv[1], "again") == 0) msg = WM_APP_HINT_AGAIN;
+    else if (strcmp(argv[1], "quit") == 0) msg = WM_APP_QUIT;
     else {
         fprintf(stderr, "unknown message %s\n", argv[1]);
         return 2;

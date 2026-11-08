@@ -77,6 +77,19 @@ shutdown-test: tools/shutdown_test.exe
 tools/shutdown_test.exe: tools/shutdown_test.c shutdown.c config.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/shutdown_test.c -luser32 -lgdi32 -ladvapi32
 
+# Console tool that runs zoom.c's pinch without the keyboard hook (zoom_probe in|out [hold_ms] [x y])
+zoomprobe: tools/zoom_probe.exe
+
+tools/zoom_probe.exe: tools/zoom_probe.c zoom.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/zoom_probe.c -luser32 -lwinmm
+
+# Console tool: is Alt + = / - another program's hotkey, and what a hook and
+# raw input see of Alt, = and - (nothing else is printed)
+keyprobe: tools/key_probe.exe
+
+tools/key_probe.exe: tools/key_probe.c
+	$(CC) $(CFLAGS) -o $@ tools/key_probe.c -luser32
+
 clean:
 	-@del /Q $(TARGET) 2>nul || true
 	-@del /Q *.o 2>nul || true
@@ -88,5 +101,7 @@ clean:
 	-@del /Q tools\vim_post.exe 2>nul || true
 	-@del /Q tools\make_icon.exe 2>nul || true
 	-@del /Q tools\shutdown_test.exe 2>nul || true
+	-@del /Q tools\zoom_probe.exe 2>nul || true
+	-@del /Q tools\key_probe.exe 2>nul || true
 
-.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe uiaccess
+.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe zoomprobe keyprobe uiaccess
