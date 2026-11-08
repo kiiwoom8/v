@@ -162,6 +162,9 @@ typedef struct {
     int    hold_unfocus;       // ms: a scroll key (j k u d) held this long in such a text
                                // field takes its letter back, leaves the field like Esc
                                // and scrolls; default 300 (0 = off; needs bare_keys)
+    int    zoom_speed;         // percent a second the fingers of an Alt + = / Alt + -
+                               // pinch spread or close (10-1000, default 150: x2.5 a
+                               // second, which a browser shows as that much zoom)
     double fast_scroll_speed;  // Alt + u/d held, default 3600
     double fast_scroll_max_speed; // default 14400
     UINT key_left, key_down, key_up, key_right;          // h j k l
@@ -180,6 +183,10 @@ typedef struct {
     UINT key_hints;            // f  (open click hints)
     UINT key_exit;             // i  (leave mouse mode; Esc always works too)
     UINT key_help;             // /  (also shown as ?)
+    UINT key_zoom_in;          // =  (with Alt anywhere, alone in mouse mode: two fingers
+                               // spread around the pointer while held, a touchpad pinch
+                               // zoom, not Ctrl + ='s page zoom)
+    UINT key_zoom_out;         // -  (the same, the fingers pinching together)
 
     // [hints]
     WCHAR alphabet[64];        // label chars, default L"asdfhjklqwertuopzxcvbnm":
@@ -503,6 +510,20 @@ void uia_focus_leave_cancel(void);
 enum { LEAVE_PENDING = 0, LEAVE_NO = 1, LEAVE_DONE = 2 };
 LONG uia_focus_leave_hold(DWORD hold_ms);
 int  uia_focus_leave_result(LONG seq);
+
+// ---------------------------------------------------------------------------
+// Pinch zoom (zoom.c). Alt + = / Alt + -: two injected touch contacts either
+// side of the pointer move apart or together while the key is held, which
+// browsers, Photos, Maps and PDF viewers take as a pinch (zoom around that
+// point), like two fingers on a touchpad. A thread of its own; started and
+// stopped with the input thread. The others never wait: safe from the hook.
+
+void zoom_start(void);
+void zoom_stop(void);                   // lifts the fingers, ends the thread
+void zoom_press(BOOL in);               // a zoom key went down: pinch while held,
+                                        // one step for a tap
+void zoom_release(BOOL in);             // it came up
+void zoom_cancel(void);                 // suspend, pause, lock: the fingers lift now
 
 // ---------------------------------------------------------------------------
 // Tray + help (tray.c). Main/UI thread.

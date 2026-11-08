@@ -34,6 +34,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Alt+,` / `Alt+.` | Scroll left / right |
 | `Alt+u` / `Alt+d` | Fast scroll up / down (tap = 5 notches, hold = fast continuous) |
 | `Alt+g g` / `Alt+Shift+g` | Scroll to the top (two quick taps) / bottom (on press). Both go through UI Automation, exactly and at once; where that cannot scroll the area, the wheel does it (for the bottom once Shift is released, so browsers do not scroll sideways) |
+| `Alt+=` / `Alt+-` | Zoom in / out around the pointer like spreading / pinching two fingers on a touchpad (hold = keep zooming, tap = one step). Not the page zoom of `Ctrl+=` / `Ctrl+-` |
 | `0` `0` | Move the pointer to the middle of the active window's screen (two quick taps, outside text fields; `0` still reaches the app) |
 | `Alt+0 0` | The same anywhere, text fields included (both taps swallowed) |
 | `Esc` in a text field | Leave the field: the keyboard focus goes to the page, so `j` / `k` / `f` work at once (web browsers; `Esc` still reaches the field first) |
@@ -111,6 +112,24 @@ still asking where the focus is still makes the jump once the answer says
 it is outside a text field (within a second, unless another key comes
 first).
 
+**Alt+= and Alt+- zoom like two fingers on a touchpad.** Holding `Alt+=`
+puts two fingers down either side of the pointer and spreads them;
+`Alt+-` pinches them together. Browsers (Chrome, Edge, Firefox) then
+magnify the page around the pointer the way a touchpad pinch does: nothing
+reflows, the zoom is not kept for the site, and it ends where the page's own
+pinch limit is (a browser does not pinch out below the normal size). That is
+the difference from `Ctrl+=` / `Ctrl+-`, which change the page zoom and
+reflow it. Photos, Maps, PDF viewers and other apps that take touch
+gestures zoom around that point too; older apps that only know the wheel
+get `Ctrl` + wheel from Windows. A tap zooms one step, holding keeps
+zooming (`zoom_speed`, default 150: the fingers' spread grows 2.5 times a
+second), and when the fingers reach the end of their reach they lift and
+grip again. The pointer stays where it was. The fingers are injected
+touch contacts (Windows 8 and up, no touch screen needed), so the keys
+always need Alt, even outside text fields (`=` starts a formula in a
+spreadsheet cell); in mouse mode `=` and `-` alone do it.
+`key_zoom_in` / `key_zoom_out` pick other keys, `none` turns them off.
+
 **Esc leaves a text field.** In a web browser, `Esc` in a search box, a
 form field, a chat box or the address bar moves the keyboard focus to the
 page itself, as if you had clicked an empty spot of it: the keys without
@@ -187,6 +206,7 @@ a pass-through modifier.
 | `u` / `d` | Scroll up / down (tap = one notch, hold = continuous, accelerating) |
 | `,` / `.` | Scroll left / right |
 | `g g` / `Shift+g` | Scroll to the top (two quick taps) / bottom, through UI Automation where it can scroll the area, else on the wheel |
+| `=` / `-` | Pinch zoom in / out around the pointer (as `Alt+=` / `Alt+-`) |
 | `0` `0` | Move the pointer to the middle of the screen (two quick taps) |
 | `f` | Click hints (mouse mode stays on afterwards) |
 | `/` or `?` | Help window |
@@ -461,7 +481,8 @@ ones:
   text field moves the focus to the page: 1 = in web browsers, default;
   2 = also in apps built on web content; 0 = off), `hold_unfocus` (`j`
   `k` `u` `d` held this many ms in such a text field leave it and scroll,
-  0-2000, default 300; 0 = off)
+  0-2000, default 300; 0 = off), `zoom_speed` (percent a second the fingers
+  of an `Alt+=` / `Alt+-` pinch spread or close, 10-1000, default 150)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `key_grid` (the key that switches between the element labels and the grid
   while the hints are open, default `;`; `none` = off),
@@ -544,7 +565,8 @@ ones:
   `key_scroll_down`, `key_scroll_left`, `key_scroll_right`, `key_scroll_end`
   (`g`: tap twice for the top, with Shift for the bottom), `key_center`
   (`0`: tap twice for the middle of the screen, with Alt anywhere; `none` = off), `key_hints`,
-  `key_exit`, `key_help` remaps
+  `key_exit`, `key_help`, `key_zoom_in` / `key_zoom_out` (`=` / `-`: pinch
+  zoom with Alt anywhere, alone in mouse mode; `none` = off) remaps
 - `hide_pointer` (0-60000 ms, default 2000: outside mouse mode the pointer is
   hidden; the real mouse shows it, and it hides again this long after the
   mouse was last used. 0 = never hidden)
@@ -645,6 +667,12 @@ user's store.
 
 - **A hotkey clashes with another program.** Change it in `vim.ini` and save;
   it reloads immediately. Use `none` to unbind a hotkey.
+- **`Alt+=` / `Alt+-` do nothing, or the app's own `Alt+=` is gone.** The
+  pinch is injected touch input: a window running as administrator refuses
+  it (as with clicks, below), Windows 7 has none (`vim.log` says so), and an
+  app that takes no touch gestures and ignores `Ctrl` + wheel does not zoom.
+  Excel's AutoSum (`Alt+=`) and other apps' `Alt+=` / `Alt+-` no longer reach
+  them; `key_zoom_in = none` / `key_zoom_out = none` give them back.
 - **A window cannot be clicked.** Programs running as administrator cannot be
   controlled from a normal process (Windows UIPI). Run vim mouse as
   administrator too if you need to drive those windows.

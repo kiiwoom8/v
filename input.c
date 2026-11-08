@@ -25,6 +25,10 @@
 #ifndef LLMHF_INJECTED
 #define LLMHF_INJECTED 0x00000001
 #endif
+// dwExtraInfo of a mouse message Windows made from touch or pen input.
+#ifndef MI_WP_SIGNATURE
+#define MI_WP_SIGNATURE 0xFF515700
+#endif
 #ifndef OCR_NORMAL
 #define OCR_NORMAL      32512
 #endif
@@ -229,7 +233,8 @@ enum {
     ACT_FAST_UP, ACT_FAST_DOWN,
     ACT_LEFT, ACT_CLICK_RIGHT, ACT_CLICK_MIDDLE, ACT_TOGGLE,
     ACT_HINTS, ACT_EXIT, ACT_HELP,
-    ACT_BACK, ACT_FORWARD, ACT_SCROLL_END
+    ACT_BACK, ACT_FORWARD, ACT_SCROLL_END,
+    ACT_ZOOM_IN, ACT_ZOOM_OUT
 };
 
 // OWN_HOLD: a scroll key that typed into a text field and may leave it
@@ -1056,6 +1061,10 @@ static int binding_action(UINT vk)
         return ACT_EXIT;
     if (g_cfg.key_help && vk == g_cfg.key_help)
         return ACT_HELP;
+    if (g_cfg.key_zoom_in && vk == g_cfg.key_zoom_in)
+        return ACT_ZOOM_IN;
+    if (g_cfg.key_zoom_out && vk == g_cfg.key_zoom_out)
+        return ACT_ZOOM_OUT;
     return ACT_NONE;
 }
 
@@ -1338,6 +1347,11 @@ static void apply_action_down(int act)
     case ACT_HELP:
         post_main(WM_APP_SHOW_HELP, 0, 0);
         break;
+    case ACT_ZOOM_IN: case ACT_ZOOM_OUT:
+        // The page moves under the hints like after a scroll.
+        page_acted(PAGE_SCROLL);
+        zoom_press(act == ACT_ZOOM_IN);
+        break;
     default:
         break;
     }
@@ -1372,6 +1386,30 @@ static int alt_key_action(UINT vk)
         g_cfg.scroll_end_tap_ms > 0)
         return ACT_SCROLL_END;
     return ACT_NONE;
+}
+
+// Alt + key_zoom_in / key_zoom_out (= and -): two fingers spread or pinch
+// around the pointer while the key is held, like on a touchpad (zoom.c);
+// not the page zoom of Ctrl + = / Ctrl + -. With Alt only, never as a bare
+// key: = and - type where the focus check sees no text field (a spreadsheet
+// cell starts a formula with =).
+static BOOL zoom_key_down(UINT vk, BOOL alt_seen)
+{
+    int act = ACT_NONE;
+
+    if (g_cfg.key_zoom_in && vk == g_cfg.key_zoom_in)
+        act = ACT_ZOOM_IN;
+    else if (g_cfg.key_zoom_out && vk == g_cfg.key_zoom_out)
+        act = ACT_ZOOM_OUT;
+    else
+        return FALSE;
+    if (alt_seen)
+        send_mask_key();
+    mark_caps_used();
+    s_action[vk] = (unsigned char)act;
+    s_owner[vk] = OWN_MOVE;
+    apply_action_down(act);
+    return TRUE;
 }
 
 static WCHAR shortcut_char(UINT vk)
@@ -2050,7 +2088,8 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
             s_end_tap = FALSE;
             s_end_shift = FALSE;
             if (alt_action_down(vk, act, shift, end_tap, FALSE) ||
-                alt_center_down(vk, center_tap, FALSE)) {
+                alt_center_down(vk, center_tap, FALSE) ||
+                (!shift && zoom_key_down(vk, FALSE))) {
                 s_alt_consumed = TRUE;
                 return TRUE;
             }
@@ -2130,6 +2169,8 @@ static BOOL handle_down(UINT vk)
             return TRUE;
         if (!bare && alt_center_down(vk, center_tap, TRUE))
             return TRUE;
+        if (!bare && base == KMOD_ALT && !shift && zoom_key_down(vk, TRUE))
+            return TRUE;
         if (!bare && shortcut_begin(vk)) {
             send_mask_key();
             mark_caps_used();
@@ -2177,6 +2218,8 @@ static BOOL handle_down(UINT vk)
             if (act >= ACT_MOVE_LEFT && act <= ACT_MOVE_RIGHT)
                 s_owner[vk] = OWN_MOVE;
             else if (act >= ACT_SCROLL_UP && act <= ACT_SCROLL_RIGHT)
+                s_owner[vk] = OWN_MOVE;
+            else if (act == ACT_ZOOM_IN || act == ACT_ZOOM_OUT)
                 s_owner[vk] = OWN_MOVE;
             else if (act == ACT_LEFT)
                 s_owner[vk] = OWN_LEFT;
@@ -2253,6 +2296,10 @@ static BOOL handle_up(UINT vk)
             move_release(act);
         else if (act >= ACT_SCROLL_UP && act <= ACT_FAST_DOWN)
             scroll_release(act);
+        else if (act == ACT_ZOOM_IN || act == ACT_ZOOM_OUT) {
+            zoom_release(act == ACT_ZOOM_IN);
+            page_acted(PAGE_SCROLL);
+        }
         return TRUE;
     case OWN_SWALLOW:
         return TRUE;
@@ -2545,6 +2592,8 @@ static void reset_key_state(void)
     s_hold_scroll = FALSE;
     InterlockedExchange(&s_end_uia, END_UIA_IDLE);
     shortcut_reset();
+    // The fingers of a pinch lift at once.
+    zoom_cancel();
 }
 
 static BOOL install_hook(void)
@@ -2644,7 +2693,10 @@ static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION) {
         const MSLLHOOKSTRUCT *m = (const MSLLHOOKSTRUCT *)lParam;
+        // Mouse messages Windows makes from touch carry its signature in
+        // dwExtraInfo: the pinch of Alt + = / Alt + - is not the real mouse.
         if (!(m->flags & LLMHF_INJECTED) &&
+            (m->dwExtraInfo & 0xFFFFFF00) != MI_WP_SIGNATURE &&
             !(wParam == WM_MOUSEMOVE &&
               m->pt.x == InterlockedCompareExchange(&s_own_x, 0, 0) &&
               m->pt.y == InterlockedCompareExchange(&s_own_y, 0, 0))) {
@@ -4353,6 +4405,7 @@ static void cleanup_input(void)
         }
     }
     stop_movement_thread();
+    zoom_stop();
     if (s_caps_timer_on) {
         KillTimer(s_power_wnd, CAPS_TIMER);
         s_caps_timer_on = FALSE;
@@ -4410,6 +4463,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
     create_power_window();
     create_indicator_window();
     start_movement_thread();
+    zoom_start();
 
     s_started_ok = install_hook();
     if (s_started_ok && s_power_wnd) {

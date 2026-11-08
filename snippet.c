@@ -137,6 +137,8 @@ static BOOL first_key_taken(WCHAR first)
     }
     if (vk == g_cfg.key_center && g_cfg.center_tap_ms > 0)
         return TRUE;
+    if (vk == g_cfg.key_zoom_in || vk == g_cfg.key_zoom_out)
+        return TRUE;
     if (!g_cfg.alt_scroll)
         return FALSE;
     if (vk == g_cfg.key_scroll_end && g_cfg.scroll_end_tap_ms > 0)

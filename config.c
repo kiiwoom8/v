@@ -588,6 +588,7 @@ void config_set_defaults(Config *c)
     c->center_tap_ms = 300;
     c->esc_unfocus = 1;
     c->hold_unfocus = 300;
+    c->zoom_speed = 150;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
 
@@ -608,6 +609,10 @@ void config_set_defaults(Config *c)
     parse_key(L"f", &c->key_hints);
     parse_key(L"i", &c->key_exit);
     parse_key(L"/", &c->key_help);
+    // The keys right of 0, = and - on US and Korean keyboards, whatever
+    // the layout: VkKeyScan would find = elsewhere on some (Shift + 0).
+    c->key_zoom_in = VK_OEM_PLUS;
+    c->key_zoom_out = VK_OEM_MINUS;
 
     // Home row, then the top row, then the bottom row, each in keyboard
     // order. build_labels (hint.c) expands the alphabet's head first, so
@@ -918,6 +923,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->esc_unfocus, line, key, val, 0, 2);
     else if (_wcsicmp(key, L"hold_unfocus") == 0)
         apply_int_range(&c->hold_unfocus, line, key, val, 0, 2000);
+    else if (_wcsicmp(key, L"zoom_speed") == 0)
+        apply_int_range(&c->zoom_speed, line, key, val, 10, 1000);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
         apply_double_positive(&c->fast_scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"fast_scroll_max_speed") == 0)
@@ -956,6 +963,10 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_key(&c->key_exit, line, key, val);
     else if (_wcsicmp(key, L"key_help") == 0)
         apply_key(&c->key_help, line, key, val);
+    else if (_wcsicmp(key, L"key_zoom_in") == 0)
+        apply_key(&c->key_zoom_in, line, key, val);
+    else if (_wcsicmp(key, L"key_zoom_out") == 0)
+        apply_key(&c->key_zoom_out, line, key, val);
     else
         warn_add(line, L"unknown key \"%ls\" in [mouse]", key);
 }
@@ -1639,6 +1650,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; quicker release, types as usual. Where esc_unfocus works (browsers, or\r\n");
     appendf(buf, cch, L"; with 2 also web apps); needs bare_keys. 0 = off.\r\n");
     appendf(buf, cch, L"hold_unfocus = %d\r\n", d.hold_unfocus);
+    appendf(buf, cch, L"; Alt + key_zoom_in / key_zoom_out zoom like two fingers spreading or\r\n");
+    appendf(buf, cch, L"; pinching on a touchpad, around the pointer (browsers magnify the page\r\n");
+    appendf(buf, cch, L"; there without the page zoom of Ctrl + =). Percent a second the fingers\r\n");
+    appendf(buf, cch, L"; spread or close while the key is held (10-1000; 150 = x2.5 a second).\r\n");
+    appendf(buf, cch, L"zoom_speed = %d\r\n", d.zoom_speed);
 
     add_key_line(buf, cch, L"Move the mouse left.", L"key_left", d.key_left);
     add_key_line(buf, cch, L"Move the mouse down.", L"key_down", d.key_down);
@@ -1668,6 +1684,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     add_key_line(buf, cch, L"Leave mouse mode (Esc and CapsLock also leave it).",
                  L"key_exit", d.key_exit);
     add_key_line(buf, cch, L"Show the help window.", L"key_help", d.key_help);
+    add_key_line(buf, cch, L"Zoom in like spreading two fingers on a touchpad, around the pointer; with Alt anywhere (none = off).",
+                 L"key_zoom_in", d.key_zoom_in);
+    add_key_line(buf, cch, L"Zoom out like pinching two fingers together (none = off).",
+                 L"key_zoom_out", d.key_zoom_out);
 
     appendf(buf, cch, L"\r\n[hints]\r\n");
     appendf(buf, cch, L"; Characters used for the hint labels: 2-60 unique letters/digits. The\r\n");

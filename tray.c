@@ -950,6 +950,14 @@ static void build_help_rows(void)
         (g_cfg.alt_scroll || g_cfg.hint_hotkey.mods == KMOD_ALT))
         help_add_row(L"same keys, no Alt",
                      L"Outside text fields Alt is not needed");
+    if (g_cfg.key_zoom_in || g_cfg.key_zoom_out) {
+        WCHAR k1[16], k2[16];
+        format_key(g_cfg.key_zoom_in, k1, 16);
+        format_key(g_cfg.key_zoom_out, k2, 16);
+        _snwprintf(buf, 127, L"Alt + %s / %s", k1, k2);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Zoom in / out at the pointer like two fingers on a touchpad (hold; always with Alt)");
+    }
     help_add_row(L"Alt + abbreviation",
                  L"Type a text shortcut (tray: Text shortcuts...)");
 
@@ -977,6 +985,14 @@ static void build_help_rows(void)
         _snwprintf(buf, 127, L"%s %s / Shift + %s", mode, mode, mode);
         buf[127] = L'\0';
         help_add_row(buf, L"Scroll to the top / bottom");
+    }
+    if (g_cfg.key_zoom_in || g_cfg.key_zoom_out) {
+        WCHAR k1[16], k2[16];
+        format_key(g_cfg.key_zoom_in, k1, 16);
+        format_key(g_cfg.key_zoom_out, k2, 16);
+        _snwprintf(buf, 127, L"%s / %s", k1, k2);
+        buf[127] = L'\0';
+        help_add_row(buf, L"Pinch zoom in / out at the pointer (hold)");
     }
     help_add_key(g_cfg.key_hints, L"Click hints (mouse mode stays on)");
     help_add_key(g_cfg.key_help, L"This help window (also ?)");
