@@ -973,7 +973,10 @@ static void build_help_rows(void)
     help_add_row(L"Shift + move", L"Slow, precise movement");
     if (g_cfg.magnet > 0)
         help_add_row(L"move onto a link",
-                     L"Pauses where the hand cursor shows (magnet)");
+                     g_cfg.magnet_skip > 0
+                         ? L"Pauses where the hand cursor shows (magnet), "
+                           L"not once held long (magnet_skip)"
+                         : L"Pauses where the hand cursor shows (magnet)");
     help_add_key(g_cfg.key_left_button,
                  L"Left click: tap, double-tap, hold to drag");
     help_add_key(g_cfg.key_right_click, L"Right click");

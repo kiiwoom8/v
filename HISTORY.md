@@ -856,6 +856,23 @@ Invariants stated in `common.h` and enforced by history:
   key, and its release while that zoom key is down. `key_zoom_in = none`
   leaves the toggle to the IME. The user confirmed main-row `Alt+=` zooms.
 
+### Phase 20: no magnet on a long hold (2026-11-09)
+
+- "if pressing key is longer than a specific time, skip magnetize because
+  it reads as the user wants to move the cursor far from the current
+  spot." `magnet_skip` (default 500 ms, 0-5000, 0 = off): in
+  `movement_thread`, the hand no longer starts a pause once the longer of
+  the two axes' hold times (`holdX`, `holdY`, the acceleration's own) has
+  reached it. Those stand still during a pause and go back to zero when an
+  axis is released, so it is the time the pointer has been moving on this
+  press, pauses not counted, and a tap or a fresh press near a link still
+  stops on it. 500 ms is just past `accel_time` (0.45 s, full speed), about
+  600 px of travel at the default speeds: a link within that range still
+  catches the pointer, a hold that goes on is crossing the screen. A pause
+  already running is not cut short (its hold time does not grow). Built
+  and handed to the user to try; the hook ignores injected keys, so it
+  could not be driven from a script here.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1842,6 +1859,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The touchpad is on while the keyboard is locked, off again after unlocking (with `touchpad_off`) | phase 18 | The touchpad stayed off under the lock, so only a mouse worked |
 | In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
 | A held move key pauses the pointer `magnet` ms (200) where the cursor turns into the hand (`magnet = 0` restores) | phase 16 | The pointer passed links at full speed |
+| After `magnet_skip` ms (500) of moving on one press the magnet no longer pauses (`magnet_skip = 0` restores) | phase 20 | A long hold heading far stopped on every link it crossed |
 | In a browser text field, `j k u d` held `hold_unfocus` ms (300) take their letter back, leave the field like `Esc` and scroll (`hold_unfocus = 0` restores) | phase 17 | A held letter repeated in the field; leaving needed `Esc` or a click |
 | `Alt+=` / `Alt+-` zoom around the pointer with a two-finger touch pinch while held, not the page zoom (`key_zoom_in = none`, `key_zoom_out = none` restore the app's own keys) | phase 19 | The keys reached the app (Excel: AutoSum) |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
@@ -2119,7 +2137,8 @@ Re-check the Teams cases in section 5 after any targeting change. The mode
 indicator: `indicator_update`, `indicator_moved`. The magnet (phase 16):
 `magHold` and its neighbours in `movement_thread`, `cursor_is_hand`,
 `MagTrail`; a pause must stay something the user can always leave at once
-(release, another key, `Shift`).
+(release, another key, `Shift`). `magnet_skip` (phase 20) reads `holdX` /
+`holdY`, so a change to how the hold time counts changes when it applies.
 
 ### Add a tray menu item
 

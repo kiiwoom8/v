@@ -137,6 +137,9 @@ typedef struct {
     int    magnet;             // ms a held move key pauses the pointer where the cursor
                                // turns into the pointing hand (a link, a button), so it
                                // is easy to stop on; 0-1000, default 200 (0 = off)
+    int    magnet_skip;        // ms of moving after which the magnet no longer pauses:
+                               // a long hold is heading far; 0-5000, default 500
+                               // (0 = the magnet pauses however long the key is held)
     double scroll_speed;       // default 1200  (10 notches/s)
     double scroll_max_speed;   // default 4800  (40 notches/s)
     int    smooth_scroll;      // 1 = small steps once per display frame; default 1

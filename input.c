@@ -3555,6 +3555,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
             // Releasing, Shift, the left button held or another move key end
             // the pause at once; a burst that starts on a link does not stop
             // there, and the next pause needs the cursor off the hand first.
+            // A key held past g_cfg.magnet_skip ms of moving is heading
+            // far: no pause then (the time paused does not count).
             tick_us = qpc_us_from(now, freq);
             if (g_cfg.magnet > 0 && (signX != 0 || signY != 0 || magHold)) {
                 BOOL is_hand = cursor_is_hand(hand);
@@ -3587,7 +3589,12 @@ static DWORD WINAPI movement_thread(LPVOID param)
                         magArmed = FALSE;
                     }
                 } else if (is_hand) {
-                    if (magArmed && !was_still && !slow && !drag) {
+                    double moved = holdX > holdY ? holdX : holdY;
+                    BOOL far_move = g_cfg.magnet_skip > 0 &&
+                        moved * 1000.0 >= (double)g_cfg.magnet_skip;
+
+                    if (magArmed && !was_still && !slow && !drag &&
+                        !far_move) {
                         magHold = TRUE;
                         magFixed = FALSE;
                         magStartUs = magHandUs = tick_us;

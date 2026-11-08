@@ -575,6 +575,7 @@ void config_set_defaults(Config *c)
     c->accel_curve = 1.8;
     c->slow_speed = 120.0;
     c->magnet = 200;
+    c->magnet_skip = 500;
     c->scroll_speed = 1200.0;
     c->scroll_max_speed = 4800.0;
     c->smooth_scroll = 1;
@@ -899,6 +900,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_double_positive(&c->slow_speed, line, key, val);
     else if (_wcsicmp(key, L"magnet") == 0)
         apply_int_range(&c->magnet, line, key, val, 0, 1000);
+    else if (_wcsicmp(key, L"magnet_skip") == 0)
+        apply_int_range(&c->magnet_skip, line, key, val, 0, 5000);
     else if (_wcsicmp(key, L"scroll_speed") == 0)
         apply_double_positive(&c->scroll_speed, line, key, val);
     else if (_wcsicmp(key, L"scroll_max_speed") == 0)
@@ -1596,6 +1599,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Releasing the key keeps it there; another move key or Shift goes on at\r\n");
     appendf(buf, cch, L"; once. 0-1000, 0 = off.\r\n");
     appendf(buf, cch, L"magnet = %d\r\n", d.magnet);
+    appendf(buf, cch, L"; Milliseconds of moving after which the magnet no longer pauses: a key\r\n");
+    appendf(buf, cch, L"; held that long is heading far, so links on the way are passed.\r\n");
+    appendf(buf, cch, L"; 0-5000, 0 = pause however long the key is held.\r\n");
+    appendf(buf, cch, L"magnet_skip = %d\r\n", d.magnet_skip);
     appendf(buf, cch, L"; Scrolling speeds in wheel units per second (one notch = 120, so 600 = 5 notches per second).\r\n");
     fmt_double(d.scroll_speed, num, sizeof(num) / sizeof(num[0]));
     appendf(buf, cch, L"scroll_speed = %ls\r\n", num);
