@@ -19,6 +19,25 @@
 #ifndef WTS_CONSOLE_DISCONNECT
 #define WTS_CONSOLE_DISCONNECT 0x2
 #endif
+#ifndef PBT_POWERSETTINGCHANGE
+#define PBT_POWERSETTINGCHANGE 0x8013
+#endif
+
+// GUID_CONSOLE_DISPLAY_STATE {6FE69556-704A-47A0-8F24-C28D936FDA47}: the
+// display went off (0), on (1) or dimmed (2). Modern Standby comes back with
+// it, whether or not Windows also sends PBT_APMRESUMEAUTOMATIC. Declared by
+// hand with the notification's layout (POWERBROADCAST_SETTING) and
+// RegisterPowerSettingNotification looked up at run time, for older headers.
+static const GUID s_display_state_guid = {
+    0x6fe69556, 0x704a, 0x47a0, { 0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47 }
+};
+typedef struct {
+    GUID  PowerSetting;
+    DWORD DataLength;
+    UCHAR Data[1];
+} PowerSettingNote;
+typedef PVOID (WINAPI *RegisterPowerSettingNotificationFn)(HANDLE, LPCGUID, DWORD);
+typedef BOOL (WINAPI *UnregisterPowerSettingNotificationFn)(PVOID);
 // The mouse hook's "this event came from SendInput" flag, and the system
 // cursor ids SetSystemCursor takes (winuser.h declares them only with
 // OEMRESOURCE defined, and MinGW.org lacks the newer ones).
@@ -4364,18 +4383,68 @@ static void raw_input_check(HRAWINPUT raw)
     replace_hook();
 }
 
+// The touchpad can come back from sleep working although Windows still
+// reads it as off; touchpad.c switches it on and off again (main thread).
+static void touchpad_came_back(void)
+{
+    if (g_main_wnd)
+        PostMessageW(g_main_wnd, WM_APP_TOUCHPAD_WAKE, 0, 0);
+}
+
+static PVOID s_display_note = NULL;  // RegisterPowerSettingNotification handle
+static int   s_display_state = -1;   // last GUID_CONSOLE_DISPLAY_STATE (-1 = none yet)
+
+static void display_note_register(HWND hwnd)
+{
+    RegisterPowerSettingNotificationFn reg = (RegisterPowerSettingNotificationFn)
+        (void *)GetProcAddress(GetModuleHandleW(L"user32.dll"),
+                               "RegisterPowerSettingNotification");
+    if (reg)
+        s_display_note = reg(hwnd, &s_display_state_guid, 0 /* DEVICE_NOTIFY_WINDOW_HANDLE */);
+}
+
+static void display_note_unregister(void)
+{
+    UnregisterPowerSettingNotificationFn unreg = (UnregisterPowerSettingNotificationFn)
+        (void *)GetProcAddress(GetModuleHandleW(L"user32.dll"),
+                               "UnregisterPowerSettingNotification");
+    if (s_display_note && unreg)
+        unreg(s_display_note);
+    s_display_note = NULL;
+}
+
+// The display came on after being off (not just undimmed); the first
+// notification, sent at registration, only records the state.
+static void display_state_changed(const PowerSettingNote *note)
+{
+    DWORD value;
+    int   state;
+
+    if (!note || note->DataLength < sizeof(DWORD) ||
+        memcmp(&note->PowerSetting, &s_display_state_guid, sizeof(GUID)) != 0)
+        return;
+    memcpy(&value, note->Data, sizeof(value));
+    state = (int)value;
+    if (state == 1 && s_display_state == 0)
+        touchpad_came_back();
+    s_display_state = state;
+}
+
 static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
-    (void)lp;
     switch (msg) {
     case WM_CREATE:
         WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+        display_note_register(hwnd);
         return 0;
     case WM_POWERBROADCAST:
         if (wp == PBT_APMSUSPEND)
             suspend_input();
-        else if (wp == PBT_APMRESUMESUSPEND || wp == PBT_APMRESUMEAUTOMATIC)
+        else if (wp == PBT_APMRESUMESUSPEND || wp == PBT_APMRESUMEAUTOMATIC) {
             resume_input();
+            touchpad_came_back();
+        } else if (wp == PBT_POWERSETTINGCHANGE)
+            display_state_changed((const PowerSettingNote *)lp);
         return TRUE;
     case WM_WTSSESSION_CHANGE:
         if (wp == (WPARAM)WTS_SESSION_LOCK ||
@@ -4384,8 +4453,10 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             suspend_input();
         else if (wp == (WPARAM)WTS_SESSION_UNLOCK ||
                  wp == (WPARAM)WTS_CONSOLE_CONNECT ||
-                 wp == (WPARAM)WTS_REMOTE_CONNECT)
+                 wp == (WPARAM)WTS_REMOTE_CONNECT) {
             resume_input();
+            touchpad_came_back();
+        }
         return 0;
     case WM_INPUT:
         raw_input_check((HRAWINPUT)lp);
@@ -4405,6 +4476,7 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         return 0;
     case WM_DESTROY:
         WTSUnRegisterSessionNotification(hwnd);
+        display_note_unregister();
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);

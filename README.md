@@ -75,6 +75,10 @@ mouse presses that shortcut once no modifier key is held, so after pausing
 with `Alt+p p` the touchpad comes back when you let go of Alt. It needs a
 precision touchpad and Windows 11 24H2 or later. `touchpad_off = 0` leaves
 the touchpad alone (and turns it back on if vim mouse had turned it off).
+Waking from sleep can bring the touchpad back working although Windows still
+shows it as off, so two seconds after a wake (or after unlocking, if the lock
+screen came up) vim mouse switches it on and off again; you may see the
+touchpad icon flash.
 
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
@@ -791,6 +795,10 @@ user's store.
   it on in Settings, Bluetooth & devices, Touchpad. With an administrator
   window in front, Windows drops the shortcut; `vim.log` says so with
   `log = 1`, and the next pause or resume tries again.
+- **The touchpad works after waking from sleep.** vim mouse switches it on
+  and off again two seconds after the wake, or after you unlock if the lock
+  screen came up first; `vim.log` has a "touchpad: after a wake" line. If it
+  still works, pause and resume vim mouse (`Alt+p p` twice).
 - **A hover menu closes after a hint click.** The pointer goes back to where
   it was after the click, so a menu that stays open only while the pointer
   is over it closes. `Alt` + label moves the pointer there without clicking,

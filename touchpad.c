@@ -21,6 +21,13 @@
 // Windows, an elevated window in front swallowing the keys) we log and give
 // up until the next change.
 //
+// Waking from sleep (Modern Standby) can bring the touchpad back working
+// although Windows still reads it as off: the device resets and the off
+// setting is not sent to it again. So after a wake, an unlock or the
+// display coming back on (input.c posts WM_APP_TOUCHPAD_WAKE), once the
+// lock screen is gone, touchpad_wake switches it on and off again, which
+// sends the setting anew; if it reads on, one press turns it off.
+//
 // The setting persists like the Settings toggle: if vim mouse is killed or
 // Windows shuts down while it is off, it stays off until vim mouse runs and
 // pauses or quits, or the user switches it on.
@@ -56,6 +63,7 @@ typedef struct {
 #define TP_WAIT_MAX_MS  15000  // how long we wait for the modifiers to be released
 #define TP_PRESSES      2      // presses before giving up
 #define TP_QUIT_WAIT_MS 2000   // at quit, the wait for the modifiers to be released
+#define TP_WAKE_DELAY_MS 2000  // after a wake, how long the device gets to settle first
 
 enum { GOAL_NONE = 0, GOAL_OFF = 1, GOAL_ON = 2 };
 
@@ -67,6 +75,8 @@ static DWORD    s_start = 0;         // when the current goal was set
 static DWORD    s_pressed = 0;       // when we last pressed the shortcut (0 = not yet)
 static int      s_presses = 0;
 static BOOL     s_unsupported_logged = FALSE;
+static BOOL     s_resync = FALSE;    // after a wake: going on now, then off again
+static UINT_PTR s_wake_timer = 0;
 
 // -1 = unknown (no precision touchpad, or Windows before 11 24H2), 0 = off, 1 = on.
 static int tp_state(void)
@@ -129,6 +139,8 @@ static void stop_timer(void)
     s_busy = FALSE;
 }
 
+static void restart(int goal);
+
 // One step towards s_goal. Returns FALSE once there is nothing more to do.
 static BOOL step(void)
 {
@@ -148,6 +160,16 @@ static BOOL step(void)
         s_ours = s_goal == GOAL_OFF;
         if (g_cfg.log && s_presses > 0)
             app_log(L"touchpad: %s", want ? L"on" : L"off");
+        if (s_resync && s_goal == GOAL_ON) {
+            // Halfway through the re-sync after a wake: off again, after
+            // TP_CONFIRM_MS so the device has taken the "on".
+            s_resync = FALSE;
+            s_goal = GOAL_OFF;
+            s_start = now;
+            s_pressed = now ? now : 1;
+            s_presses = 0;
+            return TRUE;
+        }
         return FALSE;
     }
     if (s_pressed && now - s_pressed < TP_CONFIRM_MS)
@@ -172,6 +194,17 @@ static BOOL step(void)
     return TRUE;
 }
 
+// Done with a goal (reached or given up). A re-sync given up halfway leaves
+// the goal off: that is still what we want, tried again at the next change.
+static void finish(void)
+{
+    stop_timer();
+    if (s_resync) {
+        s_resync = FALSE;
+        s_goal = GOAL_OFF;
+    }
+}
+
 static void CALLBACK tp_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tick)
 {
     (void)hwnd;
@@ -179,13 +212,22 @@ static void CALLBACK tp_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tick)
     (void)id;
     (void)tick;
     if (!step())
-        stop_timer();
+        finish();
 }
 
 static void set_goal(int goal)
 {
-    if (goal == s_goal)
+    if (goal == s_goal) {
+        // Paused during a re-sync's "on" half: stay on.
+        s_resync = FALSE;
         return;
+    }
+    s_resync = FALSE;
+    restart(goal);
+}
+
+static void restart(int goal)
+{
     s_goal = goal;
     stop_timer();
     if (goal == GOAL_NONE)
@@ -193,8 +235,10 @@ static void set_goal(int goal)
     s_start = GetTickCount();
     s_pressed = 0;
     s_presses = 0;
-    if (!step())
+    if (!step()) {
+        finish();
         return;
+    }
     s_timer = SetTimer(NULL, 0, TP_TIMER_MS, tp_timer_proc);
     s_busy = s_timer != 0;
     if (!s_timer)
@@ -212,11 +256,65 @@ void touchpad_update(void)
     set_goal(goal);
 }
 
+// The lock screen (another desktop) takes no injected keys; its unlock
+// posts WM_APP_TOUCHPAD_WAKE again.
+static BOOL desktop_is_ours(void)
+{
+    HDESK desk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+
+    if (!desk)
+        return FALSE;
+    CloseDesktop(desk);
+    return TRUE;
+}
+
+static void CALLBACK wake_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tick)
+{
+    int state;
+
+    (void)hwnd;
+    (void)msg;
+    (void)id;
+    (void)tick;
+    if (s_wake_timer) {
+        KillTimer(NULL, s_wake_timer);
+        s_wake_timer = 0;
+    }
+    if (!g_cfg.touchpad_off || s_goal != GOAL_OFF || s_busy ||
+        input_is_paused() || input_is_locked())
+        return;
+    if (!desktop_is_ours()) {
+        app_log(L"touchpad: woke on the lock screen; checked again after unlocking");
+        return;
+    }
+    state = tp_state();
+    if (state < 0)
+        return;
+    app_log(L"touchpad: after a wake it reads %s; switching it %s",
+            state ? L"on" : L"off", state ? L"off" : L"on and off again");
+    s_resync = state == 0;
+    restart(s_resync ? GOAL_ON : GOAL_OFF);
+}
+
+void touchpad_wake(void)
+{
+    if (!g_cfg.touchpad_off)
+        return;
+    if (s_wake_timer)
+        KillTimer(NULL, s_wake_timer);
+    s_wake_timer = SetTimer(NULL, 0, TP_WAKE_DELAY_MS, wake_timer_proc);
+}
+
 void touchpad_stop(void)
 {
-    BOOL was_off = s_ours || (s_busy && s_goal == GOAL_OFF);
+    BOOL was_off = s_ours || (s_busy && s_goal == GOAL_OFF) || s_resync;
     DWORD start = GetTickCount();
 
+    if (s_wake_timer) {
+        KillTimer(NULL, s_wake_timer);
+        s_wake_timer = 0;
+    }
+    s_resync = FALSE;
     stop_timer();
     if (!was_off)
         return;

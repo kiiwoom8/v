@@ -70,6 +70,7 @@
                                               // back / forward (once per burst); -> hint_page_acted
 #define WM_APP_FLUSH_DONE       (WM_APP + 16) // wParam = the hit test reached the page, lParam = seq of the
                                               // uia_flush request; -> hint_flush_done
+#define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -546,6 +547,7 @@ void help_toggle(void);
 
 void touchpad_update(void);             // after start, pause / resume and reload: off while active
 void touchpad_stop(void);               // at quit: back on if we turned it off (may wait 2 s)
+void touchpad_wake(void);               // WM_APP_TOUCHPAD_WAKE: after a wake, on and off again (2 s later)
 
 // ---------------------------------------------------------------------------
 // Text shortcut editor (snippet.c). Main/UI thread.
