@@ -980,6 +980,26 @@ Invariants stated in `common.h` and enforced by history:
   driven with keys carrying a test tag in a test build. `page_busy`,
   `uia_page_point` and `find_page_area` also look for that window and were
   not looked at for a Chrome without it.
+- Looked at next, in a temporary Chrome given the user's field trials
+  (only the `variations*` keys of their `Local State`; the same Chrome
+  without them, with `--force-renderer-accessibility` or with
+  `--remote-debugging-port`, keeps the page window, so `load_probe.mjs`
+  cannot show this case). Pages opened as new tabs from the command line,
+  watched by a copy of `load_probe.c`: (1) `page_busy` reads busy only for
+  the first second, while the new tab briefly has a page window, then 0
+  although the page loads for seconds more; (2) no `EVENT_OBJECT_SHOW` /
+  `REORDER` / `IA2_EVENT_DOCUMENT_LOAD_COMPLETE` for the page arrives at
+  all, on any window, so the "Page loading" watch (`load_watch`,
+  `load_event_proc`) has nothing to hear: in such a Chrome the hints
+  opened on a loading page label what is there and do not wait for the
+  rest. (3) `uia_page_point` falls back to the cursor or the window's
+  centre as it was written to, so the wait after a scroll still finds a
+  point in the page; not changed. The tab area there holds a views
+  `WebView` Document (the page's rect) before the page's own Document,
+  which `leave_tree_document` then takes; focusing it was not confirmed
+  (the last test was cut short by another window taking the front). Not
+  fixed yet: the loading watch would need UI Automation events (structure
+  changes on the page Document) instead of WinEvents.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
