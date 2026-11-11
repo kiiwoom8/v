@@ -34,7 +34,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
-| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click, the `0 0` jump to the middle of the screen, `Esc` leaving a text field (`esc_unfocus`: armed at the press, sent to the focus worker at the release), a held `j k u d` leaving it (`hold_unfocus`: armed at the press, `OWN_HOLD` holds its repeats back, the scroll starts from the worker's answer), an Alt key of ours leaving it (`alt_unfocus`: the Alt keys at once, the hint hotkey once `hint.c` reports the hints done). | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `unfocus_key_down`, `unfocus_cancel`, `hold_key_down`, `hold_repeat`, `hold_key_up`, `hold_answer`, `hold_cancel`, `alt_unfocus`, `input_thread_proc` |
+| `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click and after a touch tap on the screen's top edge, the `0 0` jump to the middle of the screen, `Esc` leaving a text field (`esc_unfocus`: armed at the press, sent to the focus worker at the release), a held `j k u d` leaving it (`hold_unfocus`: armed at the press, `OWN_HOLD` holds its repeats back, the scroll starts from the worker's answer), an Alt key of ours leaving it (`alt_unfocus`: the Alt keys at once, the hint hotkey once `hint.c` reports the hints done). | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `touch_edge_tap`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `unfocus_key_down`, `unfocus_cancel`, `hold_key_down`, `hold_repeat`, `hold_key_up`, `hold_answer`, `hold_cancel`, `alt_unfocus`, `input_thread_proc` |
 | `hint.c` | 4186 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, the watch on a browser page still loading (status "Page loading", content reports, one relabel), monitor cycling, the grid key, clicks held back until Shift and Ctrl are up, the end of the hints reported to the focus worker (`alt_unfocus`). | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `load_note`, `load_watch`, `load_event_proc`, `load_content_in`, `relabel_all`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
 | `uia.c` | 6768 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `g g` / `Shift+g` scroll to the top / bottom and the focus classifier for bare keys (which also moves the focus from a text field to the page on `Esc`, a held `j k u d` and our Alt keys). All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `page_busy`, `msaa_state`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait`, `uia_focus_leave_down`, `uia_focus_leave_hold`, `uia_focus_leave_result`, `uia_focus_leave_alt`, `uia_focus_leave_hint`, `uia_focus_leave_hint_done`, `leave_step`, `leave_erase`, `leave_look`, `leave_act`, `leave_page_document`, `browser_process` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
@@ -895,6 +895,33 @@ Invariants stated in `common.h` and enforced by history:
   the touchpad icon). Built and handed to the user to try a sleep; the
   re-sync theory is not proven until then.
 
+### Phase 22: a touch on the screen's top edge (2026-11-11)
+
+- "mouse pointer is at the top of the screen frequently even though i
+  haven't moved it", then "i think the trigger is closing laptop lid". Not
+  vim mouse: a passive watcher (`GetCursorPos` every 20 ms, a
+  `WH_MOUSE_LL` hook logging `MI_WP_SIGNATURE` events) caught the pointer
+  going to 866,0 and 1005,0 with `GetCursorInfo` reporting
+  `CURSOR_SUPPRESSED` (touch or pen), and the hook a touch move, down and
+  up all at 1005,0 within 1 ms. The laptop has a Goodix touchscreen (and a
+  Wacom pen); a finger on the lid's top edge registers on the screen's top
+  pixel row. No Modern Standby enter / exit was near those taps, and two
+  lid closes logged with `GUID_LIDSWITCH_STATE_CHANGE` sent no touch, so
+  the tap comes from how the lid is held, not from the lid switch or a
+  wake. Now `mouse_proc` keeps the pointer's last place from every move not
+  made from touch or pen (`s_rest_pt`, ours included) and the point a
+  touch went down (`s_touch_down_pt`; not injected, `MI_WP_TOUCH`); at the
+  lift it posts `WM_INPUT_TOUCH_EDGE`, and `touch_edge_tap` on the input
+  thread moves the pointer back (`own_move`) when the tap went down within
+  `TOUCH_EDGE_PX` (16) of its monitor's top and up within `TOUCH_LIFT_PX`
+  (48), and the pointer is still where it ended. The first build took only
+  row 0 and 1: the user's own test tap on the edge went down at y 6 and up
+  at y 22 and was missed, so the band is wider. The tap is not blocked: Chrome reads `WM_POINTER`, which
+  a mouse hook cannot stop, so the click on the tab strip still happens.
+  The mouse hook is now installed whenever the session is ours, not only
+  with `hide_pointer` on. `log = 1` writes "touch: a tap on the screen's top
+  edge".
+
 ### Phase 23: Alt keys leave a text field (2026-11-12)
 
 - "just like esc, disable input with alt. which means for ex after i use
@@ -1120,6 +1147,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
   pointer thread; the input thread only sets `s_ptr_want` and signals.
   Anything of ours that moves the pointer with `SetCursorPos` goes through
   `own_move`, or the hook takes it for the real mouse and shows the pointer.
+  The hook also notes touch taps (`s_rest_pt`, `s_touch_down_pt`) and
+  posts; `touch_edge_tap` moves the pointer on the input thread, never in
+  the hook.
 - **Never inject modifier key events.** `ba62724`: an injected Shift up/down
   pair races the physical keys and can leave Shift stuck. To act "after
   Shift", remember the action in the hook and run it from the key-up path
@@ -1922,6 +1952,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | After `magnet_skip` ms (500) of moving on one press the magnet no longer pauses (`magnet_skip = 0` restores) | phase 20 | A long hold heading far stopped on every link it crossed |
 | In a browser text field, `j k u d` held `hold_unfocus` ms (300) take their letter back, leave the field like `Esc` and scroll (`hold_unfocus = 0` restores) | phase 17 | A held letter repeated in the field; leaving needed `Esc` or a click |
 | vim mouse's Alt keys in a browser text field leave it like `Esc`; the hint hotkey once the hints are done, and only if the focus is still in the field it was pressed in (`alt_unfocus = 0` restores) | phase 23 | After `Alt + f` or `Alt + j` the focus stayed in the field and the keys without Alt typed |
+| A touch tap that goes down and up on a monitor's top edge puts the pointer back where it was (`touch_edge_tap`) | phase 22 | The pointer stayed at the top of the screen after the lid was closed |
 | `Alt+=` / `Alt+-` zoom around the pointer with a two-finger touch pinch while held, not the page zoom (`key_zoom_in = none`, `key_zoom_out = none` restore the app's own keys) | phase 19 | The keys reached the app (Excel: AutoSum) |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 
