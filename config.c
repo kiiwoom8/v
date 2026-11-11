@@ -589,6 +589,7 @@ void config_set_defaults(Config *c)
     c->center_tap_ms = 300;
     c->esc_unfocus = 1;
     c->hold_unfocus = 300;
+    c->alt_unfocus = 1;
     c->zoom_speed = 150;
     c->fast_scroll_speed = 3600.0;
     c->fast_scroll_max_speed = 14400.0;
@@ -926,6 +927,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->esc_unfocus, line, key, val, 0, 2);
     else if (_wcsicmp(key, L"hold_unfocus") == 0)
         apply_int_range(&c->hold_unfocus, line, key, val, 0, 2000);
+    else if (_wcsicmp(key, L"alt_unfocus") == 0)
+        apply_int_range(&c->alt_unfocus, line, key, val, 0, 1);
     else if (_wcsicmp(key, L"zoom_speed") == 0)
         apply_int_range(&c->zoom_speed, line, key, val, 10, 1000);
     else if (_wcsicmp(key, L"fast_scroll_speed") == 0)
@@ -1657,6 +1660,12 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; quicker release, types as usual. Where esc_unfocus works (browsers, or\r\n");
     appendf(buf, cch, L"; with 2 also web apps); needs bare_keys. 0 = off.\r\n");
     appendf(buf, cch, L"hold_unfocus = %d\r\n", d.hold_unfocus);
+    appendf(buf, cch, L"; An Alt key of vim mouse used in such a text field leaves it the same\r\n");
+    appendf(buf, cch, L"; way: Alt + j k u d g, Alt + = -, Alt + 0 0 at once, the hint hotkey once\r\n");
+    appendf(buf, cch, L"; the hints are done (unless they clicked into another field). Not the\r\n");
+    appendf(buf, cch, L"; text shortcuts, Alt + h l, or the pause, lock and quit hotkeys.\r\n");
+    appendf(buf, cch, L"; 1 = on, 0 = off.\r\n");
+    appendf(buf, cch, L"alt_unfocus = %d\r\n", d.alt_unfocus);
     appendf(buf, cch, L"; Alt + key_zoom_in / key_zoom_out zoom like two fingers spreading or\r\n");
     appendf(buf, cch, L"; pinching on a touchpad, around the pointer (browsers magnify the page\r\n");
     appendf(buf, cch, L"; there without the page zoom of Ctrl + =). Percent a second the fingers\r\n");

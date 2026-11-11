@@ -166,6 +166,10 @@ typedef struct {
     int    hold_unfocus;       // ms: a scroll key (j k u d) held this long in such a text
                                // field takes its letter back, leaves the field like Esc
                                // and scrolls; default 300 (0 = off; needs bare_keys)
+    int    alt_unfocus;        // 1 = an Alt key of ours (Alt + j, the hint hotkey, ...)
+                               // used in such a text field leaves it like Esc (the
+                               // hint hotkey once the hints are done, unless they
+                               // clicked into another field), default; 0 = off
     int    zoom_speed;         // percent a second the fingers of an Alt + = / Alt + -
                                // pinch spread or close (10-1000, default 150: x2.5 a
                                // second, which a browser shows as that much zoom)
@@ -515,6 +519,16 @@ void uia_focus_leave_cancel(void);
 enum { LEAVE_PENDING = 0, LEAVE_NO = 1, LEAVE_DONE = 2 };
 LONG uia_focus_leave_hold(DWORD hold_ms);
 int  uia_focus_leave_result(LONG seq);
+// alt_unfocus: an Alt key of ours used in such a field leaves it like Esc.
+// uia_focus_leave_alt at the press of an Alt scroll / zoom / center key (the
+// move follows at once). uia_focus_leave_hint at the hint hotkey's press
+// (the worker notes the field), uia_focus_leave_hint_done once the hints
+// are done (closed, or after_ms after their click): the focus leaves if it
+// is still in that same field. None waits; safe from the hook and the UI
+// thread.
+void uia_focus_leave_alt(void);
+void uia_focus_leave_hint(void);
+void uia_focus_leave_hint_done(DWORD after_ms);
 
 // ---------------------------------------------------------------------------
 // Pinch zoom (zoom.c). Alt + = / Alt + -: two injected touch contacts either

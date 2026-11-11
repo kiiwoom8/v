@@ -199,7 +199,8 @@ typedef struct IUIAutomationVtbl {
         REFIID riid, void **ppvObject);
     ULONG (STDMETHODCALLTYPE *AddRef)(IUIAutomation *This);
     ULONG (STDMETHODCALLTYPE *Release)(IUIAutomation *This);
-    void *CompareElements;
+    HRESULT (STDMETHODCALLTYPE *CompareElements)(IUIAutomation *This,
+        IUIAutomationElement *el1, IUIAutomationElement *el2, BOOL *areSame);
     void *CompareRuntimeIds;
     void *GetRootElement;
     HRESULT (STDMETHODCALLTYPE *ElementFromHandle)(IUIAutomation *This,
@@ -6510,10 +6511,17 @@ static const WCHAR *focus_kind_name(int kind)
 #define LEAVE_DEPTH_MAX 64      // parents walked looking for the field's Document
 #define LEAVE_SETTLE_MS 50      // ask the focus again this long after the move
 #define LEAVE_ERASE_MS 30       // hold_unfocus: let the field take the erase key first
+#define LEAVE_HINT_MAX_MS 60000 // alt_unfocus: hints never done by then leave nothing
+
+// What armed a leave: an Esc, a held scroll key (hold_unfocus), an Alt key
+// of ours (alt_unfocus: released as it is armed) or the hint hotkey
+// (alt_unfocus: released once the hints are done, and only from the field
+// it was pressed in, so a field the hints clicked into keeps the focus).
+enum { LV_ESC = 0, LV_HOLD, LV_ALT, LV_HINT };
 
 // Guarded by g_fx_cs. g_lv_seq counts the armed presses; the worker handles
-// each once (LeaveState.done_seq). g_lv_hold_ms: 0 for an Esc, else a held
-// scroll key (hold_unfocus) that leaves once held this long, without a
+// each once (LeaveState.done_seq). g_lv_hold_ms: a held scroll key leaves
+// once held this long, without a release. g_lv_after_ms: the wait after the
 // release. g_lv_res is how the press g_lv_res_seq ended (LEAVE_NO, _DONE).
 static LONG  g_lv_seq;
 static BOOL  g_lv_up;
@@ -6521,6 +6529,8 @@ static BOOL  g_lv_dead;
 static DWORD g_lv_down_tick;
 static DWORD g_lv_up_tick;
 static DWORD g_lv_hold_ms;
+static DWORD g_lv_after_ms;
+static int   g_lv_kind;
 static LONG  g_lv_res_seq;
 static int   g_lv_res;
 
@@ -6528,11 +6538,19 @@ typedef struct {
     LONG seq;                           // the press looked at
     LONG done_seq;                      // the press finished with
     IUIAutomationElement *target;       // where the focus goes
+    IUIAutomationElement *field;        // LV_HINT: the field it was pressed in
     HWND focus;                         // the focus window when it was looked at
     IUIAutomationCacheRequest *cache;   // full elements, control type and more
     BOOL in_page;                       // the field is in a page, not the browser's own UI
     BOOL hold;                          // a held scroll key, not an Esc
+    int kind;                           // LV_*
 } LeaveState;
+
+static const WCHAR *leave_name(int kind)
+{
+    return kind == LV_HOLD ? L"hold" : kind == LV_ALT ? L"alt"
+         : kind == LV_HINT ? L"hint" : L"esc";
+}
 
 typedef BOOL (WINAPI *QueryImageNameFn)(HANDLE, DWORD, LPWSTR, PDWORD);
 
@@ -6695,6 +6713,9 @@ static void leave_drop(LeaveState *lv)
     if (lv->target)
         lv->target->lpVtbl->Release(lv->target);
     lv->target = NULL;
+    if (lv->field)
+        lv->field->lpVtbl->Release(lv->field);
+    lv->field = NULL;
     lv->focus = NULL;
     lv->in_page = FALSE;
 }
@@ -6753,16 +6774,22 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
         lv->in_page = lv->target != NULL;
         if (!lv->target && uia_chromium_window(root))
             lv->target = leave_page_document(automation, lv->cache, root);
-        if (!lv->target)
+        if (!lv->target) {
             why = L"no page to move the focus to";
-        else
+        } else {
             lv->focus = focus;
+            // The hints may click into another field meanwhile; only this
+            // one is left once they are done.
+            if (lv->kind == LV_HINT && el) {
+                lv->field = el;
+                el = NULL;
+            }
+        }
     }
     if (el)
         el->lpVtbl->Release(el);
     if (why && g_cfg.log)
-        app_log(L"%ls: the focus stays, %ls", lv->hold ? L"hold" : L"esc",
-                why);
+        app_log(L"%ls: the focus stays, %ls", leave_name(lv->kind), why);
 }
 
 // hold_unfocus: the held key typed its letter into the field when it went
@@ -6791,11 +6818,13 @@ static void leave_erase(const LeaveState *lv)
 // focus to the page; TRUE when it asked the page to take it.
 static BOOL leave_act(IUIAutomation *automation, LeaveState *lv)
 {
-    const WCHAR *name = lv->hold ? L"hold" : L"esc";
+    const WCHAR *name = leave_name(lv->kind);
+    IUIAutomationElement *el = NULL;
     GUITHREADINFO gti;
     HWND focus;
     DWORD pid;
     HRESULT hr;
+    BOOL text, same = TRUE;
 
     if (!focus_window(&focus, &gti, &pid) || focus != lv->focus) {
         if (g_cfg.log)
@@ -6803,12 +6832,29 @@ static BOOL leave_act(IUIAutomation *automation, LeaveState *lv)
                     name);
         return FALSE;
     }
-    if (!leave_in_text(automation, lv, focus, &gti, NULL)) {
+    text = leave_in_text(automation, lv, focus, &gti,
+                         lv->field ? &el : NULL);
+    if (text && lv->field) {
+        same = FALSE;
+        if (!el || FAILED(automation->lpVtbl->CompareElements(
+                       automation, lv->field, el, &same)))
+            same = FALSE;
+    }
+    if (el)
+        el->lpVtbl->Release(el);
+    if (!text) {
         if (g_cfg.log)
-            app_log(lv->hold ? L"hold: the focus stays, it already left "
-                               L"the field"
-                             : L"esc: the focus stays, Esc already took it "
-                               L"out of the field");
+            app_log(lv->kind == LV_ESC
+                    ? L"esc: the focus stays, Esc already took it out of "
+                      L"the field"
+                    : L"%ls: the focus stays, it already left the field",
+                    name);
+        return FALSE;
+    }
+    if (!same) {
+        if (g_cfg.log)
+            app_log(L"%ls: the focus stays, the hints put it in another "
+                    L"field", name);
         return FALSE;
     }
     if (lv->hold)
@@ -6841,7 +6887,8 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
 {
     LONG seq;
     BOOL up, dead;
-    DWORD down_tick, up_tick, hold_ms, now;
+    DWORD down_tick, up_tick, hold_ms, after_ms, max_ms, now;
+    int kind;
 
     EnterCriticalSection(&g_fx_cs);
     seq = g_lv_seq;
@@ -6850,6 +6897,8 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
     down_tick = g_lv_down_tick;
     up_tick = g_lv_up_tick;
     hold_ms = g_lv_hold_ms;
+    after_ms = g_lv_after_ms;
+    kind = g_lv_kind;
     LeaveCriticalSection(&g_fx_cs);
     if (seq == lv->done_seq)
         return 0;
@@ -6868,6 +6917,7 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
             return hold_ms - (DWORD)(now - down_tick);
         lv->seq = seq;
         lv->hold = hold_ms != 0;
+        lv->kind = kind;
         leave_look(automation, lv);
         if (!lv->target) {
             lv->done_seq = seq;
@@ -6885,17 +6935,22 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
         return 0;
     }
     if (!up) {
-        if ((DWORD)(now - down_tick) < LEAVE_HOLD_MS)
-            return LEAVE_HOLD_MS - (DWORD)(now - down_tick);
+        // An Esc held this long does nothing; hints open this long were
+        // never reported done.
+        max_ms = kind == LV_HINT ? LEAVE_HINT_MAX_MS : LEAVE_HOLD_MS;
+        if ((DWORD)(now - down_tick) < max_ms)
+            return max_ms - (DWORD)(now - down_tick);
         if (g_cfg.log)
-            app_log(L"esc: the focus stays, Esc was held");
+            app_log(kind == LV_HINT
+                    ? L"hint: the focus stays, the hints were never done"
+                    : L"esc: the focus stays, Esc was held");
         leave_drop(lv);
         lv->done_seq = seq;
         leave_result(seq, LEAVE_NO);
         return 0;
     }
-    if ((DWORD)(now - up_tick) < LEAVE_AFTER_MS)
-        return LEAVE_AFTER_MS - (DWORD)(now - up_tick);
+    if ((DWORD)(now - up_tick) < after_ms)
+        return after_ms - (DWORD)(now - up_tick);
     leave_result(seq, leave_act(automation, lv) ? LEAVE_DONE : LEAVE_NO);
     leave_drop(lv);
     lv->done_seq = seq;
@@ -7103,7 +7158,7 @@ static BOOL focus_worker_ready(void)
     return InterlockedCompareExchange(&g_fx_state, 2, 2) == 2;
 }
 
-static LONG leave_arm(DWORD hold_ms)
+static LONG leave_arm(int kind, DWORD hold_ms)
 {
     LONG seq;
 
@@ -7113,10 +7168,14 @@ static LONG leave_arm(DWORD hold_ms)
     if (++g_lv_seq == 0)
         ++g_lv_seq;
     seq = g_lv_seq;
-    g_lv_up = FALSE;
+    g_lv_kind = kind;
     g_lv_dead = FALSE;
     g_lv_down_tick = GetTickCount();
     g_lv_hold_ms = hold_ms;
+    g_lv_after_ms = LEAVE_AFTER_MS;
+    // An Alt key of ours never reached the app: nothing to wait for.
+    g_lv_up = kind == LV_ALT;
+    g_lv_up_tick = g_lv_down_tick;
     LeaveCriticalSection(&g_fx_cs);
     SetEvent(g_fx_wake);
     return seq;
@@ -7124,12 +7183,37 @@ static LONG leave_arm(DWORD hold_ms)
 
 void uia_focus_leave_down(void)
 {
-    leave_arm(0);
+    leave_arm(LV_ESC, 0);
 }
 
 LONG uia_focus_leave_hold(DWORD hold_ms)
 {
-    return leave_arm(hold_ms ? hold_ms : 1);
+    return leave_arm(LV_HOLD, hold_ms ? hold_ms : 1);
+}
+
+void uia_focus_leave_alt(void)
+{
+    leave_arm(LV_ALT, 0);
+}
+
+void uia_focus_leave_hint(void)
+{
+    leave_arm(LV_HINT, 0);
+}
+
+void uia_focus_leave_hint_done(DWORD after_ms)
+{
+    if (InterlockedCompareExchange(&g_fx_state, 2, 2) != 2)
+        return;
+    EnterCriticalSection(&g_fx_cs);
+    // Only the hint hotkey's own press, once: a later Esc or key replaced it.
+    if (g_lv_kind == LV_HINT && !g_lv_up && !g_lv_dead) {
+        g_lv_up = TRUE;
+        g_lv_up_tick = GetTickCount();
+        g_lv_after_ms = after_ms;
+    }
+    LeaveCriticalSection(&g_fx_cs);
+    SetEvent(g_fx_wake);
 }
 
 int uia_focus_leave_result(LONG seq)

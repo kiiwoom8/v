@@ -899,6 +899,9 @@ static void build_help_rows(void)
                      g_cfg.esc_unfocus >= 2
                      ? L"Leave it: the focus goes to the page (browsers and web apps)"
                      : L"Leave it: the focus goes to the page (web browsers)");
+    if (g_cfg.alt_unfocus)
+        help_add_row(L"Alt + j, f and the other Alt keys in a text field",
+                     L"Leave it like Esc (the hints once they are done)");
     if (g_cfg.hold_unfocus > 0 && g_cfg.bare_keys && g_cfg.alt_scroll) {
         _snwprintf(buf, 127, L"j k u d held %d ms in a text field",
                    g_cfg.hold_unfocus);

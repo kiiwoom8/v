@@ -56,6 +56,10 @@
 #define TIMER_LOAD_ID   7
 #define ACT_POLL_MS     10
 #define ACT_WAIT_MAX_MS 3000
+// alt_unfocus: after a hint click, the app's own focus change (a click into
+// another field) comes first; then the hotkey's field is left if it still
+// has the focus.
+#define LEAVE_CLICK_MS  150
 #define REFRESH_RETRY_MS 200
 #define MAX_MONITORS    16
 #define MAX_TARGETS     2000
@@ -334,6 +338,9 @@ static POINT     g_act_pt;
 static int       g_act_button;
 static int       g_act_count;
 static DWORD     g_act_t0;
+// act_at's hint_close: the click that follows reports the end of the hints
+// to alt_unfocus, not the close.
+static BOOL      g_click_follows;
 
 static void finalize_scan(void);
 static void reset_input(void);
@@ -2237,6 +2244,7 @@ static void act_flush(void)
     g_act_pending = FALSE;
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_ACT_ID);
     mouse_click_at(g_act_pt, g_act_button, g_act_count);
+    uia_focus_leave_hint_done(LEAVE_CLICK_MS);
 }
 
 // Sends the click once Shift, Ctrl and Alt are up. The user is still holding
@@ -2262,13 +2270,17 @@ static void click_when_free(POINT pt, int button, int count)
 
 static void act_at(POINT pt, UINT mods)
 {
-    // The overlay and capture must be gone before any synthetic input.
+    // The overlay and capture must be gone before any synthetic input. The
+    // click (or the move) is what ends the hints for alt_unfocus.
+    g_click_follows = TRUE;
     hint_close();
+    g_click_follows = FALSE;
 
     // A drop target, or Alt + label: move the pointer there and no more (to
     // hover something, or to scroll that area with the Alt keys next).
     if (input_left_button_held() || (mods & KMOD_ALT)) {
         mouse_move_to(pt);
+        uia_focus_leave_hint_done(0);
         return;
     }
     if ((mods & (KMOD_CTRL | KMOD_SHIFT)) == (KMOD_CTRL | KMOD_SHIFT))
@@ -2279,6 +2291,9 @@ static void act_at(POINT pt, UINT mods)
         click_when_free(pt, BTN_LEFT, 2);
     else
         mouse_click_at(pt, BTN_LEFT, 1);
+    // A click held back for Shift and Ctrl reports from act_flush.
+    if (!g_act_pending)
+        uia_focus_leave_hint_done(LEAVE_CLICK_MS);
 }
 
 static BOOL is_grid_key(UINT vk)
@@ -3834,7 +3849,12 @@ void hint_open(void)
 
     // While the keyboard is locked no key could reach the overlay, not even
     // Esc, so the tray item must not open one.
-    if (g_open || input_is_locked()) return;
+    if (g_open) return;
+    // Hints that do not open are done at once for alt_unfocus.
+    if (input_is_locked()) {
+        uia_focus_leave_hint_done(0);
+        return;
+    }
 
     input_set_key_capture(TRUE);
 
@@ -3842,6 +3862,7 @@ void hint_open(void)
         app_log(L"hint: no overlay window; not opening");
         discard_prescan();
         input_set_key_capture(FALSE);
+        uia_focus_leave_hint_done(0);
         return;
     }
 
@@ -3856,6 +3877,7 @@ void hint_open(void)
         app_log(L"hint: UI Automation unavailable; not opening");
         discard_prescan();
         input_set_key_capture(FALSE);
+        uia_focus_leave_hint_done(0);
         return;
     }
 
@@ -3864,6 +3886,7 @@ void hint_open(void)
         g_open = FALSE;
         discard_prescan();
         input_set_key_capture(FALSE);
+        uia_focus_leave_hint_done(0);
         return;
     }
 
@@ -3977,6 +4000,10 @@ void hint_close(void)
     reset_input();
     g_open = FALSE;
     input_set_key_capture(FALSE);
+    // alt_unfocus: closed without a click (Esc, the hotkey's toggle, a
+    // timeout): the field the hint hotkey was pressed in is left now.
+    if (!g_click_follows)
+        uia_focus_leave_hint_done(0);
 }
 
 BOOL hint_is_open(void)

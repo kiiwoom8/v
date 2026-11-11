@@ -166,6 +166,19 @@ for that short time only, so holding the key to type `jjjj` in a browser
 field needs a moment longer than before. It needs `bare_keys`;
 `hold_unfocus = 0` turns it off.
 
+**vim mouse's Alt keys leave a text field too** (`alt_unfocus`, default 1).
+In the same text fields, using one of vim mouse's Alt keys does what `Esc`
+does, so the keys without Alt work right after: `Alt + j`, `k`, `u`, `d`,
+`Alt + g g` / `Alt + Shift + g`, `Alt + =` / `-` and `Alt + 0 0` move the
+focus to the page as they act. The hint hotkey (`Alt + f`) leaves the field
+once the hints are done: when you have picked a label (and the app has had
+the click) or closed them with `Esc`. Until then the field keeps the focus,
+so a suggestion list or dropdown it opened stays up and its entries can be
+picked with the hints, and a field the hints clicked into keeps the focus
+(picking a text box's label to type there works as before). Text shortcuts
+(they type into the field), `Alt + h` / `l` (back and forward) and the
+pause, lock and quit hotkeys leave nothing. `alt_unfocus = 0` turns it off.
+
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
 keyboard** item also unlocks it with the mouse. Windows still handles
@@ -492,7 +505,9 @@ ones:
   text field moves the focus to the page: 1 = in web browsers, default;
   2 = also in apps built on web content; 0 = off), `hold_unfocus` (`j`
   `k` `u` `d` held this many ms in such a text field leave it and scroll,
-  0-2000, default 300; 0 = off), `zoom_speed` (percent a second the fingers
+  0-2000, default 300; 0 = off), `alt_unfocus` (1 = vim mouse's Alt keys
+  used in such a text field leave it like `Esc`, the hint hotkey once the
+  hints are done, default; 0 = off), `zoom_speed` (percent a second the fingers
   of an `Alt+=` / `Alt+-` pinch spread or close, 10-1000, default 150)
 - `hint_mode` (`elements` or `grid`: what the hint hotkey opens first),
   `key_grid` (the key that switches between the element labels and the grid
@@ -777,6 +792,10 @@ user's store.
 - **Holding `j` or `k` in a search box leaves it.** That is `hold_unfocus`
   (300 ms): type a held letter quicker, raise `hold_unfocus`, or set it to 0.
   With `log = 1`, `vim.log` says "hold: focus to the page" for each one.
+- **`Alt + j` or the hints take me out of a text field.** That is
+  `alt_unfocus`: click the field to type again, or set `alt_unfocus = 0`.
+  With `log = 1`, `vim.log` says "alt: focus to the page" or "hint: focus
+  to the page", or "the focus stays" and why.
 - **A text shortcut types nothing.** Its first letter may be an Alt key of vim
   mouse (`f h j k l u d g` by default); the editor warns about this when you
   save. Programs running as administrator cannot receive typed text either

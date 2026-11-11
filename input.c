@@ -1602,6 +1602,8 @@ static BOOL handle_locked(UINT vk, BOOL down, BOOL repeat)
     return TRUE;
 }
 
+static void alt_unfocus(BOOL hints);
+
 static void hint_hotkey_fire(void)
 {
     // hint_open adopts the early scan instead of starting a new one.
@@ -1653,6 +1655,8 @@ static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
     if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
+        if (mods & KMOD_ALT)
+            alt_unfocus(TRUE);
         hint_hotkey_fire();
         return TRUE;
     }
@@ -1914,6 +1918,23 @@ static void unfocus_key_down(UINT vk, UINT mods)
     uia_focus_leave_down();
 }
 
+// alt_unfocus: an Alt key of ours used with the focus perhaps in a text
+// field leaves it like Esc, so the keys without Alt work next. The hint
+// hotkey (hints TRUE) leaves once the hints are done (hint.c reports it,
+// and a field they clicked into keeps the focus); the other keys at once.
+// Never the text shortcuts (they type into the field), Alt + h / l (the
+// page goes anyway) or the pause, lock and quit hotkeys. The worker rules
+// out what is not a browser's text field.
+static void alt_unfocus(BOOL hints)
+{
+    if (!g_cfg.alt_unfocus || uia_focus_state() == FOCUS_OTHER)
+        return;
+    if (hints)
+        uia_focus_leave_hint();
+    else
+        uia_focus_leave_alt();
+}
+
 // hold_unfocus: j k u d (the bare scroll keys) held in a browser's text
 // field. The press types its letter as usual, so typing never waits; the
 // focus worker counts the hold. Held hold_unfocus ms with no other key, it
@@ -2158,11 +2179,14 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
             s_end_shift = FALSE;
             if (alt_action_down(vk, act, shift, end_tap, FALSE) ||
                 alt_center_down(vk, center_tap, FALSE)) {
+                if (act != ACT_BACK && act != ACT_FORWARD)
+                    alt_unfocus(FALSE);
                 s_alt_consumed = TRUE;
                 return TRUE;
             }
         }
         if (zoom_key_down(vk, mods, FALSE)) {
+            alt_unfocus(FALSE);
             s_end_tap = FALSE;
             s_alt_consumed = TRUE;
             return TRUE;
@@ -2230,8 +2254,10 @@ static BOOL handle_down(UINT vk)
     base = shift ? mods & ~KMOD_SHIFT : mods;
     // Alt (+ Shift) + = / -: the pinch zoom, before anything else takes
     // the key.
-    if (zoom_key_down(vk, mods, TRUE))
+    if (zoom_key_down(vk, mods, TRUE)) {
+        alt_unfocus(FALSE);
         return TRUE;
+    }
     // Outside text fields the Alt keys below work without Alt.
     bare = base == 0 && bare_key_ok(vk);
     if (bare && bare_hint_key(vk)) {
@@ -2242,10 +2268,15 @@ static BOOL handle_down(UINT vk)
     // Alt + letter reaches the app with Alt already down; the mask key keeps
     // the Alt release from opening its menu bar.
     if (base == KMOD_ALT || bare) {
-        if (alt_action_down(vk, act, shift, end_tap, !bare))
+        if (alt_action_down(vk, act, shift, end_tap, !bare)) {
+            if (!bare && act != ACT_BACK && act != ACT_FORWARD)
+                alt_unfocus(FALSE);
             return TRUE;
-        if (!bare && alt_center_down(vk, center_tap, TRUE))
+        }
+        if (!bare && alt_center_down(vk, center_tap, TRUE)) {
+            alt_unfocus(FALSE);
             return TRUE;
+        }
         if (!bare && shortcut_begin(vk)) {
             send_mask_key();
             mark_caps_used();
