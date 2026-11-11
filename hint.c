@@ -76,6 +76,9 @@
 // this long after the first.
 #define LOAD_LIMIT_MS     10000
 #define LOAD_GATHER_MS    40
+// A Chrome without a page window reports no page content (uia.c
+// tree_page_loading): while its page loads, scan again this often instead.
+#define LOAD_POLL_MS      250
 #ifndef IA2_EVENT_DOCUMENT_LOAD_COMPLETE
 #define IA2_EVENT_DOCUMENT_LOAD_COMPLETE 0x105
 #endif
@@ -257,6 +260,7 @@ static DWORD     g_load_t0;
 static BOOL      g_load_busy;        // the newest scan found that page busy
 static BOOL      g_load_relabel;     // labels went up while busy: make them afresh once it is in
 static BOOL      g_load_gather;      // TIMER_LOAD_ID runs for a burst of reports
+static BOOL      g_load_poll;        // no page window to report: TIMER_LOAD_ID polls
 static BOOL      g_load_missed;      // a report came while the first scan was out
 static BOOL      g_load_done;        // the load event came: one last rescan, then stop
 
@@ -2955,6 +2959,7 @@ static void load_unhook(void)
     g_load_root = NULL;
     g_load_gather = FALSE;
     g_load_done = FALSE;
+    g_load_poll = FALSE;
 }
 
 static void load_reset(void)
@@ -3033,6 +3038,9 @@ static void load_watch(void)
     page.best = NULL;
     page.area = 0;
     EnumChildWindows(root, page_wnd_proc, (LPARAM)&page);
+    // No page window: its content is never reported (load_event_proc
+    // filters on that window, and none comes from anywhere else); poll.
+    g_load_poll = page.best == NULL;
     GetWindowThreadProcessId(page.best ? page.best : root, &pid);
     if (!pid) return;
     g_load_hook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER,
@@ -3050,7 +3058,9 @@ static void load_watch(void)
                                        WINEVENT_SKIPOWNPROCESS);
     g_load_root = root;
     g_load_t0 = GetTickCount();
-    app_log(L"hint: page still loading; waiting for its content");
+    app_log(L"hint: page still loading; waiting for its content%ls",
+            g_load_poll ? L" (no page window: scanning again every 250 ms)"
+                        : L"");
 }
 
 // Every scan result that has the active window in says whether its page is
@@ -3070,9 +3080,14 @@ static void load_note(const ClickList *list)
         g_load_busy = busy;
         invalidate();       // the status bar's "Page loading"
     }
-    if (busy)
+    if (busy) {
         load_watch();
-    else if (g_load_hook && !g_load_relabel &&
+        // The next poll; a rescan's result comes back here while busy.
+        if (g_load_poll && g_load_root && !g_load_gather && g_hint_wnd) {
+            g_load_gather = TRUE;
+            SetTimer(g_hint_wnd, TIMER_LOAD_ID, LOAD_POLL_MS, NULL);
+        }
+    } else if (g_load_hook && !g_load_relabel &&
              GetTickCount() - g_load_t0 >= LOAD_LIMIT_MS)
         load_unhook();      // in and quiet: stop listening
 }
@@ -3088,10 +3103,14 @@ static void load_content_in(void)
         load_reset();
         return;
     }
-    app_log(L"hint: page content reported after %lu ms%ls%ls",
-            (unsigned long)(GetTickCount() - g_load_t0),
-            g_load_done ? L" (loaded)" : L"",
-            g_scanning ? L"; first scan still out" : L"");
+    if (!g_load_poll)
+        app_log(L"hint: page content reported after %lu ms%ls%ls",
+                (unsigned long)(GetTickCount() - g_load_t0),
+                g_load_done ? L" (loaded)" : L"",
+                g_scanning ? L"; first scan still out" : L"");
+    else if (g_cfg.log >= 2)
+        app_log(L"hint: page still loading after %lu ms; scanning again",
+                (unsigned long)(GetTickCount() - g_load_t0));
     if (g_scanning) {
         if (g_scan_retry && g_hint_wnd)
             SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);

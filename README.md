@@ -154,7 +154,7 @@ bar, the field's suggestion list), and the same press leaves the field.
 Nothing happens when another key comes before
 `Esc` is released, when `Esc` is held, while a menu is open, or when `Esc`
 itself moved the focus. It works in Chrome, Edge, Firefox, Brave, Vivaldi,
-Opera, Whale and other browsers by process name; `esc_unfocus = 2` also
+Opera, Whale, ego lite and other browsers by process name; `esc_unfocus = 2` also
 covers apps built on web content (Electron apps such as Slack, WebView2
 apps), whose editors often use `Esc` themselves, and `esc_unfocus = 0` turns
 it off. Native apps are never touched: their windows hand the focus
@@ -261,7 +261,9 @@ reused). A scan that finds nothing keeps trying for up to 3 s, then closes
 the hints. While a page in Chrome, Edge or an app built on them is still
 loading and shows nothing yet, the status bar says "Page loading", the
 hints wait up to 10 s for it instead of 3, and the browser's own report of
-the page's content starts a new search the moment it arrives. Until then
+the page's content starts a new search the moment it arrives (a Chrome that
+draws its pages without a page window of their own sends no such report;
+there the hints search again every 250 ms until the content is in). Until then
 only the browser's tabs and toolbar have labels, so if you have not typed a
 label key yet, every label is made afresh then and the page's links get
 short ones (`scan_loading`). A page that already shows its content is not

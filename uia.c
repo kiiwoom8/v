@@ -573,11 +573,15 @@ typedef struct {
     int cap;
     BOOL fg_done;               // uia_scan_monitor: foreground window merged
     BOOL page_busy;             // uia_scan_monitor: it is a Chromium page still loading
+                                // (a window's own result: scan_filter found an
+                                // empty page in a Chrome without a page window)
     int pending;                // uia_scan_monitor: windows not merged yet
     DetailText detail;          // log = 2: what the scan made of each element
 } ScanResult;
 
 static BOOL page_busy(HWND root);
+static BOOL tree_page_loading(IUIAutomation *automation, HWND root);
+static BOOL no_page_window(HWND root);
 
 typedef struct {
     HWND hwnd;
@@ -2625,6 +2629,32 @@ static void scan_filter(UiaEngine *engine, HWND hwnd, const RECT *zrects,
     out->items = cands;
     out->count = kept;
     out->cap = cand_cap;
+    // A Chrome without a page window, where page_busy cannot tell: nothing
+    // found in the page (the largest Document on the monitor, if the scan
+    // listed one) may be a page still loading; ask its Document. Pages with
+    // anything to label never pay for the walk.
+    out->page_busy = FALSE;
+    if (web && g_cfg.scan_loading && uia_chromium_window(hwnd)) {
+        BOOL in_page = FALSE;
+        RECT page_rc;
+
+        if (page >= 0) {
+            page_rc = documents[page];
+            for (i = 0; i < kept && !in_page; ++i)
+                in_page = PtInRect(&page_rc, cands[i].target.click);
+        }
+        if (!in_page && no_page_window(hwnd)) {
+            DWORD t0 = GetTickCount();
+
+            out->page_busy = tree_page_loading(engine->automation, hwnd);
+            if (detail)
+                detail_add(&out->detail, L"scan:   no page window and nothing "
+                           L"in the page: %ls (%lu ms)",
+                           out->page_busy ? L"page still loading"
+                                          : L"page in",
+                           (unsigned long)(GetTickCount() - t0));
+        }
+    }
 }
 
 // One FindAll under an element, as the scan cache asks for it: every element
@@ -4203,8 +4233,11 @@ static void uia_scan_monitor(UiaEngine *engine, HMONITOR mon,
             if (task->merged)
                 continue;
             task->merged = 1;
-            if (ti == fg_task)
+            if (ti == fg_task) {
                 result->fg_done = TRUE;
+                if (task->found.page_busy)
+                    result->page_busy = TRUE;
+            }
             result->pending = job->task_count - merged_count - 1;
 
             win = &ctx.items[task->win_index];
@@ -6359,6 +6392,146 @@ static BOOL CALLBACK page_window_proc(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
+// page_busy asks the page window, and a Chrome may have none: it draws the
+// page into its top-level window (seen 2026-11-12 with the user's field
+// trials; HISTORY.md phase 23). Its page Document is then in the window's
+// own tree, under the tab contents (MultiContentsView), in the shown tab's
+// pane (Chrome_WidgetWin_1, the others' rects are empty), under a Pane named
+// Chrome_RenderWidgetHostHWND that no window backs. While the page loads
+// that Document has an empty rect and no children (its busy state stays
+// off): measured 1.3 s on a page streamed slowly, 2.7 s before a slow first
+// byte. Such a Chrome reports no page content by WinEvent either, so
+// hint.c polls (load_watch). About 25 calls into Chrome, so only asked when
+// a scan found nothing in the page (tree_page_loading's caller).
+#define TREE_SIBLINGS_MAX 64
+
+static BOOL tree_class_is(IUIAutomationElement *el, const WCHAR *name)
+{
+    VARIANT v;
+    BOOL same = FALSE;
+
+    VariantInit(&v);
+    if (SUCCEEDED(el->lpVtbl->GetCachedPropertyValue(
+            el, UIA_ClassNamePropertyId, &v)) &&
+        v.vt == VT_BSTR && v.bstrVal)
+        same = wcscmp(v.bstrVal, name) == 0;
+    VariantClear(&v);
+    return same;
+}
+
+// The first child of parent whose class is name (and, with shown, whose rect
+// is not empty); NULL if none.
+static IUIAutomationElement *tree_child_of_class(
+    IUIAutomationTreeWalker *walker, IUIAutomationCacheRequest *cache,
+    IUIAutomationElement *parent, const WCHAR *name, BOOL shown)
+{
+    IUIAutomationElement *c = NULL, *next;
+    RECT rc;
+    int n;
+
+    if (FAILED(walker->lpVtbl->GetFirstChildElementBuildCache(
+            walker, parent, cache, &c)))
+        c = NULL;
+    for (n = 0; c && n < TREE_SIBLINGS_MAX; ++n) {
+        if (tree_class_is(c, name) &&
+            (!shown ||
+             (SUCCEEDED(c->lpVtbl->get_CachedBoundingRectangle(c, &rc)) &&
+              rc.right > rc.left && rc.bottom > rc.top)))
+            return c;
+        next = NULL;
+        if (FAILED(walker->lpVtbl->GetNextSiblingElementBuildCache(
+                walker, c, cache, &next)))
+            next = NULL;
+        c->lpVtbl->Release(c);
+        c = next;
+    }
+    if (c)
+        c->lpVtbl->Release(c);
+    return NULL;
+}
+
+// TRUE when root (a Chromium window without a page window) shows a page
+// whose Document is still empty. FALSE when it is in, or not found.
+static BOOL tree_page_loading(IUIAutomation *automation, HWND root)
+{
+    static const int props[] = {
+        UIA_ControlTypePropertyId, UIA_ClassNamePropertyId,
+        UIA_BoundingRectanglePropertyId
+    };
+    IUIAutomationCacheRequest *cache = NULL;
+    IUIAutomationTreeWalker *walker = NULL;
+    IUIAutomationCondition *by_class = NULL;
+    IUIAutomationElement *top = NULL, *area = NULL, *tab = NULL;
+    IUIAutomationElement *pane = NULL, *doc = NULL, *kid = NULL;
+    VARIANT v;
+    RECT rc;
+    BOOL loading = FALSE;
+    size_t i;
+
+    if (FAILED(automation->lpVtbl->CreateCacheRequest(automation, &cache)) ||
+        !cache)
+        return FALSE;
+    for (i = 0; i < sizeof(props) / sizeof(props[0]); ++i)
+        cache->lpVtbl->AddProperty(cache, props[i]);
+    VariantInit(&v);
+    v.vt = VT_BSTR;
+    v.bstrVal = SysAllocString(L"MultiContentsView");
+    if (!v.bstrVal ||
+        FAILED(automation->lpVtbl->CreatePropertyCondition(
+            automation, UIA_ClassNamePropertyId, v, &by_class)))
+        by_class = NULL;
+    VariantClear(&v);
+    if (!by_class ||
+        FAILED(automation->lpVtbl->get_RawViewWalker(automation, &walker)) ||
+        !walker ||
+        FAILED(automation->lpVtbl->ElementFromHandle(automation, root,
+                                                     &top)) || !top ||
+        FAILED(top->lpVtbl->FindFirstBuildCache(
+            top, UIA_TREESCOPE_DESCENDANTS, by_class, cache, &area)) ||
+        !area)
+        goto done;
+    tab = tree_child_of_class(walker, cache, area, L"Chrome_WidgetWin_1",
+                              TRUE);
+    if (tab)
+        pane = tree_child_of_class(walker, cache, tab,
+                                   L"Chrome_RenderWidgetHostHWND", FALSE);
+    if (pane &&
+        FAILED(walker->lpVtbl->GetFirstChildElementBuildCache(
+            walker, pane, cache, &doc)))
+        doc = NULL;
+    if (doc && cached_long_property(doc, UIA_ControlTypePropertyId) ==
+                   UIA_DocumentControlTypeId) {
+        if (FAILED(walker->lpVtbl->GetFirstChildElementBuildCache(
+                walker, doc, cache, &kid)))
+            kid = NULL;
+        loading = !kid ||
+                  FAILED(doc->lpVtbl->get_CachedBoundingRectangle(doc, &rc)) ||
+                  rc.right <= rc.left || rc.bottom <= rc.top;
+    }
+done:
+    if (kid) kid->lpVtbl->Release(kid);
+    if (doc) doc->lpVtbl->Release(doc);
+    if (pane) pane->lpVtbl->Release(pane);
+    if (tab) tab->lpVtbl->Release(tab);
+    if (area) area->lpVtbl->Release(area);
+    if (top) top->lpVtbl->Release(top);
+    if (by_class) by_class->lpVtbl->Release(by_class);
+    if (walker) walker->lpVtbl->Release(walker);
+    cache->lpVtbl->Release(cache);
+    return loading;
+}
+
+// A Chromium window with no visible page window (Chrome_RenderWidgetHostHWND).
+static BOOL no_page_window(HWND root)
+{
+    PageWindowSearch s;
+
+    s.best = NULL;
+    s.area = 0;
+    EnumChildWindows(root, page_window_proc, (LPARAM)&s);
+    return s.best == NULL;
+}
+
 // A Chromium page still loading. Measured on 2026-11-08
 // (tools/load_probe.c): from the navigation until its first content reaches
 // the accessibility tree (1.5 s on a page streamed slowly), the document
@@ -6569,7 +6742,7 @@ static BOOL browser_process(DWORD pid)
         L"chrome.exe", L"msedge.exe", L"firefox.exe", L"brave.exe",
         L"vivaldi.exe", L"opera.exe", L"whale.exe", L"chromium.exe",
         L"arc.exe", L"thorium.exe", L"librewolf.exe", L"waterfox.exe",
-        L"floorp.exe", L"zen.exe", NULL
+        L"floorp.exe", L"zen.exe", L"ego.exe", NULL
     };
     static QueryImageNameFn query;
     static DWORD last_pid;
