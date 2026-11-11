@@ -43,6 +43,9 @@
 #define SCAN_SPLIT_MAX_CHILDREN 16
 #define SCAN_PATH_MAX 8
 
+#ifndef UIA_ClassNamePropertyId
+#define UIA_ClassNamePropertyId 30012
+#endif
 #ifndef UIA_BoundingRectanglePropertyId
 #define UIA_BoundingRectanglePropertyId 30001
 #endif
@@ -289,7 +292,11 @@ typedef struct IUIAutomationElementVtbl {
     void *GetRuntimeId;
     void *FindFirst;
     void *FindAll;
-    void *FindFirstBuildCache;
+    // esc_unfocus: a page Document without a page window.
+    HRESULT (STDMETHODCALLTYPE *FindFirstBuildCache)(IUIAutomationElement *This,
+        int scope, IUIAutomationCondition *condition,
+        IUIAutomationCacheRequest *cacheRequest,
+        IUIAutomationElement **found);
     HRESULT (STDMETHODCALLTYPE *FindAllBuildCache)(IUIAutomationElement *This,
         int scope, IUIAutomationCondition *condition,
         IUIAutomationCacheRequest *cacheRequest,
@@ -6664,8 +6671,82 @@ static IUIAutomationElement *leave_document_above(
     return NULL;
 }
 
+// Without a page window: Chrome may draw the page into its top-level window
+// and keep only a hidden window for its toolbar (seen 2026-11-12 in a Chrome
+// started normally; one started with --force-renderer-accessibility still
+// has the page window). The page Document is then found in the window's own
+// tree, by two searches UI Automation runs inside Chrome (a walk element by
+// element took 400 to 700 ms there): the tab contents (MultiContentsView,
+// which holds neither the toolbar, where the address bar's search icon is a
+// Document, nor the address bar's suggestion list, a Document too), then
+// the first Document on screen in it (the other tabs' are offscreen).
+// Without MultiContentsView (another Chrome) the second search runs from the
+// window, focusable Documents only (not the search icon).
+static IUIAutomationElement *leave_tree_document(
+    IUIAutomation *automation, IUIAutomationCacheRequest *cache, HWND root)
+{
+    IUIAutomationElement *top = NULL, *area = NULL, *doc = NULL;
+    IUIAutomationCondition *conds[3] = { NULL, NULL, NULL };
+    IUIAutomationCondition *by_class = NULL, *on_screen = NULL;
+    VARIANT v;
+    int n = 2, i;
+
+    if (FAILED(automation->lpVtbl->ElementFromHandle(automation, root,
+                                                     &top)) || !top)
+        return NULL;
+    VariantInit(&v);
+    v.vt = VT_BSTR;
+    v.bstrVal = SysAllocString(L"MultiContentsView");
+    if (v.bstrVal &&
+        SUCCEEDED(automation->lpVtbl->CreatePropertyCondition(
+            automation, UIA_ClassNamePropertyId, v, &by_class)) && by_class &&
+        FAILED(top->lpVtbl->FindFirstBuildCache(
+            top, UIA_TREESCOPE_DESCENDANTS, by_class, cache, &area)))
+        area = NULL;
+    VariantClear(&v);
+    conds[0] = property_condition(automation, UIA_ControlTypePropertyId,
+                                  VT_I4, UIA_DocumentControlTypeId);
+    conds[1] = property_condition(automation, UIA_IsOffscreenPropertyId,
+                                  VT_BOOL, FALSE);
+    if (!area)
+        conds[n++] = property_condition(automation,
+                                        UIA_IsKeyboardFocusablePropertyId,
+                                        VT_BOOL, TRUE);
+    for (i = 0; i < n; ++i)
+        if (!conds[i])
+            goto done;
+    if (FAILED(automation->lpVtbl->CreateAndConditionFromNativeArray(
+            automation, conds, n, &on_screen)) || !on_screen)
+        goto done;
+    if (FAILED((area ? area : top)->lpVtbl->FindFirstBuildCache(
+            area ? area : top, UIA_TREESCOPE_DESCENDANTS, on_screen, cache,
+            &doc)))
+        doc = NULL;
+    if (doc && cached_control_type(doc) != UIA_DocumentControlTypeId) {
+        doc->lpVtbl->Release(doc);
+        doc = NULL;
+    }
+    if (g_cfg.log >= 2)
+        app_log(L"leave: page Document from the window's tree (%ls): %ls",
+                area ? L"in MultiContentsView" : L"no MultiContentsView",
+                doc ? L"found" : L"none");
+done:
+    for (i = 0; i < n; ++i)
+        if (conds[i])
+            conds[i]->lpVtbl->Release(conds[i]);
+    if (on_screen)
+        on_screen->lpVtbl->Release(on_screen);
+    if (by_class)
+        by_class->lpVtbl->Release(by_class);
+    if (area)
+        area->lpVtbl->Release(area);
+    top->lpVtbl->Release(top);
+    return doc;
+}
+
 // A Chromium window's page Document, for a field outside the page (the
-// address bar): the child of the Pane its largest page window answers with.
+// address bar): the child of the Pane its largest page window answers with,
+// or one found in its tree where it has no page window.
 static IUIAutomationElement *leave_page_document(
     IUIAutomation *automation, IUIAutomationCacheRequest *cache, HWND root)
 {
@@ -6677,8 +6758,9 @@ static IUIAutomationElement *leave_page_document(
     s.best = NULL;
     s.area = 0;
     EnumChildWindows(root, page_window_proc, (LPARAM)&s);
-    if (!s.best ||
-        FAILED(automation->lpVtbl->ElementFromHandle(automation, s.best,
+    if (!s.best)
+        return leave_tree_document(automation, cache, root);
+    if (FAILED(automation->lpVtbl->ElementFromHandle(automation, s.best,
                                                      &pane)) || !pane)
         return NULL;
     if (FAILED(automation->lpVtbl->get_RawViewWalker(automation, &walker)) ||
