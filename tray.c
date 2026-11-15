@@ -888,8 +888,6 @@ static void build_help_rows(void)
         buf[127] = L'\0';
         help_add_row(L"Touchpad", buf);
     }
-    if (g_cfg.mouse_exit_px > 0)
-        help_add_row(L"Real mouse move", L"Leaves mouse mode (not while CapsLock is held or dragging)");
     if (g_cfg.key_center && g_cfg.center_tap_ms > 0) {
         WCHAR k[16];
         format_key(g_cfg.key_center, k, 16);

@@ -563,7 +563,6 @@ void config_set_defaults(Config *c)
     c->capslock_off = 1;
     c->touchpad_off = 1;
     c->touchpad_back_ms = 10000;
-    c->mouse_exit_px = 10;
     c->indicator = INDICATOR_CURSOR;
     c->hide_pointer = 2000;
     c->log = 0;
@@ -844,8 +843,6 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_bool(&c->touchpad_off, line, key, val);
     else if (_wcsicmp(key, L"touchpad_back_ms") == 0)
         apply_int_range(&c->touchpad_back_ms, line, key, val, 1000, 600000);
-    else if (_wcsicmp(key, L"mouse_exit_px") == 0)
-        apply_int_range(&c->mouse_exit_px, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"hide_pointer") == 0)
         apply_int_range(&c->hide_pointer, line, key, val, 0, 60000);
     else if (_wcsicmp(key, L"indicator") == 0) {
@@ -1554,11 +1551,6 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; With touchpad_off: milliseconds from the last scroll key to the\r\n");
     appendf(buf, cch, L"; touchpad coming back (1000 to 600000).\r\n");
     appendf(buf, cch, L"touchpad_back_ms = %d\r\n", d.touchpad_back_ms);
-    appendf(buf, cch, L"; Moving the pointer this many pixels with the mouse (or the touchpad,\r\n");
-    appendf(buf, cch, L"; where mouse mode leaves it on) ends mouse mode (not while CapsLock is\r\n");
-    appendf(buf, cch, L"; held or a keyboard drag holds the button). 0 = only the keys end it\r\n");
-    appendf(buf, cch, L"; (0 to 1000).\r\n");
-    appendf(buf, cch, L"mouse_exit_px = %d\r\n", d.mouse_exit_px);
     appendf(buf, cch, L"; Where the MOUSE/DRAG indicator is shown: cursor, corner or off.\r\n");
     switch (d.indicator) {
     case INDICATOR_CORNER:

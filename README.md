@@ -243,7 +243,6 @@ a pass-through modifier.
 | `f` | Click hints (mouse mode stays on afterwards) |
 | `/` or `?` | Help window |
 | `i`, `Esc`, `CapsLock` tap | Leave mouse mode |
-| (moving the pointer with a mouse) | Leaves mouse mode once it has moved 10 px (`mouse_exit_px`), not while `CapsLock` is held or the left button is held by `v` / `a`. The touchpad is off in mouse mode (`touchpad_off`); one left on counts like a mouse |
 
 ### Hint mode (click hints)
 
@@ -491,9 +490,6 @@ ones:
   0 = left alone)
 - `touchpad_back_ms` (how long after the last scroll key the touchpad comes
   back on, 1000-600000, default 10000)
-- `mouse_exit_px` (moving the pointer this many pixels with a mouse, or a
-  touchpad left on, ends mouse mode, not while `CapsLock` is held or in a
-  keyboard drag; 0-1000, default 10; 0 = only the keys end it)
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
@@ -837,10 +833,6 @@ user's store.
   laptop's touchpad key or Settings, Bluetooth & devices, Touchpad work too.
   With an administrator window in front, Windows drops the shortcut;
   `vim.log` says so with `log = 1`, and the next key tries again.
-- **Mouse mode turns itself off.** Moving the pointer 10 px with a mouse
-  (or a touchpad left on) ends it (`mouse_exit_px`), even a nudged mouse.
-  Hold `CapsLock` to keep it on while you use both, raise `mouse_exit_px`,
-  or set it to 0.
 - **The touchpad works after waking from sleep.** vim mouse switches it on
   and off again two seconds after the wake, or after you unlock if the lock
   screen came up first; `vim.log` has a "touchpad: after a wake" line. That

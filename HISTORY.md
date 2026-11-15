@@ -1120,10 +1120,15 @@ Invariants stated in `common.h` and enforced by history:
   not `touchpad_back_ms` later: the move keys are the whole of mouse mode,
   and the scroll-key window is still dropped on entering it.
   `touchpad_release` after a hint pick in mouse mode (`f`) changes nothing.
-  `mouse_exit_px` stays: with the touchpad off it is a mouse's move that
-  ends mouse mode (or the touchpad's, with `touchpad_off = 0` or a touchpad
-  the user had off and on by hand). Each CapsLock tap now shows Windows'
-  touchpad icon twice (off, then on at the exit).
+  Each CapsLock tap now shows Windows' touchpad icon twice (off, then on
+  at the exit).
+- `mouse_exit_px` removed again ("you determine it"): it came from the
+  request taken back, with the touchpad off in mouse mode only a USB mouse
+  could still trigger it, which nobody asked for, and it put a guess into
+  the mouse hook (a move of ours read late passing for the real mouse)
+  that could end mouse mode under `h j k l`. `mouse_proc`, `own_move` and
+  the input thread's loop are as before phase 25; only the keys end mouse
+  mode.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2124,7 +2129,6 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | `Alt+P P` pauses and resumes everything (`pause_tap_ms = 0` makes it one press; `pause_hotkey = none` restores) | phase 10 | The pause hotkey was unbound; pausing only from the tray menu |
 | An element label drops its typed characters and shrinks to what is still to type | phase 10 | The whole label stayed, the typed prefix coloured `match_fg` (the grid still does that) |
 | The touchpad is off only in mouse mode and while the scroll keys steer and `touchpad_back_ms` (10 s) after the last of them, then back to what it was; one already off stays off; leaving mouse mode and a hint pick give it back at once (`touchpad_off = 0` leaves it alone) | phases 24, 25 (was phase 13: off the whole time vim mouse ran, which got in the way of using the touchpad with the keyboard) | The touchpad was left alone, then off all the time |
-| Moving the pointer `mouse_exit_px` (10) with a mouse (or a touchpad left on) ends mouse mode, not while `CapsLock` is held or in a keyboard drag (`mouse_exit_px = 0` restores) | phase 25 | Only the keys ended mouse mode |
 | The touchpad is on while the keyboard is locked (with `touchpad_off`) | phase 18 | The touchpad stayed off under the lock, so only a mouse worked |
 | In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
 | A held move key pauses the pointer `magnet` ms (200) where the cursor turns into the hand (`magnet = 0` restores) | phase 16 | The pointer passed links at full speed |

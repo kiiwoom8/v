@@ -187,7 +187,6 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_CENTER      (WM_APP + 28)  // key_center twice: pointer to the middle
 #define WM_INPUT_FOCUS_ANSWER (WM_APP + 29) // uia_focus_notify: a focus answer arrived
 #define WM_INPUT_TOUCH_EDGE  (WM_APP + 30)  // mouse_proc: a touch tap ended at wParam, lParam
-#define WM_INPUT_MOUSE_EXIT  (WM_APP + 31)  // mouse_proc: the real pointer moved mouse_exit_px in mouse mode
 
 // Touch-made mouse messages carry MI_WP_SIGNATURE with this bit set (pen
 // ones without it).
@@ -785,11 +784,8 @@ static void apply_paused(BOOL paused)
 
 // Every pointer move of ours through SetCursorPos goes through here, so the
 // mouse hook can tell it from the real mouse (see s_own_x).
-static volatile LONG s_own_tick = 0;  // when own_move last ran (mouse_exit_px)
-
 static void own_move(POINT pt)
 {
-    InterlockedExchange(&s_own_tick, (LONG)GetTickCount());
     InterlockedExchange(&s_own_x, pt.x);
     InterlockedExchange(&s_own_y, pt.y);
     SetCursorPos(pt.x, pt.y);
@@ -2837,46 +2833,6 @@ static POINT s_rest_pt;
 static BOOL  s_rest_ok = FALSE;
 static POINT s_touch_down_pt;
 static BOOL  s_touch_down_ok = FALSE;
-// mouse_exit_px: where the real pointer's moves started in mouse mode (since
-// the last move of ours, which resets it). Input thread only.
-static POINT s_exit_anchor;
-static BOOL  s_exit_anchor_ok = FALSE;
-static BOOL  s_exit_posted = FALSE;
-
-// mouse_exit_px: the real mouse or the touchpad moved the pointer that far
-// in mouse mode (from the first such move after one of ours): mouse mode
-// ends, on the input thread. Not while CapsLock is held (mouse mode only
-// while held) or a keyboard drag holds the button, and not while the move
-// keys drive the pointer or MOUSE_EXIT_QUIET_MS after a move of ours: a
-// move of ours read late (another one already changed s_own_x) would look
-// like the real mouse.
-#define MOUSE_EXIT_QUIET_MS 200
-static void mouse_exit_move(POINT pt)
-{
-    LONG dx, dy, px = g_cfg.mouse_exit_px;
-    DWORD since_own = GetTickCount() -
-                      (DWORD)InterlockedCompareExchange(&s_own_tick, 0, 0);
-
-    if (px <= 0 || !flag_get(&s_mouse_mode) || s_caps_held ||
-        flag_get(&s_left_held) || flag_get(&s_move_flags) ||
-        since_own < MOUSE_EXIT_QUIET_MS) {
-        s_exit_anchor_ok = FALSE;
-        s_exit_posted = FALSE;
-        return;
-    }
-    if (!s_exit_anchor_ok) {
-        s_exit_anchor = pt;
-        s_exit_anchor_ok = TRUE;
-        s_exit_posted = FALSE;
-        return;
-    }
-    dx = pt.x - s_exit_anchor.x;
-    dy = pt.y - s_exit_anchor.y;
-    if (s_exit_posted || dx * dx + dy * dy < px * px)
-        return;
-    s_exit_posted = TRUE;
-    PostThreadMessageW(s_input_tid, WM_INPUT_MOUSE_EXIT, 0, 0);
-}
 
 // The real mouse shows the pointer again. Only the real one: moves and
 // clicks of ours carry LLMHF_INJECTED (SendInput), and a move of ours
@@ -2914,10 +2870,6 @@ static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
             InterlockedExchange(&s_ptr_phys_tick, (LONG)m->time);
             if (flag_get(&s_ptr_want))
                 ptr_schedule();
-            if (wParam == WM_MOUSEMOVE)
-                mouse_exit_move(m->pt);
-        } else if (wParam == WM_MOUSEMOVE) {
-            s_exit_anchor_ok = FALSE;   // ours: the real moves start again
         }
     }
     return CallNextHookEx(NULL, nCode, wParam, lParam);
@@ -3172,22 +3124,6 @@ static void tap_answer(void)
         scroll_press(ACT_FAST_UP, g_cfg.alt_scroll_auto, TRUE);
     else
         center_pointer();
-}
-
-// WM_INPUT_MOUSE_EXIT: leave mouse mode for the real pointer, which stays
-// shown (leave_mouse_mode hides it as if back to the keyboard).
-static void mouse_exit_leave(void)
-{
-    s_exit_anchor_ok = FALSE;
-    s_exit_posted = FALSE;
-    if (!flag_get(&s_mouse_mode) || s_caps_held || flag_get(&s_left_held))
-        return;
-    leave_mouse_mode();
-    InterlockedExchange(&s_ptr_phys_tick, (LONG)GetTickCount());
-    ptr_schedule();
-    if (g_cfg.log)
-        app_log(L"mouse mode: left, the pointer moved %d px by the mouse "
-                L"or touchpad", g_cfg.mouse_exit_px);
 }
 
 // The keyboard is in use: the real mouse's last event counts as long ago,
@@ -4842,10 +4778,6 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
             }
             if (msg.message == WM_INPUT_CENTER) {
                 center_pointer();
-                continue;
-            }
-            if (msg.message == WM_INPUT_MOUSE_EXIT) {
-                mouse_exit_leave();
                 continue;
             }
             if (msg.message == WM_INPUT_TOUCH_EDGE) {

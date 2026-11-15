@@ -117,9 +117,6 @@ typedef struct {
                                // (Ctrl+Win+F24, the Settings toggle); default 1. 0 = left alone.
     int    touchpad_back_ms;   // with touchpad_off: how long after the last scroll key the
                                // touchpad comes back; default 10000, 1000 to 600000.
-    int    mouse_exit_px;      // the real mouse (or a touchpad left on) moving the pointer this far (px)
-                               // ends mouse mode (not while CapsLock is held or in a keyboard
-                               // drag); default 10, 0 = never, up to 1000.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    hide_pointer;       // outside mouse mode the pointer is hidden (every system
                                // cursor is swapped for a blank one, session-wide, and put
