@@ -1332,6 +1332,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 137 | `a355d0a` | 11-15 | 25 | `touchpad.c` ends the off window in mouse mode (`input_mouse_mode_active`) and on `touchpad_release` (`hint.c` `act_at`); `input.c` `touchpad_note_key` skips mouse mode and `move_press`; `mouse_proc` real moves go to `mouse_exit_move` (`s_exit_anchor`, `mouse_exit_px`, quiet while move keys are held or `MOUSE_EXIT_QUIET_MS` after `own_move`), `WM_INPUT_MOUSE_EXIT` -> `mouse_exit_leave` | "enable touchpad when caps lock is on ... disable the caps lock when move mouse using touchpad"; "back to default of touchpad after using click elements" |
 | 138 | `80bd404` | 11-15 | 25 | `touchpad.c` `mouse_mode_off`: the goal is off for the whole of mouse mode (and the wake re-sync counts it), back at once when it ends | "my mistake. disable touchpad while using caps lock" |
 | 139 | `35de9d6` | 11-15 | 25 | `mouse_exit_px` removed: `mouse_exit_move`, `mouse_exit_leave`, `WM_INPUT_MOUSE_EXIT` and `s_own_tick` gone from `input.c`, the setting from `config.c`, `tray.c` and the README | "you determine it" |
+| 140 | `6bd7f73` | 11-15 | 26 | Phases 24 and 25 undone (code and README back to `f623131`); `touchpad_hotkey` (Alt+T): `handle_hotkeys` posts `WM_APP_TOUCHPAD_TOGGLE`, `touchpad_toggle` flips `s_flip`, `want_off` = `touchpad_off` XOR it (dropped when a reload changes `touchpad_off`) | "return to the first. disable touchpad entirely while vim is working. enable/disable using alt + t" |
 
 ## 5. Lessons learned: rules not to break
 
