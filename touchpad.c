@@ -1,5 +1,5 @@
-// touchpad.c - the touchpad is off while vim mouse's scroll keys steer
-// (touchpad_off).
+// touchpad.c - the touchpad is off in mouse mode and while vim mouse's
+// scroll keys steer (touchpad_off).
 //
 // Main/UI thread only. A scroll key outside mouse mode (d u j k, h l
 // sideways, g g / Shift + g, Alt scrolling) switches the precision touchpad
@@ -10,10 +10,11 @@
 // touchpad goes back to what it was: on if it was on, and a touchpad that
 // was already off when the keys came is left off (s_ours stays FALSE). So
 // the touchpad works with the keyboard at any other time. Mouse mode
-// (CapsLock), where the touchpad may join the move keys and its move ends
-// mouse mode (mouse_exit_px, input.c), a hint picked (touchpad_release from
-// hint.c), pausing, locking the keyboard (lock_hotkey), quitting or turning
-// touchpad_off to 0 give it back at once.
+// (CapsLock) keeps it off the whole time it is on, for the same palm, and
+// leaving mouse mode gives it back at once (the scroll-key window is
+// dropped on entering it). A hint picked outside mouse mode
+// (touchpad_release from hint.c), pausing, locking the keyboard
+// (lock_hotkey), quitting or turning touchpad_off to 0 give it back at once.
 //
 // Reading the state: SystemParametersInfo(SPI_GETTOUCHPADPARAMETERS)
 // (Windows 11 24H2 and later). Writing it: SPI_SETTOUCHPADPARAMETERS changes
@@ -345,6 +346,13 @@ static void stop_back_timer(void)
     }
 }
 
+// Mouse mode with touchpad_off, not paused or locked: off for as long as it lasts.
+static BOOL mouse_mode_off(void)
+{
+    return g_cfg.touchpad_off && input_mouse_mode_active() &&
+           !input_is_paused() && !input_is_locked();
+}
+
 void touchpad_update(void)
 {
     int goal;
@@ -356,7 +364,7 @@ void touchpad_update(void)
         s_active = FALSE;
         stop_back_timer();
     }
-    if (s_active)
+    if (s_active || mouse_mode_off())
         goal = GOAL_OFF;
     else
         goal = (s_ours || (s_busy && s_goal == GOAL_OFF)) ? GOAL_ON : GOAL_NONE;
@@ -470,8 +478,9 @@ static void CALLBACK wake_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tic
         KillTimer(NULL, s_wake_timer);
         s_wake_timer = 0;
     }
-    // Only while it is off for the keys and was ours to turn off.
-    if (!g_cfg.touchpad_off || !s_active || s_goal != GOAL_OFF || !s_ours ||
+    // Only while it is off for the keys or mouse mode and was ours to turn off.
+    if (!g_cfg.touchpad_off || !(s_active || mouse_mode_off()) ||
+        s_goal != GOAL_OFF || !s_ours ||
         s_busy || input_is_paused() || input_is_locked())
         return;
     if (!desktop_is_ours()) {

@@ -883,13 +883,13 @@ static void build_help_rows(void)
     if (g_cfg.hide_pointer > 0)
         help_add_row(L"Pointer", L"Hidden outside mouse mode; the real mouse shows it");
     if (g_cfg.touchpad_off) {
-        _snwprintf(buf, 127, L"Off while the scroll keys steer; back on %d s after the last, "
-                   L"in mouse mode or after a hint", (g_cfg.touchpad_back_ms + 500) / 1000);
+        _snwprintf(buf, 127, L"Off in mouse mode and after scroll keys; back on %d s after the last "
+                   L"or after a hint", (g_cfg.touchpad_back_ms + 500) / 1000);
         buf[127] = L'\0';
         help_add_row(L"Touchpad", buf);
     }
     if (g_cfg.mouse_exit_px > 0)
-        help_add_row(L"Mouse / touchpad move", L"Leaves mouse mode (not while CapsLock is held or dragging)");
+        help_add_row(L"Real mouse move", L"Leaves mouse mode (not while CapsLock is held or dragging)");
     if (g_cfg.key_center && g_cfg.center_tap_ms > 0) {
         WCHAR k[16];
         format_key(g_cfg.key_center, k, 16);

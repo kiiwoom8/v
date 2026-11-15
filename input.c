@@ -1141,8 +1141,8 @@ static int binding_action(UINT vk)
 }
 
 // A scroll key went down outside mouse mode: the touchpad goes off for a
-// while (touchpad.c). Mouse mode keeps it on (the touchpad may join the
-// keys there). Called from the hook, so only a post, at most every
+// while (touchpad.c). Mouse mode keeps it off by itself (touchpad_update).
+// Called from the hook, so only a post, at most every
 // TOUCHPAD_POST_MS; a held key is seen through input_keys_steering.
 #define TOUCHPAD_POST_MS 250
 static DWORD s_touchpad_post_tick = 0;

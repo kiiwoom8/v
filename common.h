@@ -110,14 +110,14 @@ typedef struct {
                                // (not while paused): turned off at start and whenever it
                                // comes on (Shift+CapsLock, an admin window, the lock
                                // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
-    int    touchpad_off;       // 1 = the precision touchpad is switched off by vim mouse's
-                               // scroll keys outside mouse mode (Alt scrolling too) and back on
-                               // touchpad_back_ms after the last one, or at once in mouse mode,
+    int    touchpad_off;       // 1 = the precision touchpad is switched off in mouse mode and
+                               // by vim mouse's scroll keys (Alt scrolling too); back on when
+                               // mouse mode ends, touchpad_back_ms after the last scroll key,
                                // after a hint pick, paused, locked or quit; only if it was on
                                // (Ctrl+Win+F24, the Settings toggle); default 1. 0 = left alone.
     int    touchpad_back_ms;   // with touchpad_off: how long after the last scroll key the
                                // touchpad comes back; default 10000, 1000 to 600000.
-    int    mouse_exit_px;      // the real mouse or touchpad moving the pointer this far (px)
+    int    mouse_exit_px;      // the real mouse (or a touchpad left on) moving the pointer this far (px)
                                // ends mouse mode (not while CapsLock is held or in a keyboard
                                // drag); default 10, 0 = never, up to 1000.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR

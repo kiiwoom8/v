@@ -1544,19 +1544,20 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Shift+CapsLock, an administrator window or the lock screen.\r\n");
     appendf(buf, cch, L"; 0 = Shift+CapsLock turns the real CapsLock on and off.\r\n");
     appendf(buf, cch, L"capslock_off = %d\r\n", d.capslock_off ? 1 : 0);
-    appendf(buf, cch, L"; 1 = vim mouse's scroll keys outside mouse mode (Alt scrolling too) turn\r\n");
-    appendf(buf, cch, L"; the touchpad off, so a palm on it does not move the pointer, and it\r\n");
-    appendf(buf, cch, L"; comes back on touchpad_back_ms after the last of them, or at once in\r\n");
-    appendf(buf, cch, L"; mouse mode, after a hint is picked, when paused, locked or quit. A\r\n");
+    appendf(buf, cch, L"; 1 = the touchpad is off in mouse mode and after vim mouse's scroll keys\r\n");
+    appendf(buf, cch, L"; (Alt scrolling too), so a palm on it does not move the pointer the keys\r\n");
+    appendf(buf, cch, L"; aim with: back on when mouse mode ends, touchpad_back_ms after the last\r\n");
+    appendf(buf, cch, L"; scroll key, after a hint is picked, when paused, locked or quit. A\r\n");
     appendf(buf, cch, L"; touchpad that was off already is left off (a precision touchpad,\r\n");
     appendf(buf, cch, L"; Windows 11 24H2 or later). 0 = vim mouse leaves it alone.\r\n");
     appendf(buf, cch, L"touchpad_off = %d\r\n", d.touchpad_off ? 1 : 0);
     appendf(buf, cch, L"; With touchpad_off: milliseconds from the last scroll key to the\r\n");
     appendf(buf, cch, L"; touchpad coming back (1000 to 600000).\r\n");
     appendf(buf, cch, L"touchpad_back_ms = %d\r\n", d.touchpad_back_ms);
-    appendf(buf, cch, L"; Moving the pointer this many pixels with the mouse or touchpad ends\r\n");
-    appendf(buf, cch, L"; mouse mode (not while CapsLock is held or a keyboard drag holds the\r\n");
-    appendf(buf, cch, L"; button). 0 = only the keys end it (0 to 1000).\r\n");
+    appendf(buf, cch, L"; Moving the pointer this many pixels with the mouse (or the touchpad,\r\n");
+    appendf(buf, cch, L"; where mouse mode leaves it on) ends mouse mode (not while CapsLock is\r\n");
+    appendf(buf, cch, L"; held or a keyboard drag holds the button). 0 = only the keys end it\r\n");
+    appendf(buf, cch, L"; (0 to 1000).\r\n");
     appendf(buf, cch, L"mouse_exit_px = %d\r\n", d.mouse_exit_px);
     appendf(buf, cch, L"; Where the MOUSE/DRAG indicator is shown: cursor, corner or off.\r\n");
     switch (d.indicator) {
