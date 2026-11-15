@@ -71,7 +71,7 @@
 #define WM_APP_FLUSH_DONE       (WM_APP + 16) // wParam = the hit test reached the page, lParam = seq of the
                                               // uia_flush request; -> hint_flush_done
 #define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
-#define WM_APP_TOUCHPAD_KEY     (WM_APP + 18) // a scroll or pointer-move key went down (at most every
+#define WM_APP_TOUCHPAD_KEY     (WM_APP + 18) // a scroll key went down outside mouse mode (at most every
                                               // 250 ms); -> touchpad_key
 
 // ---------------------------------------------------------------------------
@@ -111,12 +111,15 @@ typedef struct {
                                // comes on (Shift+CapsLock, an admin window, the lock
                                // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
     int    touchpad_off;       // 1 = the precision touchpad is switched off by vim mouse's
-                               // scroll and pointer-move keys (Alt scrolling too) and back on
-                               // touchpad_back_ms after the last one, or when paused, locked
-                               // or quit; only if it was on (Ctrl+Win+F24, the Settings
-                               // toggle); default 1. 0 = left alone.
-    int    touchpad_back_ms;   // with touchpad_off: how long after the last scroll or move key
-                               // the touchpad comes back; default 10000, 1000 to 600000.
+                               // scroll keys outside mouse mode (Alt scrolling too) and back on
+                               // touchpad_back_ms after the last one, or at once in mouse mode,
+                               // after a hint pick, paused, locked or quit; only if it was on
+                               // (Ctrl+Win+F24, the Settings toggle); default 1. 0 = left alone.
+    int    touchpad_back_ms;   // with touchpad_off: how long after the last scroll key the
+                               // touchpad comes back; default 10000, 1000 to 600000.
+    int    mouse_exit_px;      // the real mouse or touchpad moving the pointer this far (px)
+                               // ends mouse mode (not while CapsLock is held or in a keyboard
+                               // drag); default 10, 0 = never, up to 1000.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    hide_pointer;       // outside mouse mode the pointer is hidden (every system
                                // cursor is swapped for a blank one, session-wide, and put
@@ -569,6 +572,7 @@ void help_toggle(void);
 
 void touchpad_update(void);             // after start, pause / resume and reload: back on if ours
 void touchpad_key(void);                // WM_APP_TOUCHPAD_KEY: off now, back touchpad_back_ms later
+void touchpad_release(void);            // a hint picked: back to what it was now, not touchpad_back_ms later
 void touchpad_stop(void);               // at quit: back on if we turned it off (may wait 2 s)
 void touchpad_wake(void);               // WM_APP_TOUCHPAD_WAKE: after a wake, on and off again (2 s later)
 

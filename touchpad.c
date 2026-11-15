@@ -1,16 +1,19 @@
-// touchpad.c - the touchpad is off while vim mouse's keys steer (touchpad_off).
+// touchpad.c - the touchpad is off while vim mouse's scroll keys steer
+// (touchpad_off).
 //
-// Main/UI thread only. A scroll key (d u j k, h l sideways, g g / Shift + g,
-// Alt scrolling) or a pointer-move key (mouse mode) switches the precision
-// touchpad off, so a palm resting on it does not move the pointer the keys
-// are aiming with (scrolls go to the window under it). input.c posts
+// Main/UI thread only. A scroll key outside mouse mode (d u j k, h l
+// sideways, g g / Shift + g, Alt scrolling) switches the precision touchpad
+// off, so a palm resting on it does not move the pointer the keys are aiming
+// with (scrolls go to the window under it). input.c posts
 // WM_APP_TOUCHPAD_KEY at each press (at most every 250 ms). touchpad_back_ms
 // (10 s) after the last such key, counted from its release when held, the
 // touchpad goes back to what it was: on if it was on, and a touchpad that
 // was already off when the keys came is left off (s_ours stays FALSE). So
-// the touchpad works with the keyboard at any other time. Pausing, locking
-// the keyboard (lock_hotkey), quitting or turning touchpad_off to 0 gives
-// it back at once.
+// the touchpad works with the keyboard at any other time. Mouse mode
+// (CapsLock), where the touchpad may join the move keys and its move ends
+// mouse mode (mouse_exit_px, input.c), a hint picked (touchpad_release from
+// hint.c), pausing, locking the keyboard (lock_hotkey), quitting or turning
+// touchpad_off to 0 give it back at once.
 //
 // Reading the state: SystemParametersInfo(SPI_GETTOUCHPADPARAMETERS)
 // (Windows 11 24H2 and later). Writing it: SPI_SETTOUCHPADPARAMETERS changes
@@ -348,7 +351,8 @@ void touchpad_update(void)
 
     if (!s_loaded)
         mark_load();
-    if (!g_cfg.touchpad_off || input_is_paused() || input_is_locked()) {
+    if (!g_cfg.touchpad_off || input_is_paused() || input_is_locked() ||
+        input_mouse_mode_active()) {
         s_active = FALSE;
         stop_back_timer();
     }
@@ -399,7 +403,7 @@ static void CALLBACK back_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tic
     }
     s_active = FALSE;
     if (g_cfg.log && (s_ours || s_busy))
-        app_log(L"touchpad: no scroll or move key for %lu ms; back on",
+        app_log(L"touchpad: no scroll key for %lu ms; back on",
                 (unsigned long)gone);
     touchpad_update();
 }
@@ -408,7 +412,8 @@ void touchpad_key(void)
 {
     if (!s_loaded)
         mark_load();
-    if (!g_cfg.touchpad_off || input_is_paused() || input_is_locked())
+    if (!g_cfg.touchpad_off || input_is_paused() || input_is_locked() ||
+        input_mouse_mode_active())
         return;
     s_last_key = GetTickCount();
     s_key_report = s_last_key;
@@ -425,6 +430,19 @@ void touchpad_key(void)
             restart(GOAL_OFF);
         return;
     }
+    touchpad_update();
+}
+
+// A hint was picked (clicked, or the pointer moved there): done with the
+// keys for now, so the touchpad is back to what it was without waiting.
+void touchpad_release(void)
+{
+    if (!s_active)
+        return;
+    s_active = FALSE;
+    stop_back_timer();
+    if (g_cfg.log && (s_ours || s_busy))
+        app_log(L"touchpad: a hint picked; back on");
     touchpad_update();
 }
 

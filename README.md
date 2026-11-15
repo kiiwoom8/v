@@ -72,15 +72,17 @@ When a touch goes down and up on a screen's top edge, vim mouse puts the
 pointer back where it was before the touch. The tap itself still reaches
 the app under it.
 
-**The touchpad is off while the keys steer** (`touchpad_off`, default 1):
-scrolling with `d` `u` `j` `k` (and `h` `l`, `g g`, `Shift+g`, Alt
-scrolling) or moving the pointer in mouse mode turns it off, so a palm on it
-cannot move the pointer the keys aim with, and 10 seconds after the last of
-those keys (`touchpad_back_ms`, counted from the release of a held key) it
-comes back on. The rest of the time the touchpad works alongside the
-keyboard. A touchpad that was already off is left off. Pausing vim mouse
-(`Alt+p p` or the tray menu), locking the keyboard (`Ctrl+Alt+L`) or
-quitting it brings it back at once. It is the same switch as the Touchpad
+**The touchpad is off while the scroll keys steer** (`touchpad_off`,
+default 1): scrolling with `d` `u` `j` `k` (and `h` `l`, `g g`, `Shift+g`,
+Alt scrolling) turns it off, so a palm on it cannot move the pointer the
+keys aim with, and 10 seconds after the last of those keys
+(`touchpad_back_ms`, counted from the release of a held key) it comes back
+on. The rest of the time the touchpad works alongside the keyboard. A
+touchpad that was already off is left off. Mouse mode (`CapsLock`) keeps it
+on, so the touchpad can join `h j k l`, and moving the pointer with it ends
+mouse mode (below). Picking a hint, pausing vim mouse (`Alt+p p` or the
+tray menu), locking the keyboard (`Ctrl+Alt+L`) or quitting it brings it
+back at once. It is the same switch as the Touchpad
 toggle in Windows Settings (and a laptop's touchpad key, Ctrl+Win+F24), so
 you may see the touchpad icon each time it turns: vim mouse presses that
 shortcut once no modifier key is held, so with Alt scrolling the touchpad
@@ -241,6 +243,7 @@ a pass-through modifier.
 | `f` | Click hints (mouse mode stays on afterwards) |
 | `/` or `?` | Help window |
 | `i`, `Esc`, `CapsLock` tap | Leave mouse mode |
+| (moving the pointer with the touchpad or mouse) | Leaves mouse mode once it has moved 10 px (`mouse_exit_px`), not while `CapsLock` is held or the left button is held by `v` / `a`. The touchpad stays on in mouse mode |
 
 ### Hint mode (click hints)
 
@@ -481,12 +484,16 @@ ones:
 - `capslock_off` (1 = keep the CapsLock state off while vim mouse runs, not
   while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
   off)
-- `touchpad_off` (1 = the scroll and pointer-move keys, Alt scrolling too,
-  turn the touchpad off, and it comes back `touchpad_back_ms` after the last
-  of them, or when paused, locked or quit; one that was off already is left
-  off; default. 0 = left alone)
-- `touchpad_back_ms` (how long after the last scroll or move key the
-  touchpad comes back on, 1000-600000, default 10000)
+- `touchpad_off` (1 = the scroll keys outside mouse mode, Alt scrolling
+  too, turn the touchpad off, and it comes back `touchpad_back_ms` after the
+  last of them, or at once in mouse mode, after a hint is picked, when
+  paused, locked or quit; one that was off already is left off; default.
+  0 = left alone)
+- `touchpad_back_ms` (how long after the last scroll key the touchpad comes
+  back on, 1000-600000, default 10000)
+- `mouse_exit_px` (moving the pointer this many pixels with the touchpad or
+  mouse ends mouse mode, not while `CapsLock` is held or in a keyboard drag;
+  0-1000, default 10; 0 = only the keys end it)
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
@@ -822,7 +829,8 @@ user's store.
   crashed, start vim mouse again (it puts the cursors back when it quits)
   or sign out and in.
 - **The touchpad does not work.** vim mouse turns it off for 10 seconds
-  after a scroll or pointer-move key (`touchpad_off`, `touchpad_back_ms`).
+  after a scroll key (`touchpad_off`, `touchpad_back_ms`), or until you
+  pick a hint or turn on mouse mode.
   Wait, pause vim mouse (`Alt+p p`), lock the keyboard (`Ctrl+Alt+L`), quit
   it, or set `touchpad_off = 0`. If vim mouse was killed, crashed or Windows
   shut down while it had the touchpad off, the next start of vim mouse
@@ -830,6 +838,10 @@ user's store.
   laptop's touchpad key or Settings, Bluetooth & devices, Touchpad work too.
   With an administrator window in front, Windows drops the shortcut;
   `vim.log` says so with `log = 1`, and the next key tries again.
+- **Mouse mode turns itself off.** Moving the pointer 10 px with the
+  touchpad or mouse ends it (`mouse_exit_px`), even a palm or a nudged
+  mouse. Hold `CapsLock` to keep it on while you use both, raise
+  `mouse_exit_px`, or set it to 0.
 - **The touchpad works after waking from sleep.** vim mouse switches it on
   and off again two seconds after the wake, or after you unlock if the lock
   screen came up first; `vim.log` has a "touchpad: after a wake" line. That
