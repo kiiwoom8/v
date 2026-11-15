@@ -125,13 +125,14 @@ static UINT first_vk(WCHAR first)
 static BOOL first_key_taken(WCHAR first)
 {
     UINT vk = first_vk(first);
-    const Hotkey *hk[3];
+    const Hotkey *hk[4];
     int i;
 
     hk[0] = &g_cfg.hint_hotkey;
     hk[1] = &g_cfg.quit_hotkey;
     hk[2] = &g_cfg.pause_hotkey;
-    for (i = 0; i < 3; i++) {
+    hk[3] = &g_cfg.touchpad_hotkey;
+    for (i = 0; i < 4; i++) {
         if (hk[i]->vk == vk && hk[i]->mods == KMOD_ALT)
             return TRUE;
     }

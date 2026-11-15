@@ -2285,7 +2285,6 @@ static void act_at(POINT pt, UINT mods)
     if (input_left_button_held() || (mods & KMOD_ALT)) {
         mouse_move_to(pt);
         uia_focus_leave_hint_done(0);
-        touchpad_release();
         return;
     }
     if ((mods & (KMOD_CTRL | KMOD_SHIFT)) == (KMOD_CTRL | KMOD_SHIFT))
@@ -2299,9 +2298,6 @@ static void act_at(POINT pt, UINT mods)
     // A click held back for Shift and Ctrl reports from act_flush.
     if (!g_act_pending)
         uia_focus_leave_hint_done(LEAVE_CLICK_MS);
-    // A hint picked: the touchpad goes back to what it was at once, after
-    // the click (its switch waits for the modifiers like a held-back click).
-    touchpad_release();
 }
 
 static BOOL is_grid_key(UINT vk)

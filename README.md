@@ -45,6 +45,7 @@ is read-only), and reloads that file as soon as you save it.
 | `Ctrl+Alt+Q` | Quit |
 | `Ctrl+Alt+L` | Lock the keyboard: every key is ignored until `Ctrl+Alt+L` is pressed again |
 | `Alt+p p` | Pause / resume vim mouse (two quick taps): while paused every key passes through, except this and `Ctrl+Alt+Q` |
+| `Alt+t` | Touchpad on while vim mouse runs; again for off (`touchpad_hotkey`) |
 
 CapsLock no longer changes the CapsLock state, so no more accidental
 UPPERCASE text. While vim mouse runs the CapsLock state is kept off
@@ -72,26 +73,22 @@ When a touch goes down and up on a screen's top edge, vim mouse puts the
 pointer back where it was before the touch. The tap itself still reaches
 the app under it.
 
-**The touchpad is off while the keys steer** (`touchpad_off`, default 1),
-so a palm on it cannot move the pointer the keys aim with. Mouse mode
-(`CapsLock`) turns it off for as long as mouse mode is on, and leaving
-mouse mode brings it back at once. Scrolling with `d` `u` `j` `k` (and `h`
-`l`, `g g`, `Shift+g`, Alt scrolling) turns it off too, and 10 seconds after
-the last of those keys (`touchpad_back_ms`, counted from the release of a
-held key) it comes back on. The rest of the time the touchpad works
-alongside the keyboard. A touchpad that was already off is left off.
-Picking a hint (outside mouse mode), pausing vim mouse (`Alt+p p` or the
-tray menu), locking the keyboard (`Ctrl+Alt+L`) or quitting it brings it
-back at once. It is the same switch as the Touchpad
-toggle in Windows Settings (and a laptop's touchpad key, Ctrl+Win+F24), so
-you may see the touchpad icon each time it turns: vim mouse presses that
-shortcut once no modifier key is held, so with Alt scrolling the touchpad
-goes off when you let go of Alt. It needs a precision touchpad and Windows
-11 24H2 or later. `touchpad_off = 0` leaves the touchpad alone (and turns it
-back on if vim mouse had turned it off). Waking from sleep while it is off
-can bring the touchpad back working although Windows still shows it as off,
-so two seconds after a wake (or after unlocking, if the lock screen came up)
-vim mouse switches it on and off again.
+**The touchpad is off while vim mouse runs** (`touchpad_off`, default 1), so
+a palm on it cannot move the pointer or click while you type. Pausing vim
+mouse (`Alt+p p` or the tray menu), locking the keyboard (`Ctrl+Alt+L`) or
+quitting it turns the touchpad back on, and resuming or unlocking turns it
+off again. `Alt+t` turns it on while vim mouse runs, and pressed again off
+(`touchpad_hotkey`); that lasts until vim mouse quits or `touchpad_off`
+changes. It is the same switch as the Touchpad
+toggle in Windows Settings (and a laptop's touchpad key, Ctrl+Win+F24): vim
+mouse presses that shortcut once no modifier key is held, so after pausing
+with `Alt+p p` the touchpad comes back when you let go of Alt. It needs a
+precision touchpad and Windows 11 24H2 or later. `touchpad_off = 0` leaves
+the touchpad alone (and turns it back on if vim mouse had turned it off).
+Waking from sleep can bring the touchpad back working although Windows still
+shows it as off, so two seconds after a wake (or after unlocking, if the lock
+screen came up) vim mouse switches it on and off again; you may see the
+touchpad icon flash.
 
 **Without Alt.** When the keyboard focus is not in a text field (a web page
 you are reading, a list, the desktop), the Alt keys above also work without
@@ -195,9 +192,9 @@ pause, lock and quit hotkeys leave nothing. `alt_unfocus = 0` turns it off.
 While the keyboard is locked (for cleaning it, or with a cat around) the tray
 icon turns grey and a balloon says how to unlock; the tray menu's **Lock
 keyboard** item also unlocks it with the mouse. Windows still handles
-`Ctrl+Alt+Del` itself, and the mouse keeps working, the touchpad too: if
-the scroll or move keys had turned it off, it comes back on once you let go
-of `Ctrl+Alt`.
+`Ctrl+Alt+Del` itself, and the mouse keeps working, the touchpad too: with
+`touchpad_off` it comes back on once you let go of `Ctrl+Alt`, and goes off
+again after the unlocking `Ctrl+Alt+L` is released.
 
 Alt scrolling uses the mouse-mode keys (`key_left`, `key_down`, `key_up`,
 `key_right`, `key_scroll_up`, `key_scroll_down`, `key_scroll_left`,
@@ -483,13 +480,12 @@ ones:
 - `capslock_off` (1 = keep the CapsLock state off while vim mouse runs, not
   while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
   off)
-- `touchpad_off` (1 = the touchpad is off in mouse mode and after the
-  scroll keys, Alt scrolling too; it comes back when mouse mode ends,
-  `touchpad_back_ms` after the last scroll key, after a hint is picked, when
-  paused, locked or quit; one that was off already is left off; default.
+- `touchpad_off` (1 = the touchpad is off while vim mouse runs and back on
+  while paused, while the keyboard is locked or after quitting, default;
   0 = left alone)
-- `touchpad_back_ms` (how long after the last scroll key the touchpad comes
-  back on, 1000-600000, default 10000)
+- `touchpad_hotkey` (default `Alt+T`: the touchpad on while vim mouse runs,
+  pressed again off; with `touchpad_off = 0` it turns it off instead;
+  `none` = no hotkey)
 - `speed`, `max_speed`, `accel_time`, `accel_curve`, `slow_speed` (movement,
   in screen pixels per second; Windows' pointer speed and "Enhance pointer
   precision" settings do not change it)
@@ -824,20 +820,19 @@ user's store.
   `hide_pointer = 0`. If it stays blank after vim mouse was killed or
   crashed, start vim mouse again (it puts the cursors back when it quits)
   or sign out and in.
-- **The touchpad does not work.** vim mouse turns it off while mouse mode
-  is on and for 10 seconds after a scroll key (`touchpad_off`,
-  `touchpad_back_ms`). Leave mouse mode, wait, pause vim mouse (`Alt+p p`), lock the keyboard (`Ctrl+Alt+L`), quit
-  it, or set `touchpad_off = 0`. If vim mouse was killed, crashed or Windows
-  shut down while it had the touchpad off, the next start of vim mouse
-  turns it back on (it notes that in `HKCU\Software\vim mouse`); the
-  laptop's touchpad key or Settings, Bluetooth & devices, Touchpad work too.
-  With an administrator window in front, Windows drops the shortcut;
-  `vim.log` says so with `log = 1`, and the next key tries again.
+- **The touchpad does not work.** vim mouse turns it off while it runs
+  (`touchpad_off`). Press `Alt+t`, pause vim mouse (`Alt+p p`), lock the keyboard
+  (`Ctrl+Alt+L`), quit it, or set
+  `touchpad_off = 0`. If vim mouse was killed, crashed or Windows shut down
+  while the touchpad was off, it stays off (like the Settings toggle): start
+  vim mouse and pause or quit it, press the laptop's touchpad key, or turn
+  it on in Settings, Bluetooth & devices, Touchpad. With an administrator
+  window in front, Windows drops the shortcut; `vim.log` says so with
+  `log = 1`, and the next pause or resume tries again.
 - **The touchpad works after waking from sleep.** vim mouse switches it on
   and off again two seconds after the wake, or after you unlock if the lock
-  screen came up first; `vim.log` has a "touchpad: after a wake" line. That
-  is only while the keys have it off: it comes back on 10 seconds after
-  them anyway.
+  screen came up first; `vim.log` has a "touchpad: after a wake" line. If it
+  still works, pause and resume vim mouse (`Alt+p p` twice).
 - **A hover menu closes after a hint click.** The pointer goes back to where
   it was after the click, so a menu that stays open only while the pointer
   is over it closes. `Alt` + label moves the pointer there without clicking,

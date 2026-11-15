@@ -559,10 +559,10 @@ void config_set_defaults(Config *c)
     parse_hotkey(L"Alt+P", &c->pause_hotkey);
     c->pause_tap_ms = 300;
     parse_hotkey(L"Ctrl+Alt+L", &c->lock_hotkey);
+    parse_hotkey(L"Alt+T", &c->touchpad_hotkey);
     c->mouse_mode_key = VK_CAPITAL;
     c->capslock_off = 1;
     c->touchpad_off = 1;
-    c->touchpad_back_ms = 10000;
     c->indicator = INDICATOR_CURSOR;
     c->hide_pointer = 2000;
     c->log = 0;
@@ -835,14 +835,14 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->pause_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"lock_hotkey") == 0)
         apply_hotkey(&c->lock_hotkey, line, key, val);
+    else if (_wcsicmp(key, L"touchpad_hotkey") == 0)
+        apply_hotkey(&c->touchpad_hotkey, line, key, val);
     else if (_wcsicmp(key, L"mouse_mode_key") == 0)
         apply_key(&c->mouse_mode_key, line, key, val);
     else if (_wcsicmp(key, L"capslock_off") == 0)
         apply_bool(&c->capslock_off, line, key, val);
     else if (_wcsicmp(key, L"touchpad_off") == 0)
         apply_bool(&c->touchpad_off, line, key, val);
-    else if (_wcsicmp(key, L"touchpad_back_ms") == 0)
-        apply_int_range(&c->touchpad_back_ms, line, key, val, 1000, 600000);
     else if (_wcsicmp(key, L"hide_pointer") == 0)
         apply_int_range(&c->hide_pointer, line, key, val, 0, 60000);
     else if (_wcsicmp(key, L"indicator") == 0) {
@@ -1541,16 +1541,15 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Shift+CapsLock, an administrator window or the lock screen.\r\n");
     appendf(buf, cch, L"; 0 = Shift+CapsLock turns the real CapsLock on and off.\r\n");
     appendf(buf, cch, L"capslock_off = %d\r\n", d.capslock_off ? 1 : 0);
-    appendf(buf, cch, L"; 1 = the touchpad is off in mouse mode and after vim mouse's scroll keys\r\n");
-    appendf(buf, cch, L"; (Alt scrolling too), so a palm on it does not move the pointer the keys\r\n");
-    appendf(buf, cch, L"; aim with: back on when mouse mode ends, touchpad_back_ms after the last\r\n");
-    appendf(buf, cch, L"; scroll key, after a hint is picked, when paused, locked or quit. A\r\n");
-    appendf(buf, cch, L"; touchpad that was off already is left off (a precision touchpad,\r\n");
-    appendf(buf, cch, L"; Windows 11 24H2 or later). 0 = vim mouse leaves it alone.\r\n");
+    appendf(buf, cch, L"; 1 = the touchpad is off while vim mouse runs, and back on while\r\n");
+    appendf(buf, cch, L"; paused, while the keyboard is locked and after quitting (a precision\r\n");
+    appendf(buf, cch, L"; touchpad, Windows 11 24H2 or later). 0 = vim mouse leaves it alone.\r\n");
     appendf(buf, cch, L"touchpad_off = %d\r\n", d.touchpad_off ? 1 : 0);
-    appendf(buf, cch, L"; With touchpad_off: milliseconds from the last scroll key to the\r\n");
-    appendf(buf, cch, L"; touchpad coming back (1000 to 600000).\r\n");
-    appendf(buf, cch, L"touchpad_back_ms = %d\r\n", d.touchpad_back_ms);
+    appendf(buf, cch, L"; Hotkey that turns the touchpad on while vim mouse runs and, pressed\r\n");
+    appendf(buf, cch, L"; again, off (it flips touchpad_off until vim mouse quits or the setting\r\n");
+    appendf(buf, cch, L"; changes). none = disabled.\r\n");
+    format_hotkey(&d.touchpad_hotkey, key, (int)(sizeof(key) / sizeof(key[0])));
+    appendf(buf, cch, L"touchpad_hotkey = %ls\r\n", key);
     appendf(buf, cch, L"; Where the MOUSE/DRAG indicator is shown: cursor, corner or off.\r\n");
     switch (d.indicator) {
     case INDICATOR_CORNER:

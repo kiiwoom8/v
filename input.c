@@ -1136,25 +1136,6 @@ static int binding_action(UINT vk)
     return zoom_key_action(vk);
 }
 
-// A scroll key went down outside mouse mode: the touchpad goes off for a
-// while (touchpad.c). Mouse mode keeps it off by itself (touchpad_update).
-// Called from the hook, so only a post, at most every
-// TOUCHPAD_POST_MS; a held key is seen through input_keys_steering.
-#define TOUCHPAD_POST_MS 250
-static DWORD s_touchpad_post_tick = 0;
-
-static void touchpad_note_key(void)
-{
-    DWORD now = GetTickCount();
-
-    if (!g_cfg.touchpad_off || flag_get(&s_mouse_mode))
-        return;
-    if (s_touchpad_post_tick && now - s_touchpad_post_tick < TOUCHPAD_POST_MS)
-        return;
-    s_touchpad_post_tick = now ? now : 1;
-    post_main(WM_APP_TOUCHPAD_KEY, 0, 0);
-}
-
 static void move_press(int act)
 {
     LONG bit = (LONG)(1 << (act - ACT_MOVE_LEFT));
@@ -1235,7 +1216,6 @@ static void scroll_press(int act, BOOL auto_target, BOOL jump)
     int idx = act - ACT_SCROLL_UP;
     LONG bit = (LONG)(1 << idx);
 
-    touchpad_note_key();
     if (jump)
         atomic_or(&s_scroll_jump, bit);
     if (auto_target) {
@@ -1682,6 +1662,12 @@ static BOOL handle_hotkeys(UINT vk, UINT mods, BOOL send_mask)
         }
         return TRUE;
     }
+    if (!flag_get(&s_paused) && hotkey_match(&g_cfg.touchpad_hotkey, vk, mods)) {
+        if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
+            send_mask_key();
+        post_main(WM_APP_TOUCHPAD_TOGGLE, 0, 0);
+        return TRUE;
+    }
     if (!flag_get(&s_paused) && hotkey_match(&g_cfg.hint_hotkey, vk, mods)) {
         if (send_mask && (mods & (KMOD_ALT | KMOD_WIN)))
             send_mask_key();
@@ -2106,7 +2092,8 @@ static BOOL alt_hotkey_configured(void)
     return (g_cfg.hint_hotkey.mods & KMOD_ALT) ||
            (g_cfg.lock_hotkey.mods & KMOD_ALT) ||
            (g_cfg.quit_hotkey.mods & KMOD_ALT) ||
-           (g_cfg.pause_hotkey.mods & KMOD_ALT);
+           (g_cfg.pause_hotkey.mods & KMOD_ALT) ||
+           (g_cfg.touchpad_hotkey.mods & KMOD_ALT);
 }
 
 static BOOL alt_should_withhold(void)
@@ -4900,11 +4887,6 @@ void input_set_locked(BOOL locked)
 BOOL input_is_locked(void)
 {
     return flag_get(&s_locked);
-}
-
-BOOL input_keys_steering(void)
-{
-    return flag_get(&s_scroll_flags);
 }
 
 BOOL input_modifier_held(void)
