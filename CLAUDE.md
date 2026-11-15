@@ -19,6 +19,10 @@ Rules that past bugs keep coming back to:
 - Shutdown: `input_stop` before `uia_stop`.
 - Code must build with both MinGW.org GCC 6.3 and mingw-w64 (CI, `-Werror`,
   32 and 64 bit); guard newer constants with `#ifndef`.
+- A `vim.exe` that vanished with no Application Error in the event log was
+  ended from outside, not crashed (HISTORY phase 27). Quit it with
+  `tools/vim_post quit`, never leave it killed; `leave_starters_job` and the
+  run record in `main.c` stay.
 - A key or setting change also updates `config.c` defaults, parsing and
   template, the help window (`tray.c`), `README.md`, and `HISTORY.md`.
 

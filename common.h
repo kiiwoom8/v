@@ -631,7 +631,8 @@ extern HINSTANCE g_hinst;
 
 HICON app_load_icon(int cx, int cy);          // embedded icon at the given size
 UINT dpi_for_monitor(HMONITOR mon);           // effective DPI (96 = 100%), works on Win7+
-void app_log(const WCHAR *fmt, ...);          // OutputDebugString, plus vim.log if g_cfg.log
+void app_log(const WCHAR *fmt, ...);          // vim.log if g_cfg.log, OutputDebugString under a
+                                              // debugger; otherwise returns at once (free with log = 0)
 void app_reload_config(BOOL notify);          // reload g_cfg, notify modules, balloon on warnings
 void app_config_written(void);                // we rewrote vim.ini: reload quietly
 void app_quit(void);

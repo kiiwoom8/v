@@ -701,6 +701,18 @@ user's store.
 
 ## Troubleshooting
 
+- **vim mouse was gone (no tray icon) and never said why.** Windows or
+  another program ended it. A program that starts vim mouse (a terminal, an
+  editor, the Claude desktop app) may end everything it started when it
+  closes, restarts or updates itself; vim mouse now starts itself again out
+  of such a program's reach (the process list then shows `vim.exe --nojob`;
+  start it with `--nojob` yourself to keep it where it is). Whenever a run
+  ends without quitting, the next start says so in a balloon and in
+  `vim.log`, whatever `log` is: "ended last time" for an end from outside
+  (Task Manager's End task too), "crashed last time" with the exception and
+  where it happened for a crash, which also puts the mouse pointer back at
+  once. `vim.run` next to the settings file is how it knows; it is there
+  while vim mouse runs.
 - **No labels on the Start menu, Search, the notification centre, Quick
   Settings or a notification banner.** Without the UIAccess install (previous
   section) the labels are drawn under them. `log = 2` lists those windows

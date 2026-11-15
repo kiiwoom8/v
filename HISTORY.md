@@ -32,7 +32,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 |---|---|---|---|
 | `common.h` | 480 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
 | `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
-| `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order. | `main`, `main_wnd_proc`, `app_log`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor` |
+| `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order, leaving the job of the program that started it, the run record (how the last run ended) and the crash filter (phase 27). | `main`, `main_wnd_proc`, `app_log`, `log_always`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor`, `leave_starters_job`, `started_by_explorer`, `run_record_start`, `run_record_clear`, `crash_filter`, `crash_note_thread` |
 | `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click and after a touch tap on the screen's top edge, the `0 0` jump to the middle of the screen, `Esc` leaving a text field (`esc_unfocus`: armed at the press, sent to the focus worker at the release), a held `j k u d` leaving it (`hold_unfocus`: armed at the press, `OWN_HOLD` holds its repeats back, the scroll starts from the worker's answer), an Alt key of ours leaving it (`alt_unfocus`: the Alt keys at once, the hint hotkey once `hint.c` reports the hints done). | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `touch_edge_tap`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `unfocus_key_down`, `unfocus_cancel`, `hold_key_down`, `hold_repeat`, `hold_key_up`, `hold_answer`, `hold_cancel`, `alt_unfocus`, `input_thread_proc` |
 | `hint.c` | 4186 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, the watch on a browser page still loading (status "Page loading", content reports, one relabel), monitor cycling, the grid key, clicks held back until Shift and Ctrl are up, the end of the hints reported to the focus worker (`alt_unfocus`). | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `load_note`, `load_watch`, `load_event_proc`, `load_content_in`, `relabel_all`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
@@ -1155,6 +1155,75 @@ Invariants stated in `common.h` and enforced by history:
 - Built; the restart turned the touchpad off (it reads off). Not tested by
   key injection; handed to the user to try `Alt+t`.
 
+### Phase 27: gone without a word (2026-11-16)
+
+- "sometimes the program crashed without warning. improve the entire code
+  including speed and efficiency, find the culprit". Nothing in the code
+  had faulted: the Application event log (back to July) holds no
+  Application Error for `vim.exe`, while five test crashes of a MinGW
+  32-bit program made that morning (null write, stack overflow, smashed
+  stack, heap overrun, each on a second thread) left one within seconds.
+  A process that ends with no such event quit or was ended from outside.
+- The culprit was the starter. Every session rebuilt `vim.exe` and started
+  it with `Start-Process`, and a process started from a Claude Code session
+  sits in a job of the Claude desktop app with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (flags `0x3C00`; found by
+  duplicating the app's job handles and asking `IsProcessInJob`). Windows
+  terminates everything in that job when the app exits, restarts or
+  updates, which it did on most days (AppXDeploymentServer log: six
+  package updates from 11-10 to 11-14, and a forced shutdown at 05:14:28
+  on 11-16; the user started `vim.exe` again by hand 67 s later). A
+  terminated vim mouse says nothing, and leaves the pointer blank and the
+  touchpad off. A `vim.exe` started by Explorer is in a job that ends
+  nothing (flags `0x800`).
+- `main.c` `leave_starters_job`, first thing in `main`: in a job whose own
+  flags allow breakaway, and not started by Explorer
+  (`started_by_explorer`, the parent's image name from a Toolhelp
+  snapshot), the process starts itself again with
+  `CREATE_BREAKAWAY_FROM_JOB` and `--nojob` added to its arguments, and
+  ends. Measured: the copy is in no kill-on-close job (breakaway leaves
+  every nested job up to the first that forbids it, here the session's
+  `0x800` job and the app's `0x3C00` one). `--nojob` given by hand keeps
+  it in the job. Where the start fails (the UIAccess build may not start
+  itself) it carries on in place. `IsProcessInJob` through
+  `GetProcAddress`: MinGW.org's import library lacks it.
+- The run record, so an end from outside is never silent again:
+  `run_record_start` (after the tray) writes `<settings>.run` next to the
+  settings file (`boot=` when Windows started, `since=`), `WM_DESTROY`
+  and `WM_ENDSESSION` delete it. One found at startup from this start of
+  Windows means the last run did not quit: a line in `vim.log` whatever
+  `log` is (`log_always`) and a balloon, "vim mouse was ended last time"
+  or "vim mouse crashed last time". `crash_filter`
+  (`SetUnhandledExceptionFilter`, chained to MinGW's) hands the exception
+  to a thread of its own (a stack overflow leaves the crashed thread no
+  stack), which puts the pointer back (`SPI_SETCURSORS`), adds
+  `crash=exception C0000005 at vim.exe+0x1234` to the record and writes
+  the same to `vim.log`; the crash still reaches Windows Error Reporting.
+  `main.c` also logs why it quits (quit hotkey, `WM_CLOSE` from another
+  program, the session ending).
+- Speed and efficiency, measured before changing anything: the largest
+  stack frame is 65 KB (`shortcuts_save`, `-fstack-usage`), the process
+  held 47 GDI and 38 USER objects after 22 minutes of use (no leak), and
+  it used 3.3% of one core over that time, about 10% while the user
+  scrolled: the scan ahead of the hotkey on the scan thread and its 8
+  helpers, which is `scan_ahead` doing what it is for. The one cost for
+  nothing was `app_log`: with `log = 0` every line was still formatted and
+  sent to `OutputDebugString` (an exception raised and caught, then a look
+  for a viewer), on the hook thread too. It now returns at once unless
+  `log` is on or a debugger is attached. Six delegated read-only audits
+  of the modules (opencode) returned no report, so the memory-safety
+  check rests on the event log and on spot checks (`handle_key`'s
+  `vk > 255` guard, `merge_scan`, the `ClickList` hand-over), not on a
+  full read.
+- Tested on a test build with its own settings file, the real instance
+  quit for the minute: started with `Start-Process`, the copy ran with
+  `--nojob` outside the kill-on-close job; killed and started, the "ended
+  from outside" line; a remote thread started at address 1, the crash
+  line in the record and in `vim.log`, then the "crashed" line at the next
+  start; quit and started, nothing. Not tested: a real closing of the
+  Claude app with vim mouse started from a session (it would end this
+  session), the balloons' look, `WM_ENDSESSION` at a sign-out.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1991,6 +2060,18 @@ last ten are all `worktree-agent-*` into `element-hints`.
 
 ### Settings, files, Windows integration
 
+- **A process that vanished did not necessarily crash: ask Windows first.**
+  Phase 27. A fault in a MinGW program always leaves an Application Error
+  event (checked with five test crashes); none for `vim.exe` means it quit
+  or was ended from outside, and reading 29000 lines for a memory bug is
+  the wrong start. Look at who started it: a process started from a
+  terminal, an editor or the Claude desktop app can sit in a job that
+  Windows ends with that program. So vim mouse leaves a starter's job
+  itself (`leave_starters_job`; never remove it because "Explorer starts
+  it anyway": every development restart does not), and every end without
+  a quit leaves a trace the next start reads (`run_record_start`,
+  `crash_filter`). New ways to quit must end in `WM_DESTROY` or delete the
+  record, or the next start reports an end from outside.
 - **The exe folder may be read-only.** `e04d6a0`: `vim.ini` and `vim.log`
   move to `%APPDATA%\vim mouse`. `main.c` calls `config_path()` once before
   any worker thread can ask for it.
@@ -2111,7 +2192,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
   changes; `443b135` adds `log = 2`, which lists every element of the
   active window at each hint open with why it got no label. Log reasons,
   never typed keys. A log written during a scan must be buffered:
-  `app_log` opens `vim.log` for every line.
+  `app_log` opens `vim.log` for every line. With `log = 0` and no debugger
+  attached `app_log` returns before formatting anything (phase 27), so a
+  line costs nothing when nobody reads it; what must be written whatever
+  `log` is goes through `main.c`'s `log_always`.
 
 ## 6. Behaviour changed on purpose: do not revert
 
@@ -2539,6 +2623,13 @@ when the manifest changes.
   quit`), or linking `vim.exe` fails with "Permission denied". In Git Bash
   a bare `vim.exe` / `start vim.exe` may start Git's own vim; start it by
   its full path.
+- Restarting it from a session or a terminal: quit with `tools/vim_post
+  quit` (the pointer and the touchpad come back, no "ended last time"
+  balloon at the next start), not a kill; start it any way, since it
+  leaves the starter's job itself (phase 27; the process list then shows
+  `vim.exe --nojob`). A test build under another name (`vim_test.exe`)
+  shares the instance mutex, so quit the real one first, and give it its
+  own `vim_test.ini` next to it.
 - Linux cross-compile, the same as CI (needs `gcc-mingw-w64-i686`):
   `make CC=i686-w64-mingw32-gcc WINDRES=i686-w64-mingw32-windres CFLAGS="-Wall -Wextra -O2 -std=gnu11 -Werror"`,
   then the same with `probe check`. Also try `x86_64-w64-mingw32-*`, since CI
