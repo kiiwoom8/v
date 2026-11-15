@@ -416,6 +416,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_TOUCHPAD_WAKE:
         touchpad_wake();
         return 0;
+    case WM_APP_TOUCHPAD_KEY:
+        touchpad_key();
+        return 0;
     case WM_APP_QUIT:
         app_quit();
         return 0;

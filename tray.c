@@ -882,8 +882,12 @@ static void build_help_rows(void)
     }
     if (g_cfg.hide_pointer > 0)
         help_add_row(L"Pointer", L"Hidden outside mouse mode; the real mouse shows it");
-    if (g_cfg.touchpad_off)
-        help_add_row(L"Touchpad", L"Off while vim mouse runs; back on when paused, locked or quit");
+    if (g_cfg.touchpad_off) {
+        _snwprintf(buf, 127, L"Off while the scroll and move keys steer; back on %d s after the last, "
+                   L"or when paused, locked or quit", (g_cfg.touchpad_back_ms + 500) / 1000);
+        buf[127] = L'\0';
+        help_add_row(L"Touchpad", buf);
+    }
     if (g_cfg.key_center && g_cfg.center_tap_ms > 0) {
         WCHAR k[16];
         format_key(g_cfg.key_center, k, 16);

@@ -1136,9 +1136,28 @@ static int binding_action(UINT vk)
     return zoom_key_action(vk);
 }
 
+// A scroll or pointer-move key went down: the touchpad goes off for a while
+// (touchpad.c). Called from the hook, so only a post, at most every
+// TOUCHPAD_POST_MS; a held key is seen through input_keys_steering.
+#define TOUCHPAD_POST_MS 250
+static DWORD s_touchpad_post_tick = 0;
+
+static void touchpad_note_key(void)
+{
+    DWORD now = GetTickCount();
+
+    if (!g_cfg.touchpad_off)
+        return;
+    if (s_touchpad_post_tick && now - s_touchpad_post_tick < TOUCHPAD_POST_MS)
+        return;
+    s_touchpad_post_tick = now ? now : 1;
+    post_main(WM_APP_TOUCHPAD_KEY, 0, 0);
+}
+
 static void move_press(int act)
 {
     LONG bit = (LONG)(1 << (act - ACT_MOVE_LEFT));
+    touchpad_note_key();
     atomic_or(&s_move_flags, bit);
     if (s_move_event)
         SetEvent(s_move_event);
@@ -1216,6 +1235,7 @@ static void scroll_press(int act, BOOL auto_target, BOOL jump)
     int idx = act - ACT_SCROLL_UP;
     LONG bit = (LONG)(1 << idx);
 
+    touchpad_note_key();
     if (jump)
         atomic_or(&s_scroll_jump, bit);
     if (auto_target) {
@@ -4880,6 +4900,11 @@ void input_set_locked(BOOL locked)
 BOOL input_is_locked(void)
 {
     return flag_get(&s_locked);
+}
+
+BOOL input_keys_steering(void)
+{
+    return flag_get(&s_move_flags) || flag_get(&s_scroll_flags);
 }
 
 BOOL input_modifier_held(void)

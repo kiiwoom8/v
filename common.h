@@ -71,6 +71,8 @@
 #define WM_APP_FLUSH_DONE       (WM_APP + 16) // wParam = the hit test reached the page, lParam = seq of the
                                               // uia_flush request; -> hint_flush_done
 #define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
+#define WM_APP_TOUCHPAD_KEY     (WM_APP + 18) // a scroll or pointer-move key went down (at most every
+                                              // 250 ms); -> touchpad_key
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -108,9 +110,13 @@ typedef struct {
                                // (not while paused): turned off at start and whenever it
                                // comes on (Shift+CapsLock, an admin window, the lock
                                // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
-    int    touchpad_off;       // 1 = the precision touchpad is switched off while vim mouse
-                               // runs and is not paused, and back on when paused or quit
-                               // (Ctrl+Win+F24, the Settings toggle); default 1. 0 = left alone.
+    int    touchpad_off;       // 1 = the precision touchpad is switched off by vim mouse's
+                               // scroll and pointer-move keys (Alt scrolling too) and back on
+                               // touchpad_back_ms after the last one, or when paused, locked
+                               // or quit; only if it was on (Ctrl+Win+F24, the Settings
+                               // toggle); default 1. 0 = left alone.
+    int    touchpad_back_ms;   // with touchpad_off: how long after the last scroll or move key
+                               // the touchpad comes back; default 10000, 1000 to 600000.
     int    indicator;          // INDICATOR_*; default INDICATOR_CURSOR
     int    hide_pointer;       // outside mouse mode the pointer is hidden (every system
                                // cursor is swapped for a blank one, session-wide, and put
@@ -352,6 +358,8 @@ BOOL input_is_locked(void);
 // A modifier is physically down by the hook's own key state, which also
 // sees the modifiers the lock (or a hotkey) swallowed from GetAsyncKeyState.
 BOOL input_modifier_held(void);
+// A scroll or pointer-move key is held (the movement thread is acting on it).
+BOOL input_keys_steering(void);
 void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)
@@ -559,7 +567,8 @@ void help_toggle(void);
 // ---------------------------------------------------------------------------
 // Touchpad (touchpad.c). Main/UI thread.
 
-void touchpad_update(void);             // after start, pause / resume and reload: off while active
+void touchpad_update(void);             // after start, pause / resume and reload: back on if ours
+void touchpad_key(void);                // WM_APP_TOUCHPAD_KEY: off now, back touchpad_back_ms later
 void touchpad_stop(void);               // at quit: back on if we turned it off (may wait 2 s)
 void touchpad_wake(void);               // WM_APP_TOUCHPAD_WAKE: after a wake, on and off again (2 s later)
 

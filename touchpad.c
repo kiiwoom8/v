@@ -1,9 +1,16 @@
-// touchpad.c - the touchpad is off while vim mouse is active (touchpad_off).
+// touchpad.c - the touchpad is off while vim mouse's keys steer (touchpad_off).
 //
-// Main/UI thread only. While vim mouse runs and is not paused the precision
-// touchpad is switched off; pausing, locking the keyboard (lock_hotkey),
-// quitting or turning touchpad_off to 0 switches it back on, and resuming
-// or unlocking switches it off again.
+// Main/UI thread only. A scroll key (d u j k, h l sideways, g g / Shift + g,
+// Alt scrolling) or a pointer-move key (mouse mode) switches the precision
+// touchpad off, so a palm resting on it does not move the pointer the keys
+// are aiming with (scrolls go to the window under it). input.c posts
+// WM_APP_TOUCHPAD_KEY at each press (at most every 250 ms). touchpad_back_ms
+// (10 s) after the last such key, counted from its release when held, the
+// touchpad goes back to what it was: on if it was on, and a touchpad that
+// was already off when the keys came is left off (s_ours stays FALSE). So
+// the touchpad works with the keyboard at any other time. Pausing, locking
+// the keyboard (lock_hotkey), quitting or turning touchpad_off to 0 gives
+// it back at once.
 //
 // Reading the state: SystemParametersInfo(SPI_GETTOUCHPADPARAMETERS)
 // (Windows 11 24H2 and later). Writing it: SPI_SETTOUCHPADPARAMETERS changes
@@ -17,20 +24,22 @@
 // hook's key state counts too, since the lock swallows the unlock chord's
 // Ctrl and Alt before GetAsyncKeyState sees them), in one
 // SendInput call so no real key lands inside it; our hook passes injected
-// keys untouched. Where it cannot work (no precision touchpad, older
-// Windows, an elevated window in front swallowing the keys) we log and give
-// up until the next change.
+// keys untouched. So Alt scrolling turns it off once Alt is let go. Where it
+// cannot work (no precision touchpad, older Windows, an elevated window in
+// front swallowing the keys) we log and give up until the next key.
 //
 // Waking from sleep (Modern Standby) can bring the touchpad back working
 // although Windows still reads it as off: the device resets and the off
 // setting is not sent to it again. So after a wake, an unlock or the
-// display coming back on (input.c posts WM_APP_TOUCHPAD_WAKE), once the
-// lock screen is gone, touchpad_wake switches it on and off again, which
-// sends the setting anew; if it reads on, one press turns it off.
+// display coming back on (input.c posts WM_APP_TOUCHPAD_WAKE) while it is
+// off for the keys, once the lock screen is gone, touchpad_wake switches it
+// on and off again, which sends the setting anew; if it reads on, one press
+// turns it off.
 //
-// The setting persists like the Settings toggle: if vim mouse is killed or
-// Windows shuts down while it is off, it stays off until vim mouse runs and
-// pauses or quits, or the user switches it on.
+// The setting persists like the Settings toggle, so "we turned it off" is
+// kept in HKCU\Software\vim mouse (TouchpadTurnedOff): if vim mouse is killed
+// or Windows shuts down inside the off window, the next start turns it back
+// on.
 
 #include "common.h"
 
@@ -64,19 +73,33 @@ typedef struct {
 #define TP_PRESSES      2      // presses before giving up
 #define TP_QUIT_WAIT_MS 2000   // at quit, the wait for the modifiers to be released
 #define TP_WAKE_DELAY_MS 2000  // after a wake, how long the device gets to settle first
+#define TP_HELD_POLL_MS 250    // while a scroll or move key is held, checked this often
+#define TP_HELD_MAX_MS  60000  // a key read as held this long after its press is not trusted
+                               // (a release the hook never saw)
+
+#define TP_REG_KEY   L"Software\\vim mouse"
+#define TP_REG_VALUE L"TouchpadTurnedOff"
 
 enum { GOAL_NONE = 0, GOAL_OFF = 1, GOAL_ON = 2 };
 
 static int      s_goal = GOAL_NONE;  // what we are bringing about (or brought about)
 static BOOL     s_busy = FALSE;      // the timer runs until s_goal holds or we give up
-static BOOL     s_ours = FALSE;      // the touchpad is off because touchpad_off is on
+static BOOL     s_ours = FALSE;      // the touchpad is off because we pressed it off
 static UINT_PTR s_timer = 0;
 static DWORD    s_start = 0;         // when the current goal was set
 static DWORD    s_pressed = 0;       // when we last pressed the shortcut (0 = not yet)
 static int      s_presses = 0;
+static BOOL     s_settle = FALSE;    // a press for the previous goal may still flip it
+static DWORD    s_settle_until = 0;
 static BOOL     s_unsupported_logged = FALSE;
 static BOOL     s_resync = FALSE;    // after a wake: going on now, then off again
 static UINT_PTR s_wake_timer = 0;
+static BOOL     s_active = FALSE;    // the keys steer: off until touchpad_back_ms after the last
+static DWORD    s_last_key = 0;      // the last key report, or the last check that saw one held
+static DWORD    s_key_report = 0;    // the last key report alone
+static UINT_PTR s_back_timer = 0;
+static BOOL     s_loaded = FALSE;    // the registry mark was read
+static int      s_mark = -1;         // what the registry holds (-1 = not known)
 
 // -1 = unknown (no precision touchpad, or Windows before 11 24H2), 0 = off, 1 = on.
 static int tp_state(void)
@@ -89,6 +112,44 @@ static int tp_state(void)
         !(p.flags1 & TP_PRESENT))
         return -1;
     return (p.flags1 & TP_ENABLED) ? 1 : 0;
+}
+
+static void mark_load(void)
+{
+    HKEY key;
+    DWORD val = 0, size = sizeof(val), type = 0;
+
+    s_loaded = TRUE;
+    s_mark = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, TP_REG_KEY, 0, KEY_QUERY_VALUE,
+                      &key) != ERROR_SUCCESS)
+        return;
+    if (RegQueryValueExW(key, TP_REG_VALUE, NULL, &type, (BYTE *)&val,
+                         &size) == ERROR_SUCCESS && type == REG_DWORD && val)
+        s_mark = 1;
+    RegCloseKey(key);
+    if (s_mark) {
+        s_ours = TRUE;
+        app_log(L"touchpad: vim mouse had turned it off and did not get to "
+                L"turn it back on; turning it on");
+    }
+}
+
+static void set_ours(BOOL ours)
+{
+    HKEY key;
+    DWORD val = ours ? 1 : 0;
+
+    s_ours = ours;
+    if (s_mark == (int)val)
+        return;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, TP_REG_KEY, 0, NULL, 0,
+                        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS)
+        return;
+    if (RegSetValueExW(key, TP_REG_VALUE, 0, REG_DWORD, (const BYTE *)&val,
+                       sizeof(val)) == ERROR_SUCCESS)
+        s_mark = (int)val;
+    RegCloseKey(key);
 }
 
 static BOOL modifiers_down(void)
@@ -145,9 +206,17 @@ static void restart(int goal);
 static BOOL step(void)
 {
     int want = s_goal == GOAL_OFF ? 0 : 1;
-    int state = tp_state();
+    int state;
     DWORD now = GetTickCount();
 
+    // A press made for the goal before this one may not have flipped it
+    // yet: reading now would see the old state and press it back.
+    if (s_settle) {
+        if ((LONG)(now - s_settle_until) < 0)
+            return TRUE;
+        s_settle = FALSE;
+    }
+    state = tp_state();
     if (state < 0) {
         if (!s_unsupported_logged) {
             app_log(L"touchpad: no precision touchpad state to read "
@@ -157,7 +226,12 @@ static BOOL step(void)
         return FALSE;
     }
     if (state == want) {
-        s_ours = s_goal == GOAL_OFF;
+        // Off by our press is ours; off already (the user's, or still ours
+        // from before) stays as it was. On, by whoever, is nobody's.
+        if (s_goal == GOAL_ON)
+            set_ours(FALSE);
+        else if (s_presses > 0)
+            set_ours(TRUE);
         if (g_cfg.log && s_presses > 0)
             app_log(L"touchpad: %s", want ? L"on" : L"off");
         if (s_resync && s_goal == GOAL_ON) {
@@ -168,6 +242,7 @@ static BOOL step(void)
             s_start = now;
             s_pressed = now ? now : 1;
             s_presses = 0;
+            set_ours(TRUE);
             return TRUE;
         }
         return FALSE;
@@ -189,13 +264,15 @@ static BOOL step(void)
     }
     s_presses++;
     s_pressed = now ? now : 1;
+    if (s_goal == GOAL_OFF)
+        set_ours(TRUE);  // marked before it flips, so a kill right now still gives it back
     if (!press_toggle())
         return FALSE;
     return TRUE;
 }
 
 // Done with a goal (reached or given up). A re-sync given up halfway leaves
-// the goal off: that is still what we want, tried again at the next change.
+// the goal off: that is still what we want, tried again at the next key.
 static void finish(void)
 {
     stop_timer();
@@ -226,15 +303,27 @@ static void set_goal(int goal)
     restart(goal);
 }
 
-static void restart(int goal)
+// A new goal; a press still flipping the touchpad for the old one is waited out.
+static void begin_goal(int goal)
 {
+    DWORD now = GetTickCount();
+
     s_goal = goal;
-    stop_timer();
-    if (goal == GOAL_NONE)
-        return;
-    s_start = GetTickCount();
+    s_settle = s_pressed && now - s_pressed < TP_CONFIRM_MS;
+    s_settle_until = s_pressed + TP_CONFIRM_MS;
+    s_start = now;
     s_pressed = 0;
     s_presses = 0;
+}
+
+static void restart(int goal)
+{
+    stop_timer();
+    if (goal == GOAL_NONE) {
+        s_goal = GOAL_NONE;
+        return;
+    }
+    begin_goal(goal);
     if (!step()) {
         finish();
         return;
@@ -245,15 +334,98 @@ static void restart(int goal)
         app_log(L"touchpad: SetTimer failed (%lu)", GetLastError());
 }
 
+static void stop_back_timer(void)
+{
+    if (s_back_timer) {
+        KillTimer(NULL, s_back_timer);
+        s_back_timer = 0;
+    }
+}
+
 void touchpad_update(void)
 {
     int goal;
 
-    if (g_cfg.touchpad_off)
-        goal = (input_is_paused() || input_is_locked()) ? GOAL_ON : GOAL_OFF;
+    if (!s_loaded)
+        mark_load();
+    if (!g_cfg.touchpad_off || input_is_paused() || input_is_locked()) {
+        s_active = FALSE;
+        stop_back_timer();
+    }
+    if (s_active)
+        goal = GOAL_OFF;
     else
         goal = (s_ours || (s_busy && s_goal == GOAL_OFF)) ? GOAL_ON : GOAL_NONE;
     set_goal(goal);
+}
+
+static void CALLBACK back_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tick);
+
+static void arm_back_timer(DWORD ms)
+{
+    stop_back_timer();
+    s_back_timer = SetTimer(NULL, 0, ms, back_timer_proc);
+    if (!s_back_timer) {
+        app_log(L"touchpad: SetTimer failed (%lu)", GetLastError());
+        s_active = FALSE;  // never leave it off with nothing to bring it back
+    }
+}
+
+// touchpad_back_ms after the last key, or after a held one is let go.
+static void CALLBACK back_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tick)
+{
+    DWORD now = GetTickCount();
+    DWORD back = (DWORD)g_cfg.touchpad_back_ms;
+    DWORD gone;
+
+    (void)hwnd;
+    (void)msg;
+    (void)id;
+    (void)tick;
+    stop_back_timer();
+    if (!s_active)
+        return;
+    if (input_keys_steering() && now - s_key_report < TP_HELD_MAX_MS) {
+        s_last_key = now;
+        arm_back_timer(TP_HELD_POLL_MS);
+        if (s_back_timer)
+            return;
+    }
+    gone = now - s_last_key;
+    if (s_active && gone < back) {
+        arm_back_timer(back - gone);
+        if (s_back_timer)
+            return;
+    }
+    s_active = FALSE;
+    if (g_cfg.log && (s_ours || s_busy))
+        app_log(L"touchpad: no scroll or move key for %lu ms; back on",
+                (unsigned long)gone);
+    touchpad_update();
+}
+
+void touchpad_key(void)
+{
+    if (!s_loaded)
+        mark_load();
+    if (!g_cfg.touchpad_off || input_is_paused() || input_is_locked())
+        return;
+    s_last_key = GetTickCount();
+    s_key_report = s_last_key;
+    s_active = TRUE;
+    if (!s_back_timer)
+        arm_back_timer((DWORD)g_cfg.touchpad_back_ms);
+    if (!s_active)
+        return;
+    if (s_goal == GOAL_OFF) {
+        // Off already, or on its way. Pressed back on by hand inside the
+        // window, or given up on (Alt held through Alt scrolling for
+        // TP_WAIT_MAX_MS): off again.
+        if (!s_busy && !s_resync && tp_state() == 1)
+            restart(GOAL_OFF);
+        return;
+    }
+    touchpad_update();
 }
 
 // The lock screen (another desktop) takes no injected keys; its unlock
@@ -280,8 +452,9 @@ static void CALLBACK wake_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD tic
         KillTimer(NULL, s_wake_timer);
         s_wake_timer = 0;
     }
-    if (!g_cfg.touchpad_off || s_goal != GOAL_OFF || s_busy ||
-        input_is_paused() || input_is_locked())
+    // Only while it is off for the keys and was ours to turn off.
+    if (!g_cfg.touchpad_off || !s_active || s_goal != GOAL_OFF || !s_ours ||
+        s_busy || input_is_paused() || input_is_locked())
         return;
     if (!desktop_is_ours()) {
         app_log(L"touchpad: woke on the lock screen; checked again after unlocking");
@@ -314,22 +487,22 @@ void touchpad_stop(void)
         KillTimer(NULL, s_wake_timer);
         s_wake_timer = 0;
     }
+    stop_back_timer();
+    s_active = FALSE;
     s_resync = FALSE;
     stop_timer();
     if (!was_off)
         return;
     // Quitting: the quit hotkey's Ctrl+Alt may still be down. The input
-    // thread is gone by now, so waiting here blocks no hook.
-    s_goal = GOAL_ON;
+    // thread is gone by now, so waiting here blocks no hook. Not turned on,
+    // the registry mark stays and the next start tries again.
+    begin_goal(GOAL_ON);
     s_start = start;
-    s_pressed = 0;
-    s_presses = 0;
     while (step()) {
-        if (GetTickCount() - start > TP_QUIT_WAIT_MS + TP_CONFIRM_MS) {
+        if (GetTickCount() - start > TP_QUIT_WAIT_MS + TP_CONFIRM_MS * 2) {
             app_log(L"touchpad: not turned back on at quit");
             break;
         }
         Sleep(20);
     }
-    s_ours = FALSE;
 }
