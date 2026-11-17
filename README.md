@@ -227,7 +227,7 @@ a pass-through modifier.
 |---|---|
 | `h j k l` | Move left / down / up / right, accelerating (hold two for diagonals) |
 | `Shift` + `hjkl` | Slow, precise movement |
-| (moving onto a link) | The pointer pauses where the cursor turns into the hand, so it is easy to stop on (`magnet`); a key held longer than half a second is heading far and passes links (`magnet_skip`) |
+| (moving onto a link) | The pointer pauses where the cursor turns into the hand, so it is easy to stop on (`magnet`); once the move keys have been held half a second (pauses included) they are heading far and pass links (`magnet_skip`) |
 | `a` | Left button: tap = click, tap twice = double click, hold = drag |
 | `s` | Right click |
 | `m` | Middle click |
@@ -504,11 +504,13 @@ ones:
   there, and `Shift` (slow) movement and drags never pause. Where an app
   shows the hand only after the pointer has passed a short link (a browser
   notices one frame late), the pointer goes back onto it
-- `magnet_skip` (ms of moving after which the magnet no longer pauses,
-  0-5000, default 500; 0 = it pauses however long the key is held). A key
-  held that long is heading somewhere far, so the links on the way are
-  passed. Each press counts from zero, and time spent paused does not
-  count
+- `magnet_skip` (ms of holding the move keys after which the magnet no
+  longer pauses, 0-5000, default 500; 0 = it pauses however long the key
+  is held). Keys held that long are heading somewhere far, so the links on
+  the way are passed, and a pause still running ends. The time counts
+  from the first move key pressed until the last one is released, so
+  turning (`l` then `j`) does not start it again, and the time spent
+  paused counts too
 - `scroll_speed`, `scroll_max_speed`, `smooth_scroll` (1 = small steps once
   per display frame, default; 0 = whole notches only)
 - `alt_scroll` (1 = Alt + `jk` scroll, Alt + `hl` back / forward, Alt +

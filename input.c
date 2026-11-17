@@ -3460,13 +3460,15 @@ static DWORD WINAPI movement_thread(LPVOID param)
     // The magnet: magArmed once the cursor was seen without the hand;
     // magHold while the pointer pauses (since magStartUs, entered at
     // magHandUs, with the keys magKeys); magFixed once a pause that went past
-    // the element was moved back; magBack is where to (magBackDue).
+    // the element was moved back; magBack is where to (magBackDue). The
+    // press began at magPressUs, when a move key went down with none held
+    // (magPrevKeys, the keys of the last tick).
     HCURSOR hand = NULL;
     BOOL magArmed = FALSE, magHold = FALSE, magFixed = FALSE;
     BOOL magBackDue = FALSE;
     POINT magBack = { 0, 0 };
-    LONG magKeys = 0;
-    DWORD magStartUs = 0, magHandUs = 0, magLastMoveUs = 0;
+    LONG magKeys = 0, magPrevKeys = 0;
+    DWORD magStartUs = 0, magHandUs = 0, magLastMoveUs = 0, magPressUs = 0;
     static MagTrail trail;
     HANDLE timer;
 
@@ -3516,6 +3518,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
         hand = LoadCursor(NULL, IDC_HAND);
         magArmed = !cursor_is_hand(hand);
         magHold = magFixed = magBackDue = FALSE;
+        magPrevKeys = 0;
         trail.count = 0;
         QueryPerformanceCounter(&prev);
 
@@ -3534,6 +3537,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
             double scroll_base, scroll_max, fast_base, fast_max;
             int signX, signY, idx;
             BOOL slow, had_streams, any_streams, was_still;
+            LONG keys;
             DWORD tick_us;
             POINT cur;
             int vx, vy, vw, vh;
@@ -3630,6 +3634,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
                 aim_asking = FALSE;
                 magHold = magBackDue = FALSE;
                 magArmed = FALSE;
+                magPrevKeys = 0;
                 trail.count = 0;
                 // A glide does not survive a suspend; the gap would otherwise
                 // arrive all at once.
@@ -3683,19 +3688,30 @@ static DWORD WINAPI movement_thread(LPVOID param)
             // Releasing, Shift, the left button held or another move key end
             // the pause at once; a burst that starts on a link does not stop
             // there, and the next pause needs the cursor off the hand first.
-            // A key held past g_cfg.magnet_skip ms of moving is heading
-            // far: no pause then (the time paused does not count).
+            // A press held g_cfg.magnet_skip ms is heading far: from then
+            // on nothing pauses, and a pause still running ends. The press
+            // runs from the first move key down to the last one up, however
+            // the keys change on the way, and the time paused counts, so it
+            // is the time the user has been holding the keys.
             tick_us = qpc_us_from(now, freq);
+            keys = mf & (MOVE_LEFT | MOVE_DOWN | MOVE_UP | MOVE_RIGHT);
+            if (keys != 0 && magPrevKeys == 0)
+                magPressUs = tick_us;
+            magPrevKeys = keys;
             if (g_cfg.magnet > 0 && (signX != 0 || signY != 0 || magHold)) {
                 BOOL is_hand = cursor_is_hand(hand);
                 BOOL drag = flag_get(&s_left_held);
-                LONG keys = mf & (MOVE_LEFT | MOVE_DOWN | MOVE_UP | MOVE_RIGHT);
+                BOOL far_move = keys != 0 && g_cfg.magnet_skip > 0 &&
+                    (DWORD)(tick_us - magPressUs) >=
+                        (DWORD)g_cfg.magnet_skip * 1000u;
 
                 if (magHold) {
                     // The hand went off with the pointer standing still: the
                     // app had seen the element only on its way past. Back to
-                    // where it was put that long before the hand showed.
-                    if (!is_hand && !magFixed &&
+                    // where it was put that long before the hand showed (not
+                    // when the pause is ending: the pointer goes on from
+                    // where it stands).
+                    if (!is_hand && !magFixed && !far_move &&
                         (DWORD)(tick_us - magHandUs) <= MAG_MAX_LAG_US) {
                         DWORD lag = tick_us - magLastMoveUs;
 
@@ -3708,7 +3724,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
                     }
                     // Still off the hand well after that: nothing to stop on
                     // here (the page changed, or the way back missed).
-                    if (keys == 0 || slow || drag || (keys & ~magKeys) ||
+                    if (keys == 0 || slow || drag || far_move ||
+                        (keys & ~magKeys) ||
                         (!is_hand && (DWORD)(tick_us - magStartUs) >
                                          MAG_MAX_LAG_US) ||
                         (DWORD)(tick_us - magStartUs) >=
@@ -3717,10 +3734,6 @@ static DWORD WINAPI movement_thread(LPVOID param)
                         magArmed = FALSE;
                     }
                 } else if (is_hand) {
-                    double moved = holdX > holdY ? holdX : holdY;
-                    BOOL far_move = g_cfg.magnet_skip > 0 &&
-                        moved * 1000.0 >= (double)g_cfg.magnet_skip;
-
                     if (magArmed && !was_still && !slow && !drag &&
                         !far_move) {
                         magHold = TRUE;

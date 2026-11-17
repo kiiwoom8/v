@@ -1331,6 +1331,30 @@ Invariants stated in `common.h` and enforced by history:
   transition and nothing else changing (in the tree at once, never
   reported: the next timed refresh labels it). Both were like that before.
 
+### Phase 30: the magnet's half second is the whole press (2026-11-18)
+
+- "skip magnetize function after pressing h j k l for 0.5 sec after caps
+  lock on. if there's another better way of usability, choose that option
+  instead." `magnet_skip` (phase 20) already did this on paper, but it
+  counted the acceleration's hold time: frozen during a pause and back to
+  zero when an axis was released. Over a page full of links, each 200 ms
+  pause pushed the cut-off another 200 ms out, so a key held for a second
+  or more still stopped on link after link; and turning (`l` held, `j`
+  added, `l` let go) started the count again.
+- `movement_thread` now times the press itself: `magPressUs` is the tick
+  a move key went down with none held (`magPrevKeys`, reset with the rest
+  of the burst and after a suspend), and the press lasts until the last
+  move key is up, whatever keys change on the way. Once it has run
+  `magnet_skip` ms by the clock, pauses included, no pause starts and a
+  pause still running ends at once (without the trail's step back), so
+  after half a second of holding nothing stands the pointer still. A
+  fresh press, a tap and `Shift` work as before; the default stays 500.
+- Counting from Caps Lock (mouse mode on) instead was left out: the
+  magnet is most use on the last short presses onto a link, which come
+  after the long one, and a count from mode on would have turned it off
+  for them. Built and handed to the user to try; the hook ignores
+  injected keys, so it could not be driven from a script here.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2392,7 +2416,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | `Alt+T` (`touchpad_hotkey`) turns the touchpad on while vim mouse runs and off again; phases 24 and 25 (off only while the keys steer, then in mouse mode) are gone | phase 26 | The touchpad was off all the time with no key to get it back short of pausing |
 | In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
 | A held move key pauses the pointer `magnet` ms (200) where the cursor turns into the hand (`magnet = 0` restores) | phase 16 | The pointer passed links at full speed |
-| After `magnet_skip` ms (500) of moving on one press the magnet no longer pauses (`magnet_skip = 0` restores) | phase 20 | A long hold heading far stopped on every link it crossed |
+| After `magnet_skip` ms (500) of holding the move keys the magnet no longer pauses and a running pause ends; the press counts by the clock from the first move key down to the last one up, pauses included (`magnet_skip = 0` restores) | phases 20, 30 | A long hold heading far stopped on every link it crossed; counting only the time moved let a dense page stop it well past half a second |
 | In a browser text field, `j k u d` held `hold_unfocus` ms (300) take their letter back, leave the field like `Esc` and scroll (`hold_unfocus = 0` restores) | phase 17 | A held letter repeated in the field; leaving needed `Esc` or a click |
 | vim mouse's Alt keys in a browser text field leave it like `Esc`; the hint hotkey once the hints are done, and only if the focus is still in the field it was pressed in (`alt_unfocus = 0` restores) | phase 23 | After `Alt + f` or `Alt + j` the focus stayed in the field and the keys without Alt typed |
 | A touch tap that goes down and up on a monitor's top edge puts the pointer back where it was (`touch_edge_tap`) | phase 22 | The pointer stayed at the top of the screen after the lid was closed |
@@ -2703,8 +2727,9 @@ Re-check the Teams cases in section 5 after any targeting change. The mode
 indicator: `indicator_update`, `indicator_moved`. The magnet (phase 16):
 `magHold` and its neighbours in `movement_thread`, `cursor_is_hand`,
 `MagTrail`; a pause must stay something the user can always leave at once
-(release, another key, `Shift`). `magnet_skip` (phase 20) reads `holdX` /
-`holdY`, so a change to how the hold time counts changes when it applies.
+(release, another key, `Shift`). `magnet_skip` (phases 20, 30) reads
+`magPressUs`, the press's own start, not the acceleration's `holdX` /
+`holdY`: keep it counting the time the user holds the keys.
 
 ### Add a tray menu item
 

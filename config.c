@@ -1614,9 +1614,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Releasing the key keeps it there; another move key or Shift goes on at\r\n");
     appendf(buf, cch, L"; once. 0-1000, 0 = off.\r\n");
     appendf(buf, cch, L"magnet = %d\r\n", d.magnet);
-    appendf(buf, cch, L"; Milliseconds of moving after which the magnet no longer pauses: a key\r\n");
-    appendf(buf, cch, L"; held that long is heading far, so links on the way are passed.\r\n");
-    appendf(buf, cch, L"; 0-5000, 0 = pause however long the key is held.\r\n");
+    appendf(buf, cch, L"; Milliseconds of holding the move keys after which the magnet no longer\r\n");
+    appendf(buf, cch, L"; pauses: keys held that long are heading far, so links on the way are\r\n");
+    appendf(buf, cch, L"; passed. Counted from the first move key down until the last one is up,\r\n");
+    appendf(buf, cch, L"; pauses included. 0-5000, 0 = pause however long the key is held.\r\n");
     appendf(buf, cch, L"magnet_skip = %d\r\n", d.magnet_skip);
     appendf(buf, cch, L"; Scrolling speeds in wheel units per second (one notch = 120, so 600 = 5 notches per second).\r\n");
     fmt_double(d.scroll_speed, num, sizeof(num) / sizeof(num[0]));
