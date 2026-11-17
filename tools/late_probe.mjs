@@ -5,7 +5,9 @@
 // Scenarios: insert (a nav added to the DOM), display (display: none to
 // block), visibility (hidden to visible), aria (aria-hidden removed), slide
 // (a fixed nav moved in by transform, no transition), slideanim (the same
-// over 200 ms), left (moved in by its left), details (a <details> opened).
+// over 200 ms), left (moved in by its left), details (a <details> opened),
+// offcanvas (shown and slid in over 300 ms, as Bootstrap's offcanvas does),
+// jsanim (slid in by a script's transform every frame for 300 ms).
 // Each runs once per flush setting (default 0 and 30: none, and an MSAA hit
 // test every 30 ms). The page changes itself through the DevTools protocol;
 // no input is injected and the window need not be in front. Chrome starts
@@ -18,8 +20,11 @@
 // machine. Chrome is maximized then, as a browser usually is (a small one
 // leaves the window behind it so many labels that the room for late ones
 // can run out); the window that was in front gets the foreground back.
+// --lead=ms changes the page that long before the open instead (a menu
+// button clicked, then the hint key). With log = 2 (milliseconds in vim.log)
+// the run ends with vim.log's lines of each open, in ms from the change.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -27,9 +32,12 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
-const all = "insert,display,visibility,aria,slide,slideanim,left,details";
+const all = "insert,display,visibility,aria,slide,slideanim,left,details,offcanvas,jsanim";
 const scenarios = (args.find((a) => !a.startsWith("--")) || all).split(",");
 const open = args.includes("--open");
+const lead = Number((args.find((a) => a.startsWith("--lead=")) || "--lead=-1").slice(7));
+const logPath = path.join(process.env.APPDATA || "", "vim mouse", "vim.log");
+const logSize = () => { try { return statSync(logPath).size; } catch { return 0; } };
 const flushes = ((args.find((a) => a.startsWith("--flush=")) || "--flush=0,30").slice(8)).split(",").map(Number);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,7 +47,9 @@ const html = `<!doctype html><title>late</title>
 <style>body{margin:8px;font:16px sans-serif} a{display:inline-block;padding:6px}
 #nav{background:#ddf;padding:6px}
 .slide{position:fixed;left:0;top:120px;transform:translateX(-150%)} .slide.on{transform:none}
-.anim{transition:transform .2s} .left{position:fixed;left:-700px;top:120px}</style>
+.anim{transition:transform .2s} .left{position:fixed;left:-700px;top:120px}
+.oc{position:fixed;left:0;top:120px;visibility:hidden;transform:translateX(-100%);transition:transform .3s ease-in-out,visibility .3s}
+.oc.on{visibility:visible;transform:none}</style>
 <h1>late</h1><p>${links}</p><div id=box></div>
 <script>
 const nav = ${JSON.stringify(nav)};
@@ -53,6 +63,8 @@ const setup = {
   slideanim() { box.innerHTML = '<nav id=nav class="slide anim">' + nav + '</nav>'; },
   left() { box.innerHTML = '<nav id=nav class=left>' + nav + '</nav>'; },
   details() { box.innerHTML = '<details id=d><summary>menu</summary><nav id=nav>' + nav + '</nav></details>'; },
+  offcanvas() { box.innerHTML = '<nav id=nav class=oc>' + nav + '</nav>'; },
+  jsanim() { box.innerHTML = '<nav id=nav class=slide>' + nav + '</nav>'; },
 };
 const change = {
   insert() { box.innerHTML = '<nav id=nav>' + nav + '</nav>'; },
@@ -63,6 +75,16 @@ const change = {
   slideanim() { document.getElementById("nav").classList.add("on"); },
   left() { document.getElementById("nav").style.left = "0px"; },
   details() { document.getElementById("d").open = true; },
+  offcanvas() { document.getElementById("nav").classList.add("on"); },
+  jsanim() {
+    const n = document.getElementById("nav"), t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / 300);
+      n.style.transform = k < 1 ? "translateX(" + (-150 * (1 - k)) + "%)" : "none";
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  },
 };
 const s = new URLSearchParams(location.search).get("s");
 setup[s]();
@@ -108,20 +130,50 @@ await send("Page.enable");
 await sleep(2500);
 
 if (open) {
+  const logFrom = logSize();
+  const runs = [];
+  const goNow = async (s) => {
+    const r = await send("Runtime.evaluate", { expression: "go()", returnByValue: true });
+    const t = Math.round(r.result.result.value);
+    console.log(`${t} GO ${s}`);
+    return t;
+  };
   console.log(`FRONT ${vimPost("front", String(chrome.pid)).replace(/\r?\n/g, "; ")}`);
   for (const s of scenarios) {
     await send("Page.navigate", { url: `${base}/?s=${s}` });
     await sleep(1500);
-    console.log(`${Date.now()} POST open: ${vimPost("open")}`);
-    await sleep(700);
-    const r = await send("Runtime.evaluate", { expression: "go()", returnByValue: true });
-    console.log(`${Math.round(r.result.result.value)} GO ${s}`);
+    let go, opened;
+    if (lead >= 0) {
+      go = await goNow(s);
+      await sleep(Math.max(0, go + lead - Date.now()));
+      opened = Date.now();
+      console.log(`${opened} POST open: ${vimPost("open")}`);
+    } else {
+      opened = Date.now();
+      console.log(`${opened} POST open: ${vimPost("open")}`);
+      await sleep(700);
+      go = await goNow(s);
+    }
     await sleep(2500);
     console.log(`${Date.now()} POST close: ${vimPost("close")}`);
+    runs.push({ s, go, from: Math.min(go, opened) - 100, to: Date.now() });
     await sleep(600);
   }
   if (before) console.log(`BACK ${vimPost("back", before)}`);
   flushes.length = 0;
+  // vim.log's lines of each open (log = 2 stamps them to the ms), in ms
+  // from that scenario's change.
+  const day = new Date();
+  const lines = readFileSync(logPath).subarray(logFrom).toString("utf8").split(/\r?\n/);
+  for (const run of runs) {
+    console.log(`\n=== ${run.s}${lead >= 0 ? `, page changed ${lead} ms before the open` : ""}`);
+    for (const l of lines) {
+      const m = l.match(/^\[(\d\d):(\d\d):(\d\d)\.(\d{3})\] (.*)$/);
+      if (!m) continue;
+      const t = new Date(day.getFullYear(), day.getMonth(), day.getDate(), +m[1], +m[2], +m[3], +m[4]).getTime();
+      if (t >= run.from && t <= run.to) console.log(`${String(t - run.go).padStart(6)}  ${m[5]}`);
+    }
+  }
 }
 const summary = [];
 for (const flush of flushes) {

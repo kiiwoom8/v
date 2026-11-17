@@ -122,7 +122,8 @@ typedef struct {
                                // moved or clicked (0-60000). Default 2000; 0 = never hidden.
     int    log;                // 1 = also write log lines to vim.log; 2 = also what each
                                // hint open's scan made of every element of the active
-                               // window (and no early scan); default 0
+                               // window (and no early scan), lines stamped to the ms;
+                               // default 0
     int    shortcut_paste;     // text shortcuts: 1 = paste via the clipboard (default), 0 = type keys
     int    shutdown_at;        // turn the computer off every day at this local time, in
                                // minutes after midnight (vim.ini "23:30"); -1 = none (default).
@@ -261,8 +262,12 @@ typedef struct {
                                // and end it as soon as they are in (about 330 ms after a
                                // scroll instead of 650; back / forward still wait it out), and
                                // wait like that after scrolls the browser reports itself
-                               // (mouse wheel, touchpad, keys) too, up to 300 ms; default 1.
-                               // 0 = wait out scan_settle after our own actions only.
+                               // (mouse wheel, touchpad, keys) too, up to 300 ms; with
+                               // scan_watch, also hit test the watched page every
+                               // PAGE_FLUSH_MS (30) while the hints are open, so a part a
+                               // CSS transition moves in is reported when it ends (hint.c
+                               // page_watch, uia_flush_page); default 1. 0 = wait out
+                               // scan_settle after our own actions only, never while open.
     int   scan_early;          // after a scroll, start the scan on the first flush that finds
                                // the page in and let the next flush only confirm it, instead
                                // of scanning after that confirmation: 1 = when Windows'
@@ -500,6 +505,12 @@ BOOL uia_page_point(HWND root, const POINT *prefer, POINT *out);
 // page's scroll updates arrive as EVENT_SYSTEM_SCROLLINGEND from Chromium
 // (hint.c listens), ahead of that message.
 void uia_flush(POINT pt, UINT seq);
+// The same push for a page the hints are showing: the flush thread hit tests
+// Chromium page window page (Chrome_RenderWidgetHostHWND) through MSAA every
+// every_ms, the first at once, until called again (NULL or 0 stops it). It
+// posts nothing; what comes in is reported by the browser itself (a move as
+// EVENT_OBJECT_LOCATIONCHANGE). Window functions only; returns at once.
+void uia_flush_page(HWND page, UINT every_ms);
 int  uia_focus_state(void);
 int  uia_focus_wait(DWORD max_ms);
 // Posts msg (wParam, lParam 0) to thread tid whenever an answer arrives, so a

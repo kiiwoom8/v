@@ -87,12 +87,28 @@ static void append_log_line(const WCHAR *line)
     CloseHandle(f);
 }
 
+// "[hh:mm:ss] msg" into line (1152 characters); log = 2 is for timing, so
+// its lines carry the milliseconds too.
+static void stamp_line(WCHAR *line, const WCHAR *msg)
+{
+    SYSTEMTIME st;
+
+    GetLocalTime(&st);
+    if (g_cfg.log >= 2)
+        _snwprintf(line, 1151, L"[%02d:%02d:%02d.%03d] %s",
+                   (int)st.wHour, (int)st.wMinute, (int)st.wSecond,
+                   (int)st.wMilliseconds, msg);
+    else
+        _snwprintf(line, 1151, L"[%02d:%02d:%02d] %s",
+                   (int)st.wHour, (int)st.wMinute, (int)st.wSecond, msg);
+    line[1151] = L'\0';
+}
+
 void app_log(const WCHAR *fmt, ...)
 {
     WCHAR    msg[1024];
     WCHAR    line[1152];
     va_list  ap;
-    SYSTEMTIME st;
 
     // Nobody reads it: no file (log = 0) and no debugger. Formatting the
     // line and OutputDebugString (an exception raised and caught, then a
@@ -106,10 +122,7 @@ void app_log(const WCHAR *fmt, ...)
     msg[1023] = L'\0';
     va_end(ap);
 
-    GetLocalTime(&st);
-    _snwprintf(line, 1151, L"[%02d:%02d:%02d] %s",
-               (int)st.wHour, (int)st.wMinute, (int)st.wSecond, msg);
-    line[1151] = L'\0';
+    stamp_line(line, msg);
 
     ensure_log_cs();
     EnterCriticalSection(&g_log_cs);
@@ -127,17 +140,13 @@ static void log_always(const WCHAR *fmt, ...)
     WCHAR    msg[1024];
     WCHAR    line[1152];
     va_list  ap;
-    SYSTEMTIME st;
 
     va_start(ap, fmt);
     _vsnwprintf(msg, 1023, fmt, ap);
     msg[1023] = L'\0';
     va_end(ap);
 
-    GetLocalTime(&st);
-    _snwprintf(line, 1151, L"[%02d:%02d:%02d] %s",
-               (int)st.wHour, (int)st.wMinute, (int)st.wSecond, msg);
-    line[1151] = L'\0';
+    stamp_line(line, msg);
 
     ensure_log_cs();
     EnterCriticalSection(&g_log_cs);

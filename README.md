@@ -255,7 +255,10 @@ hints stay open the monitor is scanned again every `scan_refresh` ms (default
 apps built on them the page's own report of new content starts that search
 at once: a menu, nav bar or panel that a page adds, shows or opens while the
 hints are up has its labels about 50 ms later instead of up to half a
-second (`scan_watch`). A label already on
+second (`scan_watch`). One that slides in by a CSS animation gets them
+about 50 ms after the animation ends, because vim mouse asks the browser
+for its positions every 30 ms while the hints are open (`scan_flush`);
+the same applies when it slid in just before the hotkey. A label already on
 screen stays put and keeps its letters (`keep_labels`, default 1): a label you
 have read never moves, changes or disappears under you, and still clicks
 where it is drawn. An element that only shifted a few pixels gets no second
@@ -570,9 +573,11 @@ ones:
   the wait is over wait for it, hints opened later scan at once. 0 = never
   wait), `scan_flush` (1 = during that wait ask the browser to send its
   changes at once and end it as soon as they are in, and wait like that
-  after scrolls the browser reports itself, such as the mouse wheel,
-  default; 0 = wait out `scan_settle` after vim mouse's own scrolls and
-  clicks only), `scan_early` (after a scroll, the browser's first answer
+  after scrolls the browser reports itself, such as the mouse wheel; with
+  `scan_watch`, also ask it every 30 ms while the hints are open, so a menu
+  that slides in gets its labels as soon as it stops instead of up to half
+  a second later; default. 0 = wait out `scan_settle` after vim mouse's own
+  scrolls and clicks only, and never ask while open), `scan_early` (after a scroll, the browser's first answer
   usually has the page in and the second only confirms it: 1 = search for
   the elements from the first answer on when Windows' animation effects
   are off, since Chrome and Edge then scroll without animating, default;
@@ -621,7 +626,8 @@ ones:
   mouse was last used. 0 = never hidden)
 - `indicator`, `log` (1 = write `vim.log`; 2 = also write, for every hint
   open, each element of the active window with where it is and whether it
-  got a label or why not, and turn the early scan off)
+  got a label or why not, stamp each line to the millisecond, and turn the
+  early scan off)
 - `shortcut_method` (`paste` or `type`: how text shortcuts insert their text)
 - `shutdown_at` (a 24-hour time such as `23:30`: turn the computer off every
   day then; `none` = only when chosen in the tray menu, default),
@@ -773,9 +779,12 @@ user's store.
 - **A menu or nav bar that appears while the hints are open gets its labels
   late, or none.** With `log = 1`, `vim.log` says "N new labels M ms after
   the page reported them" for each such change (`scan_watch`; about 30 to
-  50 ms on a simple page). No line means the browser reported nothing (a
-  part slid in by an animation is picked up by the next refresh) or every
-  free label was taken: labels on screen never change, so when other
+  50 ms on a simple page; a part that slides in by a CSS animation is
+  reported when the animation ends, with `scan_flush`). No line means the
+  browser reported nothing (a part a script slides in frame by frame
+  comes in at the browser's own pace, up to half a second; one moved with
+  no animation and no other change is picked up by the next refresh) or
+  every free label was taken: labels on screen never change, so when other
   windows already used up the free ones, press the hint hotkey again to
   relabel everything.
 - **The hints take long to appear in a browser right after scrolling.** With

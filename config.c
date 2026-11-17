@@ -1572,7 +1572,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"hide_pointer = %d\r\n", d.hide_pointer);
     appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to this file.\r\n");
     appendf(buf, cch, L"; 2 = also log what each hint open found in the active window, element by\r\n");
-    appendf(buf, cch, L"; element, and why any was left out (for a window or panel without labels).\r\n");
+    appendf(buf, cch, L"; element, and why any was left out (for a window or panel without labels),\r\n");
+    appendf(buf, cch, L"; with each line's time to the millisecond.\r\n");
     appendf(buf, cch, L"log = %d\r\n", d.log);
     appendf(buf, cch, L"; How text shortcuts insert their text: paste (through the clipboard,\r\n");
     appendf(buf, cch, L"; which is restored afterwards; works best in browsers and with an IME)\r\n");
@@ -1807,8 +1808,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; end it as soon as they are in (a few dozen ms after a scroll where the\r\n");
     appendf(buf, cch, L"; browser does not animate scrolling, else once its animation is over);\r\n");
     appendf(buf, cch, L"; also wait like this after scrolls the browser reports itself (mouse\r\n");
-    appendf(buf, cch, L"; wheel, touchpad, keys). 0 = wait out scan_settle after this program's\r\n");
-    appendf(buf, cch, L"; own scrolls and clicks only.\r\n");
+    appendf(buf, cch, L"; wheel, touchpad, keys). With scan_watch, also ask every 30 ms while the\r\n");
+    appendf(buf, cch, L"; hints are open, so a menu that slides in gets its labels as soon as it\r\n");
+    appendf(buf, cch, L"; stops. 0 = wait out scan_settle after this program's own scrolls and\r\n");
+    appendf(buf, cch, L"; clicks only, and never ask while the hints are open.\r\n");
     appendf(buf, cch, L"scan_flush = %d\r\n", d.scan_flush ? 1 : 0);
     appendf(buf, cch, L"; After a scroll, the first time the browser is asked it usually has the\r\n");
     appendf(buf, cch, L"; page in already, and a second question only confirms it. 1 = search\r\n");

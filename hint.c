@@ -83,6 +83,10 @@
 // A Chrome without a page window reports no page content (uia.c
 // tree_page_loading): while its page loads, scan again this often instead.
 #define LOAD_POLL_MS      250
+// scan_watch with scan_flush: a watched page is hit tested this often
+// (uia_flush_page), so a part a transform moves in reaches the tree, and is
+// reported, within this long of the move's end instead of up to 500 ms.
+#define PAGE_FLUSH_MS     30
 #ifndef IA2_EVENT_DOCUMENT_LOAD_COMPLETE
 #define IA2_EVENT_DOCUMENT_LOAD_COMPLETE 0x105
 #endif
@@ -280,6 +284,7 @@ static BOOL      g_load_seen;        // this watch saw the page busy (g_load_t0 
 // changing would starve it); a report that comes earlier runs the next one
 // as soon as it has (refresh_answered).
 static HWINEVENTHOOK g_load_move_hook; // EVENT_OBJECT_LOCATIONCHANGE
+static BOOL      g_load_flushing;    // uia_flush_page hit tests the watched page
 static BOOL      g_refresh_out;      // a refresh is out and the active window has not answered
 static BOOL      g_content_again;    // a report came meanwhile: refresh again once it has
 static BOOL      g_refresh_now;      // TIMER_REFRESH_ID fires at once; schedule_refresh keeps that
@@ -3077,6 +3082,10 @@ static void load_unhook(void)
         UnhookWinEvent(g_load_move_hook);
         g_load_move_hook = NULL;
     }
+    if (g_load_flushing) {
+        uia_flush_page(NULL, 0);
+        g_load_flushing = FALSE;
+    }
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_LOAD_ID);
     ++g_load_gen;
     g_load_root = NULL;
@@ -3211,6 +3220,12 @@ static BOOL page_watch(BOOL need_page)
                                            NULL, load_event_proc, pid, 0,
                                            WINEVENT_OUTOFCONTEXT |
                                            WINEVENT_SKIPOWNPROCESS);
+    // Chromium holds a transform's new position back up to 500 ms and then
+    // reports it as a move; a hit test sends it at once (uia_flush_page).
+    if (g_load_move_hook && g_cfg.scan_flush) {
+        uia_flush_page(page.best, PAGE_FLUSH_MS);
+        g_load_flushing = TRUE;
+    }
     g_load_root = root;
     g_load_t0 = GetTickCount();
     return TRUE;

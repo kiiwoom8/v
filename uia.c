@@ -4745,10 +4745,49 @@ static BOOL flush_at(UiaEngine *engine, POINT pt)
     return reached;
 }
 
+// IAccessible as far as this file calls it (defined with msaa_state).
+typedef struct IAccessibleMsaa IAccessibleMsaa;
+static IAccessibleMsaa *msaa_object(HWND hwnd, LONG objid, UINT timeout_ms);
+static HRESULT msaa_hit(IAccessibleMsaa *acc, POINT pt);
+static void msaa_release(IAccessibleMsaa *acc);
+
+// One hit test of a watched page (uia_flush_page), at the middle of its
+// window and through MSAA on the window itself: flush_at's ElementFromPoint
+// goes to whatever is on top at the point, and while the hints are open
+// that can be the overlay. Chromium answers accHitTest through the same
+// CachingAsyncHitTest, so the renderer's serialization takes every pending
+// position along (measured 2026-11-18, tools/late_probe.c: a 200 ms
+// transform transition reached the tree at its end, 200 ms, instead of at
+// 469 ms, and was reported as EVENT_OBJECT_LOCATIONCHANGE; a page at rest
+// reported nothing for 45 hit tests). The object is kept between hits; one
+// that fails (the page window went, its renderer changed) is let go and
+// asked for again next time.
+static void page_flush(HWND page, IAccessibleMsaa **acc)
+{
+    RECT r;
+    POINT pt;
+
+    if (!IsWindow(page) || !GetWindowRect(page, &r))
+        return;
+    if (!*acc)
+        *acc = msaa_object(page, (LONG)OBJID_CLIENT, 200);
+    if (!*acc)
+        return;
+    pt.x = r.left + (r.right - r.left) / 2;
+    pt.y = r.top + (r.bottom - r.top) / 2;
+    if (FAILED(msaa_hit(*acc, pt))) {
+        msaa_release(*acc);
+        *acc = NULL;
+    }
+}
+
 // The flush runs on a thread of its own, with an engine of its own, so it is
 // never queued behind a scan on the worker (the wait reads its timing, and
 // the scan it starts early must not delay the flush that confirms it). It
 // posts WM_APP_FLUSH_DONE (wParam = reached, lParam = the request's seq).
+// Between those requests it hit tests the page uia_flush_page names, every
+// g_fl_every ms, and posts nothing for it: what the hit test brings in, the
+// browser reports itself.
 static HANDLE g_fl_thread;
 static HANDLE g_fl_wake;
 static CRITICAL_SECTION g_fl_cs;
@@ -4757,6 +4796,8 @@ static volatile LONG g_fl_quit;
 static BOOL  g_fl_pending;
 static POINT g_fl_pt;
 static UINT  g_fl_seq;
+static HWND  g_fl_page;
+static UINT  g_fl_every;
 
 static DWORD WINAPI flush_worker(void *arg)
 {
@@ -4768,13 +4809,29 @@ static DWORD WINAPI flush_worker(void *arg)
     if (hr != S_OK && hr != S_FALSE)
         return 0;
     if (uia_engine_init(&engine, FALSE)) {
+        IAccessibleMsaa *page_acc = NULL;
+        HWND acc_page = NULL;       // the page page_acc and next belong to
+        DWORD next = 0;             // the next hit test of that page
+
         for (;;) {
             BOOL pending;
             POINT pt;
             UINT seq;
             BOOL reached;
+            HWND page;
+            UINT every;
+            DWORD wait = INFINITE, woke;
 
-            if (WaitForSingleObject(g_fl_wake, INFINITE) != WAIT_OBJECT_0)
+            EnterCriticalSection(&g_fl_cs);
+            page = g_fl_page;
+            LeaveCriticalSection(&g_fl_cs);
+            if (page) {
+                DWORD now = GetTickCount();
+                wait = (page != acc_page || (LONG)(now - next) >= 0)
+                           ? 0 : next - now;
+            }
+            woke = WaitForSingleObject(g_fl_wake, wait);
+            if (woke != WAIT_OBJECT_0 && woke != WAIT_TIMEOUT)
                 break;
             if (InterlockedCompareExchange(&g_fl_quit, 0, 0))
                 break;
@@ -4783,14 +4840,29 @@ static DWORD WINAPI flush_worker(void *arg)
             pt = g_fl_pt;
             seq = g_fl_seq;
             g_fl_pending = FALSE;
+            page = g_fl_page;
+            every = g_fl_every;
             LeaveCriticalSection(&g_fl_cs);
-            if (!pending)
-                continue;
-            reached = flush_at(&engine, pt);
-            if (g_main_wnd)
-                PostMessageW(g_main_wnd, WM_APP_FLUSH_DONE, (WPARAM)reached,
-                             (LPARAM)seq);
+            if (pending) {
+                reached = flush_at(&engine, pt);
+                if (g_main_wnd)
+                    PostMessageW(g_main_wnd, WM_APP_FLUSH_DONE,
+                                 (WPARAM)reached, (LPARAM)seq);
+            }
+            if (page != acc_page) {
+                if (page_acc)
+                    msaa_release(page_acc);
+                page_acc = NULL;
+                acc_page = page;
+                next = GetTickCount();
+            }
+            if (page && (LONG)(GetTickCount() - next) >= 0) {
+                page_flush(page, &page_acc);
+                next = GetTickCount() + every;
+            }
         }
+        if (page_acc)
+            msaa_release(page_acc);
         uia_engine_cleanup(&engine);
     } else {
         app_log(L"uia: flush engine init failed");
@@ -4807,6 +4879,8 @@ static void flush_worker_start(void)
     g_fl_cs_ready = TRUE;
     g_fl_quit = 0;
     g_fl_pending = FALSE;
+    g_fl_page = NULL;
+    g_fl_every = 0;
     g_fl_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (g_fl_wake)
         g_fl_thread = CreateThread(NULL, 0, flush_worker, NULL, 0, NULL);
@@ -5032,6 +5106,17 @@ void uia_flush(POINT pt, UINT seq)
     g_fl_pt = pt;
     g_fl_seq = seq;
     g_fl_pending = TRUE;
+    LeaveCriticalSection(&g_fl_cs);
+    SetEvent(g_fl_wake);
+}
+
+void uia_flush_page(HWND page, UINT every_ms)
+{
+    if (!g_fl_thread || !g_fl_cs_ready)
+        return;
+    EnterCriticalSection(&g_fl_cs);
+    g_fl_page = every_ms ? page : NULL;
+    g_fl_every = every_ms;
     LeaveCriticalSection(&g_fl_cs);
     SetEvent(g_fl_wake);
 }
@@ -6267,12 +6352,12 @@ static int focus_element_kind(IUIAutomationElement *el)
     return FOCUS_OTHER;
 }
 
-// The MSAA caret object (IAccessible); only get_accState is called.
-typedef struct IAccessibleCaret IAccessibleCaret;
-typedef struct IAccessibleCaretVtbl {
+// An MSAA object (IAccessible) up to the last method this file calls:
+// get_accState (the caret, msaa_state) and accHitTest (a page, page_flush).
+typedef struct IAccessibleMsaaVtbl {
     void *QueryInterface;
     void *AddRef;
-    ULONG (STDMETHODCALLTYPE *Release)(IAccessibleCaret *This);
+    ULONG (STDMETHODCALLTYPE *Release)(IAccessibleMsaa *This);
     void *GetTypeInfoCount;
     void *GetTypeInfo;
     void *GetIDsOfNames;
@@ -6285,12 +6370,23 @@ typedef struct IAccessibleCaretVtbl {
     void *get_accDescription;
     void *get_accRole;
     HRESULT (STDMETHODCALLTYPE *get_accState)(
-        IAccessibleCaret *This, VARIANT child, VARIANT *state);
-} IAccessibleCaretVtbl;
-struct IAccessibleCaret { IAccessibleCaretVtbl *lpVtbl; };
+        IAccessibleMsaa *This, VARIANT child, VARIANT *state);
+    void *get_accHelp;
+    void *get_accHelpTopic;
+    void *get_accKeyboardShortcut;
+    void *get_accFocus;
+    void *get_accSelection;
+    void *get_accDefaultAction;
+    void *accSelect;
+    void *accLocation;
+    void *accNavigate;
+    HRESULT (STDMETHODCALLTYPE *accHitTest)(
+        IAccessibleMsaa *This, LONG x, LONG y, VARIANT *child);
+} IAccessibleMsaaVtbl;
+struct IAccessibleMsaa { IAccessibleMsaaVtbl *lpVtbl; };
 
-_Static_assert(sizeof(IAccessibleCaretVtbl) == 15 * sizeof(void *),
-               "IAccessible vtable size up to get_accState");
+_Static_assert(sizeof(IAccessibleMsaaVtbl) == 25 * sizeof(void *),
+               "IAccessible vtable size up to accHitTest");
 
 static const GUID g_iid_iaccessible = {
     0x618736e0, 0x3c3d, 0x11cf,
@@ -6318,24 +6414,51 @@ static ObjectFromLresultFn oleacc_from_lresult(void)
                                                                   NULL);
 }
 
-// The MSAA state of hwnd's object objid (OBJID_CARET, OBJID_CLIENT), asked
-// with WM_GETOBJECT under a timeout so a hung window cannot hold a worker.
-static BOOL msaa_state(HWND hwnd, LONG objid, UINT timeout_ms, LONG *out)
+// hwnd's MSAA object objid (OBJID_CARET, OBJID_CLIENT), asked with
+// WM_GETOBJECT under a timeout so a hung window cannot hold a worker. NULL
+// when the window has none of its own.
+static IAccessibleMsaa *msaa_object(HWND hwnd, LONG objid, UINT timeout_ms)
 {
     ObjectFromLresultFn from_lresult = oleacc_from_lresult();
     DWORD_PTR result = 0;
-    IAccessibleCaret *acc = NULL;
-    VARIANT self, state;
-    BOOL ok = FALSE;
+    IAccessibleMsaa *acc = NULL;
 
     if (!from_lresult || !hwnd)
-        return FALSE;
+        return NULL;
     if (!SendMessageTimeoutW(hwnd, WM_GETOBJECT, 0, (LPARAM)objid,
                              SMTO_ABORTIFHUNG, timeout_ms, &result) ||
         (LONG_PTR)result <= 0)
-        return FALSE;
+        return NULL;
     if (FAILED(from_lresult((LRESULT)result, &g_iid_iaccessible, 0,
-                            (void **)&acc)) || !acc)
+                            (void **)&acc)))
+        return NULL;
+    return acc;
+}
+
+static HRESULT msaa_hit(IAccessibleMsaa *acc, POINT pt)
+{
+    VARIANT hit;
+    HRESULT hr;
+
+    VariantInit(&hit);
+    hr = acc->lpVtbl->accHitTest(acc, pt.x, pt.y, &hit);
+    VariantClear(&hit);
+    return hr;
+}
+
+static void msaa_release(IAccessibleMsaa *acc)
+{
+    acc->lpVtbl->Release(acc);
+}
+
+// The MSAA state of hwnd's object objid (msaa_object).
+static BOOL msaa_state(HWND hwnd, LONG objid, UINT timeout_ms, LONG *out)
+{
+    IAccessibleMsaa *acc = msaa_object(hwnd, objid, timeout_ms);
+    VARIANT self, state;
+    BOOL ok = FALSE;
+
+    if (!acc)
         return FALSE;
     VariantInit(&self);
     self.vt = VT_I4;
