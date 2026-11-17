@@ -54,6 +54,10 @@
 #define TIMER_ACT_ID    5
 #define TIMER_AHEAD_ID  6
 #define TIMER_LOAD_ID   7
+// Posted to the overlay by load_event_proc for a page that is in
+// (scan_watch): its refresh starts on this message, not a timer tick later.
+// wParam = g_load_gen, so a report from a watch that has ended is dropped.
+#define WM_HINT_CONTENT (WM_USER + 1)
 #define ACT_POLL_MS     10
 #define ACT_WAIT_MAX_MS 3000
 // alt_unfocus: after a hint click, the app's own focus change (a click into
@@ -263,6 +267,25 @@ static BOOL      g_load_gather;      // TIMER_LOAD_ID runs for a burst of report
 static BOOL      g_load_poll;        // no page window to report: TIMER_LOAD_ID polls
 static BOOL      g_load_missed;      // a report came while the first scan was out
 static BOOL      g_load_done;        // the load event came: one last rescan, then stop
+static BOOL      g_load_seen;        // this watch saw the page busy (g_load_t0 is from then)
+
+// scan_watch: the same reports keep the labels current for the whole open of
+// a Chromium page, not only while it loads. A page that adds, shows or moves
+// content (a menu, a nav bar, a panel a script builds) has it in the
+// browser's tree and reports it within about a frame (measured 2026-11-18,
+// tools/late_probe.c: SHOW and REORDER, a layout move as
+// EVENT_OBJECT_LOCATIONCHANGE, all within 16 ms of the change), so a report
+// starts a refresh on the next timer tick instead of in scan_refresh ms. A refresh is never
+// restarted before the active window has answered it (a page that keeps
+// changing would starve it); a report that comes earlier runs the next one
+// as soon as it has (refresh_answered).
+static HWINEVENTHOOK g_load_move_hook; // EVENT_OBJECT_LOCATIONCHANGE
+static BOOL      g_refresh_out;      // a refresh is out and the active window has not answered
+static BOOL      g_content_again;    // a report came meanwhile: refresh again once it has
+static BOOL      g_refresh_now;      // TIMER_REFRESH_ID fires at once; schedule_refresh keeps that
+static DWORD     g_refresh_t0;       // when the refresh out started
+static DWORD     g_content_t;        // the first report no refresh has answered yet (log)
+static UINT      g_load_gen;         // load_unhook ends a watch: WM_HINT_CONTENT from it is old
 
 // Chromium reports every scroll it hands to UI Automation as
 // EVENT_SYSTEM_SCROLLINGEND (BrowserAccessibilityManager::OnLocationChanges),
@@ -314,6 +337,15 @@ static int       g_retired_count;
 static int       g_retired_cap;
 
 static BOOL      g_alloc_relabeled;  // make_room lengthened a shown label
+
+// keep_labels: the codes build_labels made prefixes to leave room for
+// elements that come later (the first letters of the alphabet, and deeper
+// codes on a large page). A merge must use them as prefixes: given out
+// whole, one late element took the room of an alphabet's worth, and the
+// next ones found every code taken (2026-11-18: a nav a page added while
+// the hints were open got no labels after the taskbar's had merged in).
+static WCHAR   (*g_planned)[MAX_LABEL_LEN];
+static int       g_planned_count;
 static BOOL      g_labels_replace;   // fonts changed: every label box is found again
 
 // Early scan started when the hint hotkey's modifier goes down. g_pre_id 0 =
@@ -364,7 +396,9 @@ static void paint_blank(void);
 static void clear_retired(void);
 static BOOL retire_label(const WCHAR *s);
 static void schedule_refresh(void);
+static void refresh_now(void);
 static void start_refresh_scan(void);
+static void content_watch(void);
 static void load_reset(void);
 static void load_note(const ClickList *list);
 static void load_content_in(void);
@@ -374,7 +408,7 @@ static void start_element_mode(void);
 static BOOL mods_held(void);
 static void act_flush(void);
 static void begin_scan(void);
-static void merge_scan(ClickList *list);
+static int merge_scan(ClickList *list);
 static BOOL scan_ready(const ClickList *list);
 static void settle_step(BOOL report);
 static void settle_poke(void);
@@ -1089,6 +1123,9 @@ static void free_elements(void)
     g_labels = NULL;
     g_target_count = 0;
     clear_retired();
+    free(g_planned);
+    g_planned = NULL;
+    g_planned_count = 0;
 }
 
 static int target_band(int top)
@@ -1172,6 +1209,19 @@ static HintLabel *build_labels(int n, int room)
         if (src < 0) src = 0;
         memcpy(out[i].s, pool[src].s, sizeof(out[i].s));
     }
+    // pool[1 .. offset) were expanded: with keep_labels they are the room.
+    free(g_planned);
+    g_planned = NULL;
+    g_planned_count = 0;
+    if (g_cfg.keep_labels && offset > 1) {
+        g_planned = (WCHAR (*)[MAX_LABEL_LEN])malloc(
+            (size_t)(offset - 1) * sizeof(*g_planned));
+        if (g_planned) {
+            for (i = 1; i < offset; ++i)
+                memcpy(g_planned[i - 1], pool[i].s, sizeof(*g_planned));
+            g_planned_count = offset - 1;
+        }
+    }
     free(pool);
     return out;
 }
@@ -1246,6 +1296,16 @@ static BOOL occupied_extends(const WCHAR *s)
     return FALSE;
 }
 
+// One of the prefixes build_labels left as room (keep_labels).
+static BOOL planned_prefix(const WCHAR *s)
+{
+    int i;
+
+    for (i = 0; i < g_planned_count; ++i)
+        if (wcscmp(g_planned[i], s) == 0) return TRUE;
+    return FALSE;
+}
+
 // Shortlex BFS over the alphabet; returns how many of out[0..need) got a label,
 // or -1 when out of memory. cap bounds the queue (it grows on the next try).
 static int alloc_pass(int need, HintLabel *out, int alen, int cap)
@@ -1273,8 +1333,9 @@ static int alloc_pass(int need, HintLabel *out, int alen, int cap)
         eq = occupied_equal(cur);
 
         if (eq == 1 || eq == 2) continue;      // a real label: never reuse
-        if (eq == 3 || occupied_extends(cur)) {
-            // A live label is under here: only its longer labels may be used.
+        if (eq == 3 || occupied_extends(cur) || planned_prefix(cur)) {
+            // A live label is under here, or room planned for later ones:
+            // only its longer labels may be used.
             if (len >= MAX_LABEL_LEN - 1) continue;
             for (j = 0; j < alen && tail < cap; ++j) {
                 wcscpy(queue[tail].s, cur);
@@ -1456,13 +1517,14 @@ static BOOL overlaps_heavily(const RECT *a, const RECT *b)
 // the user is reading moves under them. An incoming element that overlaps a
 // shown one is treated as the same element; the rest get free labels, as many
 // as fit, without lengthening a shown label.
-static void merge_scan(ClickList *list)
+// Returns how many new elements got labels.
+static int merge_scan(ClickList *list)
 {
     ClickTarget *nt;
     HintLabel *nl;
     char *used, *gone;
     int incoming = list ? list->count : 0;
-    int i, j, survivors = 0, need = 0, got;
+    int i, j, survivors = 0, need = 0, got, added_total = 0;
     BOOL keep = g_cfg.keep_labels != 0;
     BOOL changed = FALSE;
 
@@ -1479,7 +1541,7 @@ static void merge_scan(ClickList *list)
         free(nl);
         free(used);
         free(gone);
-        return;
+        return 0;
     }
 
     // Pass 1: match, update moved elements, retire the ones that went away.
@@ -1563,7 +1625,7 @@ static void merge_scan(ClickList *list)
             free(used);
             free(gone);
             if (changed || g_alloc_relabeled) invalidate();
-            return;
+            return 0;
         }
         if (g_alloc_relabeled) changed = TRUE;
         // With keep_labels, alloc_labels may return fewer than need: label as
@@ -1577,12 +1639,14 @@ static void merge_scan(ClickList *list)
             ++added;
             changed = TRUE;
         }
+        added_total = added;
         free(allocated);
     }
 
     free(used);
     free(gone);
     if (changed) invalidate();
+    return added_total;
 }
 
 static BOOL element_status_overlaps(RECT br)
@@ -2095,6 +2159,9 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT:
         paint_overlay(hwnd);
         return 0;
+    case WM_HINT_CONTENT:
+        if ((UINT)wp == g_load_gen && g_load_gather) load_content_in();
+        return 0;
     case WM_TIMER:
         if (wp == TIMER_FLASH_ID) {
             KillTimer(hwnd, TIMER_FLASH_ID);
@@ -2102,6 +2169,7 @@ static LRESULT CALLBACK hint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (wp == TIMER_REFRESH_ID) {
             KillTimer(hwnd, TIMER_REFRESH_ID);
+            g_refresh_now = FALSE;
             if (!g_open || g_mode != HINT_MODE_ELEMENTS) return 0;
             if (g_scan_retry) {
                 // An empty first scan keeps trying (same scan, same input).
@@ -2587,10 +2655,10 @@ static void settle_done(const WCHAR *why)
         if (g_open && g_mode == HINT_MODE_ELEMENTS && !scanned) {
             if (g_scanning)
                 begin_scan();
-            else if (g_refresh_on && g_hint_wnd)
+            else if (g_refresh_on)
                 // The labels shown came from the early scan of a page that
                 // moved on: catch up now, not in scan_refresh ms.
-                SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+                refresh_now();
         }
     } else if (!g_open && !scanned) {
         // Ahead of the hotkey: scan now, so it finds its labels ready.
@@ -2914,8 +2982,18 @@ static void schedule_refresh(void)
     if (!g_open || g_mode != HINT_MODE_ELEMENTS) return;
     if (g_cfg.scan_refresh <= 0 || !uia_available()) return;
     g_refresh_on = TRUE;
+    if (g_refresh_now) return;      // one is due at once already
     if (g_hint_wnd)
         SetTimer(g_hint_wnd, TIMER_REFRESH_ID, (UINT)g_cfg.scan_refresh, NULL);
+}
+
+// The next refresh (or the empty first scan's retry) on the next timer tick,
+// not in scan_refresh ms; a refresh ending meanwhile does not push it back.
+static void refresh_now(void)
+{
+    if (!g_hint_wnd) return;
+    g_refresh_now = TRUE;
+    SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
 }
 
 // Starts one background scan of this monitor. g_scanning, the typed prefix and
@@ -2928,7 +3006,47 @@ static void start_refresh_scan(void)
         g_scan_list = NULL;
     }
     ++g_scan_id;
+    g_refresh_out = TRUE;
+    g_refresh_t0 = GetTickCount();
     uia_scan(g_mon, g_scan_id, FALSE);
+}
+
+// A refresh for the page's report, started right here rather than on the
+// next timer tick (10 to 16 ms): any timed refresh is replaced by it.
+static void refresh_for_content(void)
+{
+    if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
+    g_refresh_now = FALSE;
+    start_refresh_scan();
+}
+
+// A refresh's post is in (hint_on_elements). Once the active window has
+// answered, a report that came while it was out starts the next refresh at
+// once; a finished refresh schedules the next as usual.
+static void refresh_answered(BOOL fg_in, BOOL done)
+{
+    if (fg_in && g_refresh_out) {
+        g_refresh_out = FALSE;
+        if (g_content_again) {
+            g_content_again = FALSE;
+            refresh_for_content();
+            return;
+        }
+    }
+    if (done) schedule_refresh();
+}
+
+// The refresh that answered the page's report (it started after the first
+// report not yet answered) has the active window in: say how fast its new
+// labels came, for the log.
+static void content_answered(BOOL fg_in, int added)
+{
+    if (!fg_in || !g_content_t || !tick_reached(g_refresh_t0, g_content_t))
+        return;
+    if (added > 0)
+        app_log(L"hint: %d new labels %lu ms after the page reported them",
+                added, (unsigned long)(GetTickCount() - g_content_t));
+    g_content_t = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -2955,11 +3073,17 @@ static void load_unhook(void)
         UnhookWinEvent(g_load_done_hook);
         g_load_done_hook = NULL;
     }
+    if (g_load_move_hook) {
+        UnhookWinEvent(g_load_move_hook);
+        g_load_move_hook = NULL;
+    }
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_LOAD_ID);
+    ++g_load_gen;
     g_load_root = NULL;
     g_load_gather = FALSE;
     g_load_done = FALSE;
     g_load_poll = FALSE;
+    g_load_seen = FALSE;
 }
 
 static void load_reset(void)
@@ -2968,11 +3092,24 @@ static void load_reset(void)
     g_load_busy = FALSE;
     g_load_relabel = FALSE;
     g_load_missed = FALSE;
+    g_refresh_out = FALSE;
+    g_content_again = FALSE;
+    g_refresh_now = FALSE;      // callers kill or ignore TIMER_REFRESH_ID
+    g_content_t = 0;
+}
+
+// The page is watched for the whole open (scan_watch), not only while busy:
+// the hooks stay when it is in.
+static BOOL watch_whole_open(void)
+{
+    return g_cfg.scan_watch && g_load_hook && !g_load_poll;
 }
 
 // Out of context, on this thread: only the watched window's page counts.
 // EVENT_OBJECT_SHOW and EVENT_OBJECT_REORDER of the page itself carry
 // OBJID_CLIENT and the page window; a window shown carries OBJID_WINDOW.
+// EVENT_OBJECT_LOCATIONCHANGE arrives only with scan_watch's hook (a caret's
+// carries OBJID_CARET and does not count).
 static void CALLBACK load_event_proc(HWINEVENTHOOK hook, DWORD event,
                                      HWND hwnd, LONG obj, LONG child,
                                      DWORD thread, DWORD time)
@@ -2983,6 +3120,7 @@ static void CALLBACK load_event_proc(HWINEVENTHOOK hook, DWORD event,
     if (!g_load_root || !hwnd || obj != (LONG)OBJID_CLIENT)
         return;
     if (event != EVENT_OBJECT_SHOW && event != EVENT_OBJECT_REORDER &&
+        event != EVENT_OBJECT_LOCATIONCHANGE &&
         event != IA2_EVENT_DOCUMENT_LOAD_COMPLETE)
         return;
     if (GetAncestor(hwnd, GA_ROOT) != g_load_root ||
@@ -2991,9 +3129,16 @@ static void CALLBACK load_event_proc(HWINEVENTHOOK hook, DWORD event,
         return;
     if (event == IA2_EVENT_DOCUMENT_LOAD_COMPLETE)
         g_load_done = TRUE;
+    if (!g_content_t) g_content_t = GetTickCount() ? GetTickCount() : 1;
+    // A loading page's reports come in bursts and are gathered; a page that
+    // is in reports a change all at once, with the change in its tree, so
+    // its refresh starts as soon as this thread is back in its message loop.
     if (!g_load_gather && g_hint_wnd) {
         g_load_gather = TRUE;
-        SetTimer(g_hint_wnd, TIMER_LOAD_ID, LOAD_GATHER_MS, NULL);
+        if (g_load_seen)
+            SetTimer(g_hint_wnd, TIMER_LOAD_ID, LOAD_GATHER_MS, NULL);
+        else if (!PostMessageW(g_hint_wnd, WM_HINT_CONTENT, g_load_gen, 0))
+            SetTimer(g_hint_wnd, TIMER_LOAD_ID, 1, NULL);
     }
 }
 
@@ -3022,45 +3167,80 @@ static BOOL CALLBACK page_wnd_proc(HWND hwnd, LPARAM lp)
     return TRUE;
 }
 
-// Starts listening to the active browser window's page. The hooks are bound
-// to the process that owns its page window (the browser process; a WebView2
-// page runs in one of its own), so other apps' events never reach us.
-static void load_watch(void)
+// Starts listening to the active browser window's page, unless it already
+// is. The hooks are bound to the process that owns its page window (the
+// browser process; a WebView2 page runs in one of its own), so other apps'
+// events never reach us. need_page: a window without a page window is not
+// watched at all (load_watch polls such a page while it is busy). Returns
+// whether that window is watched.
+static BOOL page_watch(BOOL need_page)
 {
     HWND fg = GetForegroundWindow();
     HWND root = fg ? GetAncestor(fg, GA_ROOT) : NULL;
     PageWnd page;
     DWORD pid = 0;
 
-    if (!root) return;
-    if (root == g_load_root && g_load_hook) return;
-    load_unhook();
+    if (!root) return FALSE;
+    if (root == g_load_root && g_load_hook) return TRUE;
     page.best = NULL;
     page.area = 0;
     EnumChildWindows(root, page_wnd_proc, (LPARAM)&page);
+    if (need_page && !page.best) return FALSE;
+    load_unhook();
     // No page window: its content is never reported (load_event_proc
     // filters on that window, and none comes from anywhere else); poll.
     g_load_poll = page.best == NULL;
     GetWindowThreadProcessId(page.best ? page.best : root, &pid);
-    if (!pid) return;
+    if (!pid) return FALSE;
     g_load_hook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER,
                                   NULL, load_event_proc, pid, 0,
                                   WINEVENT_OUTOFCONTEXT |
                                   WINEVENT_SKIPOWNPROCESS);
     if (!g_load_hook) {
         app_log(L"hint: page content hook failed (%lu)", GetLastError());
-        return;
+        return FALSE;
     }
     g_load_done_hook = SetWinEventHook(IA2_EVENT_DOCUMENT_LOAD_COMPLETE,
                                        IA2_EVENT_DOCUMENT_LOAD_COMPLETE,
                                        NULL, load_event_proc, pid, 0,
                                        WINEVENT_OUTOFCONTEXT |
                                        WINEVENT_SKIPOWNPROCESS);
+    if (g_cfg.scan_watch && !g_load_poll)
+        g_load_move_hook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,
+                                           EVENT_OBJECT_LOCATIONCHANGE,
+                                           NULL, load_event_proc, pid, 0,
+                                           WINEVENT_OUTOFCONTEXT |
+                                           WINEVENT_SKIPOWNPROCESS);
     g_load_root = root;
+    g_load_t0 = GetTickCount();
+    return TRUE;
+}
+
+// A page still loading: watched (and said so once) from the first scan
+// that found it busy.
+static void load_watch(void)
+{
+    if (!page_watch(FALSE)) return;
+    if (g_load_seen) return;
+    g_load_seen = TRUE;
     g_load_t0 = GetTickCount();
     app_log(L"hint: page still loading; waiting for its content%ls",
             g_load_poll ? L" (no page window: scanning again every 250 ms)"
                         : L"");
+}
+
+// scan_watch: an open showing elements watches the active window's page
+// from the start, if it is a browser page on the monitor scanned, so what
+// the page adds while the first scan runs is not missed either.
+static void content_watch(void)
+{
+    HWND fg = GetForegroundWindow();
+
+    if (!g_cfg.scan_watch || !g_open || g_mode != HINT_MODE_ELEMENTS ||
+        g_cfg.scan_refresh <= 0 || !fg || IsIconic(fg) ||
+        MonitorFromWindow(fg, MONITOR_DEFAULTTONULL) != g_mon)
+        return;
+    page_watch(TRUE);
 }
 
 // Every scan result that has the active window in says whether its page is
@@ -3073,7 +3253,7 @@ static void load_note(const ClickList *list)
     busy = list->page_busy && g_cfg.scan_loading && g_open &&
            g_mode == HINT_MODE_ELEMENTS && g_scan_browser;
     if (busy != g_load_busy) {
-        if (!busy && g_load_root)
+        if (!busy && g_load_seen)
             app_log(L"hint: page no longer loading after %lu ms (scan %u%ls)",
                     (unsigned long)(GetTickCount() - g_load_t0),
                     list->scan_id, list->done ? L", done" : L"");
@@ -3087,7 +3267,7 @@ static void load_note(const ClickList *list)
             g_load_gather = TRUE;
             SetTimer(g_hint_wnd, TIMER_LOAD_ID, LOAD_POLL_MS, NULL);
         }
-    } else if (g_load_hook && !g_load_relabel &&
+    } else if (g_load_hook && !g_load_relabel && !watch_whole_open() &&
              GetTickCount() - g_load_t0 >= LOAD_LIMIT_MS)
         load_unhook();      // in and quiet: stop listening
 }
@@ -3095,33 +3275,50 @@ static void load_note(const ClickList *list)
 // A burst of content reports is over (TIMER_LOAD_ID): scan again now. An
 // empty first scan retries at once; one still out is too early, so its
 // result counts as a report (g_load_missed, finalize_scan). Shown labels
-// get a refresh, which makes them afresh if they went up while busy.
+// get a refresh, which makes them afresh if they went up while busy. A
+// refresh whose active window has not answered yet is not restarted: the
+// next one follows as soon as it has (refresh_answered).
 static void load_content_in(void)
 {
+    BOOL loading = g_load_busy || g_load_seen;
+
     g_load_gather = FALSE;
     if (!g_open || g_mode != HINT_MODE_ELEMENTS) {
         load_reset();
         return;
     }
-    if (!g_load_poll)
+    if (loading && !g_load_poll)
         app_log(L"hint: page content reported after %lu ms%ls%ls",
                 (unsigned long)(GetTickCount() - g_load_t0),
                 g_load_done ? L" (loaded)" : L"",
                 g_scanning ? L"; first scan still out" : L"");
-    else if (g_cfg.log >= 2)
+    else if (loading && g_cfg.log >= 2)
         app_log(L"hint: page still loading after %lu ms; scanning again",
                 (unsigned long)(GetTickCount() - g_load_t0));
+    else if (g_cfg.log >= 2)
+        app_log(L"hint: page reported new content%ls",
+                g_scanning ? L"; first scan still out"
+                : g_refresh_out ? L"; after the refresh out"
+                                : L"; scanning again");
     if (g_scanning) {
-        if (g_scan_retry && g_hint_wnd)
-            SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+        if (g_scan_retry)
+            refresh_now();
         else
             g_load_missed = TRUE;
-    } else if (g_refresh_on && g_hint_wnd) {
-        SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+    } else if (g_refresh_on) {
+        if (g_refresh_out)
+            g_content_again = TRUE;
+        else
+            refresh_for_content();
     }
-    // The load event, or watched long enough: this was the last rescan.
-    if (g_load_done || GetTickCount() - g_load_t0 >= LOAD_LIMIT_MS)
-        load_unhook();
+    // The load event, or watched long enough: this was the last rescan of
+    // the wait for the page (scan_watch keeps listening for the open).
+    if (loading && (g_load_done || GetTickCount() - g_load_t0 >= LOAD_LIMIT_MS)) {
+        if (watch_whole_open())
+            g_load_seen = FALSE;
+        else
+            load_unhook();
+    }
 }
 
 // Replaces every label with fresh ones for list, as a reload by the hotkey
@@ -3286,16 +3483,21 @@ static BOOL adopt_prescan(void)
     g_pre_mon = NULL;
     g_pre_t0 = 0;
     g_pre_kind = PRE_NONE;
+    content_watch();
 
     if (g_scan_list && scan_ready(g_scan_list)) {
         BOOL done = g_scan_list->done;
+        // A watched page reports what it adds from now on, not what it
+        // added since the scan started: refresh once at once, however
+        // young the scan (the windows still out come with that refresh).
+        BOOL watched = g_load_hook != NULL;
 
         finalize_scan();
         // Scanned a while ago: what appeared since gets its labels now, not
         // in scan_refresh ms. (A list still coming in refreshes by itself.)
-        if (done && age > AHEAD_REFRESH_MS && g_open && g_refresh_on &&
-            g_hint_wnd)
-            SetTimer(g_hint_wnd, TIMER_REFRESH_ID, 1, NULL);
+        if (((done && age > AHEAD_REFRESH_MS) || watched) && g_open &&
+            g_refresh_on)
+            refresh_now();
         return TRUE;
     }
     if (g_hint_wnd)
@@ -3346,6 +3548,7 @@ static void start_scan(BOOL repaint)
     // queue as during any scan; settle_done starts the scan.
     ++g_scan_id;            // an older scan's posts no longer count
     uia_cancel();
+    content_watch();
     g_scan_t0 = GetTickCount();
     // A wait whose first flush found the page in (settle_early_start) has
     // a scan of its own; this one replaces it and is trusted the same.
@@ -3473,6 +3676,7 @@ static void finalize_scan(void)
         if (g_cfg.scan_refresh > 0) schedule_refresh();
     } else {
         g_refresh_on = TRUE;
+        g_refresh_t0 = g_scan_t0;
     }
 
     g_targets = (ClickTarget *)malloc((size_t)n * sizeof(*g_targets));
@@ -3502,9 +3706,10 @@ static void finalize_scan(void)
     g_state = 0;
     // Labels of a page still loading are the browser's toolbar: once the
     // page is in, they are made afresh (load_content_in, hint_on_elements).
-    // A report that came while this scan was out may already be that.
+    // A report that came while this scan was out may already be that; on a
+    // page that is in (scan_watch) it is what the scan may have missed.
     g_load_relabel = g_load_busy;
-    if (g_load_busy && g_load_missed && g_hint_wnd) {
+    if (g_load_missed && g_hint_wnd) {
         g_load_missed = FALSE;
         g_load_gather = TRUE;
         SetTimer(g_hint_wnd, TIMER_LOAD_ID, 1, NULL);
@@ -3831,6 +4036,7 @@ static BOOL open_overlay(HMONITOR mon, int mode, BOOL paint)
     free_elements();
     if (g_hint_wnd) KillTimer(g_hint_wnd, TIMER_REFRESH_ID);
     g_refresh_on = FALSE;
+    g_refresh_now = FALSE;
     g_scan_retry = FALSE;
     g_mode = mode;
     g_start_mode = mode;
@@ -4181,11 +4387,13 @@ void hint_on_elements(ClickList *list)
     // flicker back to "Finding clickable elements".
     if (g_refresh_on && !g_scanning) {
         BOOL done = list->done;
+        BOOL fg_in = list->fg_done;
+        int added;
 
         if (g_prefix_len > 0) {
             // Mid-type: leave the shown labels alone; catch up next time.
             free(list);
-            if (done) schedule_refresh();
+            refresh_answered(fg_in, done);
             return;
         }
         // The labels went up while the page was loading and nothing was
@@ -4196,12 +4404,19 @@ void hint_on_elements(ClickList *list)
             g_load_relabel = FALSE;
             relabel_all(list);
             free(list);
-            if (g_open) schedule_refresh();
+            if (g_open) refresh_answered(fg_in, done);
             return;
         }
-        merge_scan(list);
+        added = merge_scan(list);
+        if (g_cfg.log >= 2)
+            app_log(L"hint: refresh %u%ls%ls after %lu ms: %d in, %d new labels",
+                    list->scan_id, fg_in ? L", active window in" : L"",
+                    done ? L", done" : L"",
+                    (unsigned long)(GetTickCount() - g_refresh_t0),
+                    list->count, added);
         free(list);
-        if (done) schedule_refresh();
+        content_answered(fg_in, added);
+        refresh_answered(fg_in, done);
         return;
     }
 

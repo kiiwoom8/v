@@ -275,7 +275,13 @@ typedef struct {
                                // rescan as soon as the browser reports the page's content;
                                // the labels are made afresh then if no label key was typed.
                                // Default 1. 0 = the page is scanned like any other.
-    int   scan_focusable;      // 1 = in a browser window, elements that UI Automation calls
+    int   scan_watch;          // 1 = while the hints are open over a Chromium page, the
+                               // browser's own report of new, shown or moved content (a
+                               // menu, a nav bar, a panel that a script adds) starts a
+                               // rescan at once, and its new labels merge in tens of ms
+                               // after the page changed. Default 1. 0 = only every
+                               // scan_refresh ms (up to half a second later).
+    int   scan_focusable;     // 1 = in a browser window, elements that UI Automation calls
                                // keyboard-focusable but that have no clickable control type
                                // or pattern (a div with tabindex whose click handler sits on
                                // an ancestor, a range input) get labels too, unless they are

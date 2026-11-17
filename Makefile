@@ -61,6 +61,13 @@ loadprobe: tools/load_probe.exe tools/vim_post.exe
 tools/load_probe.exe: tools/load_probe.c uia.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/load_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32
 
+# Console tool that times content a Chromium page shows late: when it reaches
+# UI Automation and what the browser reports (late_probe.mjs drives it)
+lateprobe: tools/late_probe.exe
+
+tools/late_probe.exe: tools/late_probe.c uia.c common.h
+	$(CC) $(CFLAGS) -I. -o $@ tools/late_probe.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32 -loleacc
+
 tools/vim_post.exe: tools/vim_post.c common.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/vim_post.c -luser32
 
@@ -98,10 +105,11 @@ clean:
 	-@del /Q tools\hint_check.exe 2>nul || true
 	-@del /Q tools\flush_probe.exe 2>nul || true
 	-@del /Q tools\load_probe.exe 2>nul || true
+	-@del /Q tools\late_probe.exe 2>nul || true
 	-@del /Q tools\vim_post.exe 2>nul || true
 	-@del /Q tools\make_icon.exe 2>nul || true
 	-@del /Q tools\shutdown_test.exe 2>nul || true
 	-@del /Q tools\zoom_probe.exe 2>nul || true
 	-@del /Q tools\key_probe.exe 2>nul || true
 
-.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe zoomprobe keyprobe uiaccess
+.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe lateprobe zoomprobe keyprobe uiaccess

@@ -30,12 +30,12 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 
 | File | Lines | Responsibility | Names worth knowing |
 |---|---|---|---|
-| `common.h` | 480 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
+| `common.h` | 648 | The contract between modules: `WM_APP_*` messages, `Config` (every setting with its default in a comment), every cross-module function. Read it first. | `Config g_cfg`, `Hotkey`, `KMOD_*`, `ClickList`, `FOCUS_*` |
 | `labelbox.h` | 95 | Where a label box goes: at its element's top-left corner, inside the monitor, and clear of the boxes already placed (`labels_apart`). Pure geometry shared by `hint.c` and `tools/hint_check.c`, so the checker reports the boxes the overlay draws. | `labelbox_natural`, `labelbox_apart`, `LABEL_PLACE_TRIES` |
 | `main.c` | 576 | Entry point, single instance (waits for the old instance after an update), DPI awareness, main window and message routing, settings-file watcher thread, logging, startup and shutdown order, leaving the job of the program that started it, the run record (how the last run ended) and the crash filter (phase 27). | `main`, `main_wnd_proc`, `app_log`, `log_always`, `app_reload_config`, `app_config_written`, `watch_thread_proc`, `dpi_for_monitor`, `leave_starters_job`, `started_by_explorer`, `run_record_start`, `run_record_clear`, `crash_filter`, `crash_note_thread` |
-| `config.c` | 2272 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
+| `config.c` | 2447 | `vim.ini` location (exe folder or `%APPDATA%\vim mouse`), defaults, parsing, warnings, key-name parsing and formatting, default-file template, text-shortcut table (locked) and the `[shortcuts]` rewrite, import and export. | `config_set_defaults`, `config_load`, `config_path`, `process_general` / `process_mouse` / `process_hints`, `apply_*`, `build_default_ini`, `read_text_file`, `shortcuts_save`, `parse_key`, `parse_hotkey`, `parse_clock` |
 | `input.c` | 3960 | The single keyboard dispatcher: `WH_KEYBOARD_LL` hook, hotkeys, mouse mode, Alt and bare keys, text-shortcut capture, keyboard lock, Alt withholding for menus, movement and scroll thread, scroll-to-end glides, mode indicator, session and power handling, hook-loss detection, keeping the CapsLock state off, telling the hints about page actions, hiding the pointer outside mouse mode (`WH_MOUSE_LL` hook, pointer thread), putting it back after a hint click and after a touch tap on the screen's top edge, the `0 0` jump to the middle of the screen, `Esc` leaving a text field (`esc_unfocus`: armed at the press, sent to the focus worker at the release), a held `j k u d` leaving it (`hold_unfocus`: armed at the press, `OWN_HOLD` holds its repeats back, the scroll starts from the worker's answer), an Alt key of ours leaving it (`alt_unfocus`: the Alt keys at once, the hint hotkey once `hint.c` reports the hints done). | `kb_proc`, `handle_key` / `handle_down` / `handle_up`, `handle_hotkeys`, `binding_action`, `alt_key_action`, `apply_action_down`, `bare_key_ok`, `popup_open`, `alt_should_withhold`, `scroll_press`, `scroll_end_press`, `scroll_end_shift_up`, `movement_thread`, `raw_input_check`, `replace_hook`, `reset_key_state`, `caps_check`, `page_acted_at`, `ptr_update`, `mouse_proc`, `touch_edge_tap`, `own_move`, `center_key_down`, `alt_center_down`, `center_pointer`, `tap_defer`, `tap_answer`, `unfocus_key_down`, `unfocus_cancel`, `hold_key_down`, `hold_repeat`, `hold_key_up`, `hold_answer`, `hold_cancel`, `alt_unfocus`, `input_thread_proc` |
-| `hint.c` | 4186 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, the watch on a browser page still loading (status "Page loading", content reports, one relabel), monitor cycling, the grid key, clicks held back until Shift and Ctrl are up, the end of the hints reported to the focus worker (`alt_unfocus`). | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `load_note`, `load_watch`, `load_event_proc`, `load_content_in`, `relabel_all`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
+| `hint.c` | 4446 | The click-hint overlay on the UI thread: element mode (prefix-free labels), grid mode with subgrid, the status bar, queued keys during a scan, prescan adoption, the wait for a browser to catch up (started by the action itself, hints open or not; the scan starts on its first flush where the browser does not animate), live refresh merging, the watch on a browser page still loading (status "Page loading", content reports, one relabel) and on what a page adds while the hints are open (`scan_watch`: the refresh starts on the report), monitor cycling, the grid key, clicks held back until Shift and Ctrl are up, the end of the hints reported to the focus worker (`alt_unfocus`). | `hint_open`, `hint_prepare`, `hint_page_acted`, `hint_flush_done`, `hint_on_elements`, `hint_on_key`, `hint_hotkey_again`, `start_scan`, `begin_scan`, `settle_poke`, `settle_arm`, `settle_begin`, `settle_rebase`, `settle_step`, `settle_answered`, `settle_done`, `settle_early_start`, `settle_blocks`, `scroll_event_proc`, `load_note`, `load_watch`, `content_watch`, `page_watch`, `load_event_proc`, `load_content_in`, `refresh_for_content`, `refresh_answered`, `planned_prefix`, `relabel_all`, `scan_ready`, `adopt_prescan`, `finalize_scan`, `merge_scan`, `alloc_labels`, `replay_queue`, `paint_overlay`, `act_at`, `click_when_free`, `toggle_view`, `place_labels` |
 | `uia.c` | 6768 | UI Automation through hand-declared COM vtables. Five MTA workers: the element scan (one thread plus 8 helpers, which search a classic window's parts at the same time; browser windows get a second condition that adds keyboard-focusable elements), the page flush (a hit test on a thread of its own, so a scan never delays it), the scroll-target cache, the `g g` / `Shift+g` scroll to the top / bottom and the focus classifier for bare keys (which also moves the focus from a text field to the page on `Esc`, a held `j k u d` and our Alt keys). All engines are created under one lock. | `uia_worker`, `uia_helper`, `scan_root_item`, `scan_split_item`, `scan_titlebar_item`, `scan_window_finish`, `scan_filter`, `scan_window_uia`, `add_unlisted_windows`, `scan_web_window`, `focusable_left_out`, `label_stand_in`, `scan_layout`, `rescue_offscreen`, `filter_containers`, `cover_overlays`, `scan_reject`, `detail_flush`, `click_grid_build`, `slow_check`, `lazy_tree_window`, `uia_chromium_window`, `uia_browser_window`, `uia_page_point`, `page_busy`, `msaa_state`, `uia_flush`, `flush_worker`, `flush_at`, `engine_lock`, `uia_engine_init`, `scroll_worker`, `uia_scroll_aim`, `scroll_end_worker`, `scroll_end_at`, `uia_scroll_end`, `focus_worker`, `focus_classify`, `uia_focus_wait`, `uia_focus_leave_down`, `uia_focus_leave_hold`, `uia_focus_leave_result`, `uia_focus_leave_alt`, `uia_focus_leave_hint`, `uia_focus_leave_hint_done`, `leave_step`, `leave_erase`, `leave_look`, `leave_act`, `leave_page_document`, `leave_tree_document`, `browser_process`, `tree_page_loading`, `no_page_window` |
 | `tray.c` | 1456 | Tray icon and menu (with the "Schedule shutdown" submenu), balloons, the help window (balanced columns), start-with-Windows Run value and its repair. | `tray_init`, `show_menu`, `append_shutdown_menu`, `tray_on_command`, `build_help_rows`, `help_layout`, `startup_enabled`, `startup_repair`, `run_value_path` |
 | `snippet.c` | 1031 | Text-shortcut editor window (tray, "Text shortcuts..."), import and export, and inserting a shortcut's text by clipboard paste (saved and restored) or by typing. | `snippet_editor_open`, `snippet_editor_refresh`, `first_key_taken`, `snippet_insert`, `save_clipboard`, `restore_clipboard`, `paste_text` |
@@ -49,6 +49,7 @@ process, one instance (mutex `Local\vim_mouse_single_instance`).
 | `tools/uia_probe.c` | 320 | Console tool: lists what the scan finds on the monitor under the cursor (`-v` for every target, `-d` for every element of the active window with what became of it, as `log = 2`; `-n` runs, `-w` seconds before each, `-o` file). Read-only. `make probe`. | |
 | `tools/hint_check.c`, `tools/hint_check.mjs` | 1941, 804 | Compares Chrome's DOM clickables (over CDP) with the real scan and reports misses with the drop reason. `make check`, then `node tools/hint_check.mjs [url ...]`. | `g_scan_debug` hook in `uia.c` |
 | `tools/ax_sim/` | 364 | Linux check of the element filters: Chromium's real tree for a mock page (headful, AT-SPI) run through `uia.c`'s own `filter_containers`, `cover_overlays`, `rescue_pick` and `target_add`, plus a copy of the focusable-only test. `tools/ax_sim/run.sh <page> [steps]`, `OLD=<rev>` diffs against an older `uia.c`, `INPUT=<file>` replays a saved input (one written from a Windows scan: `pages/google_menu_win.txt`). | `run.sh`, `mk.py`, `conv.py`, `pages/` |
+| `tools/late_probe.c`, `tools/late_probe.mjs` | 236, 171 | What a page that is in reports when it adds, shows or moves content: the element's arrival in UI Automation (polled every 10 ms) against the page's own change and every WinEvent of the browser on its page window, optionally with an MSAA hit test every few ms (`--flush`). `--open` is the live test of `scan_watch` through `vim_post`. `make lateprobe`, then `node tools/late_probe.mjs`. | |
 | `tools/load_probe.c`, `tools/load_probe.mjs`, `tools/vim_post.c` | 117, 118, 109 | How a Chromium page reports its loading: slow local pages (streamed, a slow image, a slow first byte) in a temporary Chrome driven over CDP, with `uia.c`'s `page_busy` and the events `hint.c`'s page watch takes printed against the navigation. `--open` also opens and closes the running vim mouse's hints by message (`vim_post`, which can bring a window to the front and give it back) for a live test with `log = 1`. `make loadprobe`, then `node tools/load_probe.mjs [stream,slowimg,ttfb] [--open]`. | |
 | `tools/shutdown_test.c` | 459 | Console check of `shutdown.c` with a fake clock and a fake `ExitWindowsEx` (never shuts down): typed times, `vim.ini` values, daylight saving, sleep, late wake, the one-off against `shutdown_at`. `make shutdown-test`; runs on Windows or under Wine. | |
 | `tools/make_icon.c` | 512 | Draws `vim.ico` (large sizes stored as PNG). `make icon`. | |
@@ -1224,6 +1225,64 @@ Invariants stated in `common.h` and enforced by history:
   Claude app with vim mouse started from a session (it would end this
   session), the balloons' look, `WM_ENDSESSION` at a sign-out.
 
+### Phase 28: labels for what a page adds while the hints are open (2026-11-18)
+
+- "some navigators appear late in chrome. i need the fastest reaction".
+  Measured first, without touching the user's windows: `tools/late_probe.c`
+  and `late_probe.mjs` change a page in a temporary Chrome (a nav added to
+  the DOM, `display: none` and `visibility: hidden` lifted, `aria-hidden`
+  removed, a `<details>` opened, a fixed nav moved in by `left`, by a
+  transform and by a 200 ms transition) and time when UI Automation has the
+  element and what the browser reports. Everything but the transform had
+  the element in the tree and reported it within about a frame (all within
+  the 16 ms resolution of a WinEvent's time): `EVENT_OBJECT_SHOW` and
+  `REORDER` (with `IA2_EVENT_TEXT_INSERTED`, 0x11e) on the page window,
+  `EVENT_OBJECT_LOCATIONCHANGE` for the moved one. A transform with no
+  transition was in the tree as fast but reported nothing; one with a
+  transition reached the tree only when the 500 ms location throttle let it
+  (469 ms), or at its end (200 ms) with an MSAA hit test every 30 ms. The
+  open hints heard none of it: the page watch of phase 14 runs only while
+  a page loads, so a nav that appeared after the open waited for the next
+  `scan_refresh` (500 ms after the last refresh ended, plus the search).
+- `scan_watch` (default 1): an open showing elements over a Chromium page
+  watches it from the start (`content_watch` from `start_scan` and
+  `adopt_prescan`, the same hooks as `load_watch` through `page_watch`,
+  plus `EVENT_OBJECT_LOCATIONCHANGE`) and keeps the hooks for the whole
+  open. A report of a page that is in posts `WM_HINT_CONTENT` to the
+  overlay, and `load_content_in` starts the refresh on that message
+  (`refresh_for_content`), not a timer tick later (a tick is 10 to 16 ms,
+  and the first draft paid two: 78 ms from the report to the labels, 31 to
+  47 ms without). A refresh whose active window has not answered yet is not
+  restarted (`g_refresh_out`): the report is held (`g_content_again`) and
+  the next refresh starts when it has (`refresh_answered`), so a page that
+  keeps changing cannot starve it. A report during the first scan
+  (`g_load_missed`) refreshes once the labels are up, and an open that
+  adopts a scan made before the watch started refreshes at once. With
+  `log = 1`, "N new labels M ms after the page reported them"
+  (`content_answered`); `log = 2` adds a line for every refresh post.
+- The live test found the older fault behind "late": the new nav was in
+  the refresh (38 elements in) and got no label (`0 new labels`).
+  `build_labels` leaves room for late elements by making the first letters
+  of the alphabet prefixes, but `alloc_pass` did not know that and handed a
+  free prefix out whole as a one-letter label. So the first late elements
+  (here the windows merged in after the browser's labels showed) took
+  `s`, `d` and `f` and with them 69 codes, and the code was full after
+  nine. `build_labels` now records the nodes it expanded (`g_planned`) and
+  `alloc_pass` expands them like a shown label's prefix (`planned_prefix`):
+  late elements get two-letter codes under them, and a letter the plan
+  never expanded is still handed out alone.
+- Tested live on the user's machine (log briefly on, the overlay opened by
+  message on a maximized temporary Chrome, `late_probe.mjs --open`): an
+  inserted nav, a shown nav and an opened `<details>` got their labels 31,
+  31 and 47 ms after the browser's report, against the next refresh (up to
+  about 600 ms) or never before. No report loop on a page at rest: the
+  refreshes themselves make Chrome report nothing. Not covered: a part
+  moved in by a transform (no report; the next refresh, see section 7),
+  Firefox (no page window to watch), and a background window large enough
+  to use up the room before the page's late elements come (seen with an
+  800x600 test window over the user's maximized Chrome: 53 of its elements
+  merged in first).
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1932,6 +1991,32 @@ last ten are all `worktree-agent-*` into `element-hints`.
   reports nothing unless started with
   `--disable-features=CalculateNativeWinOcclusion`; both spoiled probe runs
   before `vim_post front` and the flag.
+- **A page that is in reports what it adds within a frame: listen while
+  the hints are open, and start the refresh on the report.** Phase 28
+  measured it (`tools/late_probe.c`): new, shown or opened content is in
+  the browser's tree and reported (`EVENT_OBJECT_SHOW` / `REORDER`, a
+  layout move as `EVENT_OBJECT_LOCATIONCHANGE`, `OBJID_CLIENT` on the page
+  window) within about 16 ms; the 500 ms throttle holds back only moves
+  during an animation, and a transform reports nothing. Waiting for the
+  timed refresh threw that away. Keep three things: hook only the page
+  window's process and only while the hints are open (`page_watch`,
+  `load_unhook` on close); never restart a refresh before the active
+  window has answered it (`g_refresh_out`, `refresh_answered`), or a page
+  that keeps changing starves the labels; and do not add a timer tick
+  between the report and the search (`WM_HINT_CONTENT`), each costs 10 to
+  16 ms. Our own searches make Chrome report nothing, so the watch does
+  not feed itself; check that again if a new kind of query is added to a
+  refresh.
+- **The room left for late labels must stay prefixes.** With
+  `keep_labels`, `build_labels` expands the first letters of the alphabet
+  (more on a large page) so their codes can go to elements that come
+  later; `g_planned` lists them and `alloc_pass` must expand them, never
+  hand one out whole (`planned_prefix`). Before phase 28 it did: three
+  late elements took `s`, `d` and `f` as labels and the 69 codes under
+  them, and everything after had none until the hotkey relabelled. The
+  room is still finite: it is used up by whatever merges first, other
+  windows included (`EARLY_ROOM_PER_WINDOW` per window still out when the
+  labels showed).
 - **An element from the scan cache cannot walk the tree.** The scan's
   cache request uses `AutomationElementMode_None` (the elements carry
   only their cached properties, no reference to the app), and the tree
@@ -2211,6 +2296,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Hints label UIA elements; the grid opens only with `hint_mode = grid` | `64a5805`, `e51fecb` | Grid only (phase 0 and 1); grid as automatic fallback (`64a5805` to `1e8677d`) |
 | A scan that finds nothing retries up to 3 s, then closes the hints | `8b0a194`, `e51fecb` | Opening the grid |
 | A browser page still loading keeps the hints open up to 10 s ("Page loading"), its content starts a rescan at once, and labels shown while it was busy are made afresh if no label key was typed (`scan_loading = 0` restores) | phase 14 | The toolbar's labels stayed and the page's links got only the free codes, or the hints closed after 3 s |
+| While the hints are open over a Chromium page, its report of new, shown or moved content starts a refresh at once, and the new labels merge 30 to 50 ms after it (`scan_watch = 0` restores the timed refresh alone) | phase 28 | Only every `scan_refresh` ms, up to about 600 ms after the change |
+| With `keep_labels`, an element that comes later gets a code under a prefix `build_labels` left free, never that prefix as a one-letter label | phase 28 | The first late elements took the free prefixes whole, and the rest got no label |
 | Hotkey again rescans (and forgets slow-window skips) | `1e8677d`, `729e682` | Opening the grid |
 | Labels refresh while open and never change meaning; shown labels stay put (`keep_labels = 0` restores the moving merge) | `8b0a194`, `33a979f` | Static labels; labels that followed their elements, vanished and grew letters (`8b0a194` to `33a979f`) |
 | `Alt+h` / `Alt+l` go back / forward; `Alt+,` / `Alt+.` scroll sideways (`alt_nav = 0` restores) | `b474c89` | `Alt+h/l` scrolled sideways (`09b7fdb`) |
@@ -2381,6 +2468,19 @@ last ten are all `worktree-agent-*` into `element-hints`.
   page that keeps `aria-busy` on its root would keep the hints waiting
   up to 10 s when nothing is found. Only tested on local mock pages in
   Chrome; not yet seen on a real slow site.
+- **Late page content beyond phase 28.** A part a page moves in by a CSS
+  transform (a drawer, a header that slides back on scroll-up) is never
+  reported, and during a transition its position reaches the tree only
+  every 500 ms; its labels come with the next timed refresh. A hit test
+  before the refresh would bring the position in (measured: the transition's
+  end at 200 ms instead of 469 ms), but the flush thread serves the settle
+  wait's state machine (one request slot), so it needs a request kind of
+  its own first. The room for late labels can run out when another window
+  merges many elements first (an 800x600 Chrome over a maximized one:
+  53); planning more room costs one more two-letter label per alphabet's
+  worth, a choice for the user. Seen only on local mock pages in a
+  temporary Chrome, not yet on the user's sites: with `log = 1`, the "new
+  labels ... after the page reported them" lines say how it does there.
 - **Version** is still `1.0.0` in `version.h`; no `v*` tag exists yet. Which build runs
   shows in the help window's title and `vim.log`'s first line (build time).
 
@@ -2508,7 +2608,19 @@ result with the foreground window in), `load_watch` and `load_event_proc`
 refresh path of `hint_on_elements`), `scan_hard_limit`, `LOAD_LIMIT_MS`,
 `LOAD_GATHER_MS`. `make loadprobe`, then `node tools/load_probe.mjs` shows
 what the browser reports while slow pages load; `--open` adds a live test
-of the overlay (it takes the keyboard for a few seconds each time).
+of the overlay (it takes the keyboard for a few seconds each time). What a
+page adds while the hints are open (`scan_watch`): `content_watch` and
+`page_watch` (the hooks, shared with the loading watch), `load_event_proc`
+(`WM_HINT_CONTENT`, `g_load_gen`), `load_content_in`, `refresh_for_content`,
+`refresh_answered`, `content_answered`, `g_refresh_out`, `g_content_again`,
+`refresh_now` (a refresh on the next tick that `schedule_refresh` does not
+push back). The room for late labels: `build_labels` (`g_planned`) and
+`alloc_pass` (`planned_prefix`). `make lateprobe`, then `node
+tools/late_probe.mjs [insert,display,visibility,aria,slide,slideanim,left,details]
+[--flush=0,30]` times when a change reaches UI Automation and what the
+browser reports, without touching any other window; `--open` opens the
+running vim mouse's hints on a maximized temporary Chrome for each
+change (the overlay takes the keyboard for about 3 s each).
 
 ### Change scrolling or movement
 

@@ -251,7 +251,11 @@ status bar says "Finding clickable elements" while the scan runs; usually it
 does not show at all, because the scan already ran when the screen last
 changed (`scan_ahead`, see Settings) and the labels appear at once. While the
 hints stay open the monitor is scanned again every `scan_refresh` ms (default
-500), so elements that appear get labels by themselves. A label already on
+500), so elements that appear get labels by themselves. In Chrome, Edge and
+apps built on them the page's own report of new content starts that search
+at once: a menu, nav bar or panel that a page adds, shows or opens while the
+hints are up has its labels about 50 ms later instead of up to half a
+second (`scan_watch`). A label already on
 screen stays put and keeps its letters (`keep_labels`, default 1): a label you
 have read never moves, changes or disappears under you, and still clicks
 where it is drawn. An element that only shifted a few pixels gets no second
@@ -579,7 +583,11 @@ ones:
   and search again the moment the browser reports the page's content; if no
   label key was typed by then, the labels are made afresh, so the page's
   links get short ones, default; 0 = treat the page like any other, which
-  labels only the browser's toolbar until the next refresh), `scan_focusable` (1 = in a browser, also label elements
+  labels only the browser's toolbar until the next refresh), `scan_watch` (1 =
+  while the hints are open over Chrome, Edge or an app built on them, the
+  browser's report of new, shown or moved content on the page starts a new
+  search at once, so a menu or nav bar that appears gets its labels within
+  tens of milliseconds, default; 0 = only every `scan_refresh` ms), `scan_focusable` (1 = in a browser, also label elements
   that only say they can take the keyboard focus, such as a `div` with
   `tabindex` whose click handler sits on an ancestor or a range slider,
   unless they are text, scroll areas, lie outside the page or cover over a
@@ -762,6 +770,14 @@ user's store.
   it (`scan_loading`). With `log = 1`, `vim.log` says when the page was seen
   loading, when its content was reported and whether the labels were made
   afresh; a label key typed before then keeps the labels as they are.
+- **A menu or nav bar that appears while the hints are open gets its labels
+  late, or none.** With `log = 1`, `vim.log` says "N new labels M ms after
+  the page reported them" for each such change (`scan_watch`; about 30 to
+  50 ms on a simple page). No line means the browser reported nothing (a
+  part slid in by an animation is picked up by the next refresh) or every
+  free label was taken: labels on screen never change, so when other
+  windows already used up the free ones, press the hint hotkey again to
+  relabel everything.
 - **The hints take long to appear in a browser right after scrolling.** With
   `log = 1`, `vim.log` says how long each wait for the page took and how it
   ended: "stopped" or "asked" is the browser answering (a few dozen
