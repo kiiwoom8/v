@@ -170,6 +170,11 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // mouse event by it so the pointer hides at once.
 #define PTR_TIMER        3
 #define PTR_IDLE_MAX_MS  60000
+// touch_top: while the touchscreen sends raw input (and TOUCH_QUIET_MS
+// after), the power window looks at the pointer this often.
+#define TOUCH_TIMER      4
+#define TOUCH_POLL_MS    15
+#define TOUCH_QUIET_MS   300
 
 #define IND_KEY_COLOR RGB(255, 0, 255)
 #define IND_BLUE      RGB(0x2D, 0x7F, 0xF9)
@@ -4537,6 +4542,73 @@ static BOOL register_raw_keyboard(HWND target, BOOL on)
     return RegisterRawInputDevices(&device, 1, sizeof(device));
 }
 
+// The touchscreen (HID digitizer page, touch screen usage) as raw input:
+// every touch report, whichever app the finger is on.
+static BOOL register_raw_touch(HWND target, BOOL on)
+{
+    RAWINPUTDEVICE device;
+
+    ZeroMemory(&device, sizeof(device));
+    device.usUsagePage = 0x0D;
+    device.usUsage = 0x04;
+    device.dwFlags = on ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+    device.hwndTarget = on ? target : NULL;
+    return RegisterRawInputDevices(&device, 1, sizeof(device));
+}
+
+// A touch Windows makes no mouse input from (Chrome reads its tab strip as
+// WM_POINTER) still moves the pointer, and the mouse hook never sees it.
+// So while the touchscreen reports, the power window checks the pointer:
+// the first place a touch moves it to (away from s_rest_pt, where the real
+// mouse and our moves left it) decides the touch. At the top (touch_top)
+// the pointer goes back to s_rest_pt at every check until the touch ends
+// (no report for TOUCH_QUIET_MS); elsewhere it is left alone.
+static BOOL  s_raw_touch_on = FALSE;
+static BOOL  s_touch_poll_on = FALSE;
+static DWORD s_touch_raw_tick;
+static int   s_touch_raw_kind = 0;   // 0 = undecided, 1 = at the top, 2 = elsewhere
+
+static void touch_raw_check(void)
+{
+    POINT cur;
+    BOOL  quiet = GetTickCount() - s_touch_raw_tick > TOUCH_QUIET_MS;
+
+    if (s_rest_ok && GetCursorPos(&cur) &&
+        (cur.x != s_rest_pt.x || cur.y != s_rest_pt.y)) {
+        if (s_touch_raw_kind == 0) {
+            s_touch_raw_kind = touch_at_top(cur) ? 1 : 2;
+            app_log(L"touch: raw, pointer moved to %ld,%ld (%s)", cur.x, cur.y,
+                    s_touch_raw_kind == 1 ? L"top, putting it back" : L"left alone");
+        }
+        if (s_touch_raw_kind == 1) {
+            own_move(s_rest_pt);
+            indicator_moved();
+        }
+    }
+    if (quiet) {
+        // A touch elsewhere moved the pointer on purpose: that is where it
+        // rests now, or the next touch would be judged from the old place.
+        if (s_touch_raw_kind == 2 && GetCursorPos(&cur)) {
+            s_rest_pt = cur;
+            s_rest_ok = TRUE;
+        }
+        KillTimer(s_power_wnd, TOUCH_TIMER);
+        s_touch_poll_on = FALSE;
+        s_touch_raw_kind = 0;
+    }
+}
+
+static void touch_raw_note(void)
+{
+    s_touch_raw_tick = GetTickCount();
+    if (s_touch_poll_on || g_cfg.touch_top <= 0 || !s_power_wnd)
+        return;
+    s_touch_raw_kind = 0;
+    s_touch_poll_on = SetTimer(s_power_wnd, TOUCH_TIMER, TOUCH_POLL_MS, NULL) != 0;
+    app_log(L"touch: raw input began");
+    touch_raw_check();
+}
+
 // A live hook is always called before the raw input for the same key event is
 // produced, so a raw message with an unchanged callback count means the hook
 // is gone. Keys the hook swallows produce no raw input, which keeps this
@@ -4544,9 +4616,18 @@ static BOOL register_raw_keyboard(HWND target, BOOL on)
 static void raw_input_check(HRAWINPUT raw)
 {
     RAWINPUT input;
-    UINT size = sizeof(input);
+    RAWINPUTHEADER head;
+    UINT size = sizeof(head);
     LONG calls;
 
+    if (GetRawInputData(raw, RID_HEADER, &head, &size,
+                        sizeof(RAWINPUTHEADER)) == (UINT)-1)
+        return;
+    if (head.dwType == RIM_TYPEHID) {
+        touch_raw_note();
+        return;
+    }
+    size = sizeof(input);
     if (GetRawInputData(raw, RID_INPUT, &input, &size,
                         sizeof(RAWINPUTHEADER)) == (UINT)-1)
         return;
@@ -4656,6 +4737,10 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             ptr_update();
             return 0;
         }
+        if (wp == TOUCH_TIMER) {
+            touch_raw_check();
+            return 0;
+        }
         break;
     case WM_INPUT_CAPS_CHECK:
         caps_check((UINT)wp);
@@ -4744,6 +4829,14 @@ static void cleanup_input(void)
         register_raw_keyboard(NULL, FALSE);
         s_raw_kb_on = FALSE;
     }
+    if (s_raw_touch_on) {
+        register_raw_touch(NULL, FALSE);
+        s_raw_touch_on = FALSE;
+    }
+    if (s_touch_poll_on) {
+        KillTimer(s_power_wnd, TOUCH_TIMER);
+        s_touch_poll_on = FALSE;
+    }
     if (s_power_wnd) {
         DestroyWindow(s_power_wnd);
         s_power_wnd = NULL;
@@ -4792,6 +4885,9 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
         s_raw_kb_on = register_raw_keyboard(s_power_wnd, TRUE);
         if (!s_raw_kb_on)
             app_log(L"input: raw input registration failed");
+        s_raw_touch_on = register_raw_touch(s_power_wnd, TRUE);
+        if (!s_raw_touch_on)
+            app_log(L"input: raw touch registration failed (%lu)", GetLastError());
     }
     if (s_ready_event)
         SetEvent(s_ready_event);

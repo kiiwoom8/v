@@ -70,10 +70,12 @@ out and in.)
 laptop with a touchscreen, the fingers that close the lid touch the top of
 the screen, and Windows moves the pointer there. vim mouse blocks the
 mouse input Windows makes from a touch that begins within `touch_top`
-pixels of a screen's top (default 80; 0 = off): the pointer stays where it
-was (if Windows moves it anyway, vim mouse puts it back), and apps that
-take only the mouse see no click. Apps that read touch themselves, such as
-Chrome, still get the tap; touches lower on the screen work as before.
+pixels of a screen's top (default 80; 0 = off), so apps that take only the
+mouse see no click, and it watches the touchscreen itself: when a touch
+moves the pointer to the top (Chrome's tab bar makes no mouse input, but
+the pointer still goes there), vim mouse puts it straight back where the
+mouse left it. Apps that read touch themselves, such as Chrome, still get
+the tap; touches lower on the screen work as before.
 
 **The touchpad is off while vim mouse runs** (`touchpad_off`, default 1), so
 a palm on it cannot move the pointer or click while you type. Pausing vim
