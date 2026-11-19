@@ -66,12 +66,14 @@ it. (Every program sees the same blank pointer: vim mouse swaps the system
 cursors. If vim mouse crashes while they are blank, start it again or sign
 out and in.)
 
-**A touch on the screen's top edge does not move the pointer away.** On a
-laptop with a touchscreen, the fingers that close the lid can tap the
-screen's top pixel row, and the pointer then sat at the top of the screen.
-When a touch goes down and up on a screen's top edge, vim mouse puts the
-pointer back where it was before the touch. The tap itself still reaches
-the app under it.
+**A touch at the top of the screen does not move the pointer.** On a
+laptop with a touchscreen, the fingers that close the lid touch the top of
+the screen, and Windows moves the pointer there. vim mouse blocks the
+mouse input Windows makes from a touch that begins within `touch_top`
+pixels of a screen's top (default 80; 0 = off): the pointer stays where it
+was (if Windows moves it anyway, vim mouse puts it back), and apps that
+take only the mouse see no click. Apps that read touch themselves, such as
+Chrome, still get the tap; touches lower on the screen work as before.
 
 **The touchpad is off while vim mouse runs** (`touchpad_off`, default 1), so
 a palm on it cannot move the pointer or click while you type. Pausing vim

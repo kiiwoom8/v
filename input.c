@@ -186,16 +186,19 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_PTR_UPDATE  (WM_APP + 27)  // decide again whether the pointer is hidden
 #define WM_INPUT_CENTER      (WM_APP + 28)  // key_center twice: pointer to the middle
 #define WM_INPUT_FOCUS_ANSWER (WM_APP + 29) // uia_focus_notify: a focus answer arrived
-#define WM_INPUT_TOUCH_EDGE  (WM_APP + 30)  // mouse_proc: a touch tap ended at wParam, lParam
+#define WM_INPUT_TOUCH_EDGE  (WM_APP + 30)  // mouse_proc: a touch at the top was blocked
+                                            // (wParam 1) or one began elsewhere (0, log);
+                                            // lParam = its point (MAKELPARAM)
 
 // Touch-made mouse messages carry MI_WP_SIGNATURE with this bit set (pen
 // ones without it).
 #define MI_WP_TOUCH 0x80
-// A tap on a monitor's top edge goes down within TOUCH_EDGE_PX of its top
-// (the lid's tap lands on row 0, a finger on the edge at 6) and lifts within
-// TOUCH_LIFT_PX (it drifts down: 22); a swipe down from the edge goes on.
-#define TOUCH_EDGE_PX 16
-#define TOUCH_LIFT_PX 48
+// A touch-made mouse move this long after the touch's last message begins a
+// new touch: a touch cut off by the closing lid may never send its lift.
+#define TOUCH_GAP_MS 1000
+// After the last blocked touch message the pointer is checked once more, in
+// case Windows moved it after the hook let the message go.
+#define TOUCH_RECHECK_MS 150
 
 #define MOVE_LEFT  0x01
 #define MOVE_DOWN  0x02
@@ -2809,17 +2812,87 @@ static void focus_hooks_update(void)
 // ---------------------------------------------------------------------------
 // hide_pointer
 
-// The touchscreen's top edge: a finger on the lid's top as it closes taps
-// the screen's top pixel row (all within 1 ms) and the pointer stays there.
-// mouse_proc keeps where the pointer was before any touch (s_rest_pt, every
-// move not made from touch or pen, ours included) and where a touch went
-// down; at the touch's lift touch_edge_tap puts the pointer back if the tap
-// went down and up on a monitor's top edge and the pointer is still where
-// it ended. The tap itself still reaches the app. Input thread only.
+// The touchscreen's top: the fingers that close the lid touch the top of
+// the screen and Windows moves the pointer there. A touch that begins
+// within touch_top pixels of its monitor's top is the lid's: mouse_proc
+// blocks every mouse message Windows makes from it (moves, and a button
+// release only where its press was blocked, so no app is left with a button
+// held) and posts WM_INPUT_TOUCH_EDGE; touch_edge_back puts the pointer back
+// where the last move not made from touch or pen left it (s_rest_pt, ours
+// included), at once and TOUCH_RECHECK_MS later. Apps that read touch as
+// WM_POINTER (Chrome) still get the tap: a mouse hook cannot stop that.
+// Input thread only.
 static POINT s_rest_pt;
 static BOOL  s_rest_ok = FALSE;
-static POINT s_touch_down_pt;
-static BOOL  s_touch_down_ok = FALSE;
+static BOOL  s_touch_on = FALSE;     // a touch is down (or its lift never came)
+static BOOL  s_touch_top = FALSE;    // ... and it began at the top: blocked
+static DWORD s_touch_tick;           // time of its last mouse message
+static BOOL  s_touch_lblocked = FALSE; // its left press was blocked
+static BOOL  s_touch_rblocked = FALSE; // its right press (press and hold) was
+static BOOL  s_touch_posted = FALSE; // a WM_INPUT_TOUCH_EDGE is queued
+static UINT_PTR s_touch_timer = 0;   // the recheck (thread timer)
+
+// A touch at pt began within touch_top pixels of its monitor's top.
+static BOOL touch_at_top(POINT pt)
+{
+    HMONITOR mon;
+    MONITORINFO mi;
+
+    if (g_cfg.touch_top <= 0)
+        return FALSE;
+    mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    mi.cbSize = sizeof(mi);
+    if (!mon || !GetMonitorInfoW(mon, &mi))
+        return FALSE;
+    return pt.y < mi.rcMonitor.top + g_cfg.touch_top;
+}
+
+// mouse_proc, for a mouse message Windows made from a real touch: TRUE =
+// block it.
+static BOOL touch_message(WPARAM wParam, const MSLLHOOKSTRUCT *m)
+{
+    BOOL block;
+
+    if (!s_touch_on || wParam == WM_LBUTTONDOWN ||
+        (wParam == WM_MOUSEMOVE && m->time - s_touch_tick > TOUCH_GAP_MS)) {
+        BOOL was_on = s_touch_on;
+
+        s_touch_on = TRUE;
+        s_touch_top = touch_at_top(m->pt);
+        if (!s_touch_top && g_cfg.log && !(was_on && wParam == WM_LBUTTONDOWN))
+            PostThreadMessageW(s_input_tid, WM_INPUT_TOUCH_EDGE, 0,
+                               MAKELPARAM(m->pt.x, m->pt.y));
+    }
+    s_touch_tick = m->time;
+    switch (wParam) {
+    case WM_LBUTTONDOWN:
+        block = s_touch_lblocked = s_touch_top;
+        break;
+    case WM_LBUTTONUP:
+        block = s_touch_lblocked;
+        s_touch_lblocked = FALSE;
+        if (!s_touch_rblocked)
+            s_touch_on = FALSE;
+        break;
+    case WM_RBUTTONDOWN:
+        block = s_touch_rblocked = s_touch_top;
+        break;
+    case WM_RBUTTONUP:
+        block = s_touch_rblocked;
+        s_touch_rblocked = FALSE;
+        s_touch_on = FALSE;
+        break;
+    default:
+        block = s_touch_top;
+        break;
+    }
+    if (block && !s_touch_posted) {
+        s_touch_posted = TRUE;
+        PostThreadMessageW(s_input_tid, WM_INPUT_TOUCH_EDGE, 1,
+                           MAKELPARAM(m->pt.x, m->pt.y));
+    }
+    return block;
+}
 
 // The real mouse shows the pointer again. Only the real one: moves and
 // clicks of ours carry LLMHF_INJECTED (SendInput), and a move of ours
@@ -2838,15 +2911,8 @@ static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
             }
         } else if ((m->dwExtraInfo & MI_WP_TOUCH) &&
                    !(m->flags & LLMHF_INJECTED)) {
-            if (wParam == WM_LBUTTONDOWN) {
-                s_touch_down_pt = m->pt;
-                s_touch_down_ok = TRUE;
-            } else if (wParam == WM_LBUTTONUP && s_touch_down_ok) {
-                s_touch_down_ok = FALSE;
-                PostThreadMessageW(s_input_tid, WM_INPUT_TOUCH_EDGE,
-                                   (WPARAM)(LONG_PTR)m->pt.x,
-                                   (LPARAM)(LONG_PTR)m->pt.y);
-            }
+            if (touch_message(wParam, m))
+                return 1;
         }
         // Mouse messages Windows makes from touch carry its signature in
         // dwExtraInfo: the pinch of Alt + = / Alt + - is not the real mouse.
@@ -2863,7 +2929,7 @@ static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
 }
 
 // The mouse hook exists while the session is ours: it shows a hidden
-// pointer for the real mouse and puts back a tap on the screen's top edge.
+// pointer for the real mouse and blocks a touch at the screen's top (touch_top).
 static void ptr_hook_update(void)
 {
     BOOL want = !s_ptr_away;
@@ -3041,34 +3107,32 @@ static void center_pointer(void)
         app_log(L"center: pointer to %ld,%ld", pt.x, pt.y);
 }
 
-// WM_INPUT_TOUCH_EDGE, on the input thread: a touch tap ended at up. One
-// that went down and up on a monitor's top edge put the pointer there by
-// accident (see s_rest_pt): back to where it was.
-static void touch_edge_tap(POINT up)
+// WM_INPUT_TOUCH_EDGE (blocked = 1) and the recheck timer, on the input
+// thread: a touch at the screen's top was blocked at pt; the pointer goes
+// back to where it was if Windows moved it there anyway (see s_rest_pt).
+// blocked = 0: a touch began elsewhere, only logged (log = 1).
+static void touch_edge_back(BOOL blocked, POINT pt)
 {
-    HMONITOR mon = MonitorFromPoint(up, MONITOR_DEFAULTTONULL);
-    MONITORINFO mi;
     POINT cur;
-    LONG top;
 
-    if (!mon || !s_rest_ok)
+    if (!blocked) {
+        app_log(L"touch: began at %ld,%ld", pt.x, pt.y);
         return;
-    mi.cbSize = sizeof(mi);
-    if (!GetMonitorInfoW(mon, &mi))
-        return;
-    top = mi.rcMonitor.top;
-    if (s_touch_down_pt.y > top + TOUCH_EDGE_PX ||
-        up.y > top + TOUCH_LIFT_PX)
-        return;
-    if (!GetCursorPos(&cur) || cur.x != up.x || cur.y != up.y)
-        return;
-    if (s_rest_pt.x == up.x && s_rest_pt.y == up.y)
+    }
+    if (pt.x != MAXLONG) {
+        s_touch_posted = FALSE;
+        app_log(L"touch: at the screen's top at %ld,%ld, blocked", pt.x, pt.y);
+        if (s_touch_timer)
+            KillTimer(NULL, s_touch_timer);
+        s_touch_timer = SetTimer(NULL, 0, TOUCH_RECHECK_MS, NULL);
+    }
+    if (!s_rest_ok || !GetCursorPos(&cur) ||
+        (cur.x == s_rest_pt.x && cur.y == s_rest_pt.y))
         return;
     own_move(s_rest_pt);
     indicator_moved();
-    if (g_cfg.log)
-        app_log(L"touch: a tap on the screen's top edge at %ld,%ld; pointer "
-                L"back to %ld,%ld", up.x, up.y, s_rest_pt.x, s_rest_pt.y);
+    app_log(L"touch: pointer back from %ld,%ld to %ld,%ld",
+            cur.x, cur.y, s_rest_pt.x, s_rest_pt.y);
 }
 
 // WM_INPUT_FOCUS_ANSWER, on the input thread: a focus answer arrived. A
@@ -4781,10 +4845,20 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 continue;
             }
             if (msg.message == WM_INPUT_TOUCH_EDGE) {
-                POINT up;
-                up.x = (LONG)(LONG_PTR)msg.wParam;
-                up.y = (LONG)(LONG_PTR)msg.lParam;
-                touch_edge_tap(up);
+                POINT pt;
+                pt.x = (SHORT)LOWORD(msg.lParam);
+                pt.y = (SHORT)HIWORD(msg.lParam);
+                touch_edge_back(msg.wParam != 0, pt);
+                continue;
+            }
+            if (msg.message == WM_TIMER && s_touch_timer &&
+                msg.wParam == s_touch_timer) {
+                POINT none;
+                KillTimer(NULL, s_touch_timer);
+                s_touch_timer = 0;
+                none.x = MAXLONG;
+                none.y = 0;
+                touch_edge_back(TRUE, none);
                 continue;
             }
             if (msg.message == WM_INPUT_FOCUS_ANSWER) {

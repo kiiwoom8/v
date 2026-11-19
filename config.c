@@ -565,6 +565,7 @@ void config_set_defaults(Config *c)
     c->touchpad_off = 1;
     c->indicator = INDICATOR_CURSOR;
     c->hide_pointer = 2000;
+    c->touch_top = 80;
     c->log = 0;
     c->shutdown_at = -1;
     c->shutdown_warning = 60;
@@ -846,6 +847,8 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_bool(&c->touchpad_off, line, key, val);
     else if (_wcsicmp(key, L"hide_pointer") == 0)
         apply_int_range(&c->hide_pointer, line, key, val, 0, 60000);
+    else if (_wcsicmp(key, L"touch_top") == 0)
+        apply_int_range(&c->touch_top, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"indicator") == 0) {
         if (_wcsicmp(val, L"cursor") == 0)
             c->indicator = INDICATOR_CURSOR;
@@ -1570,6 +1573,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; again this many ms after the mouse was last used (0-60000, default\r\n");
     appendf(buf, cch, L"; 2000; 0 = never hide it). It shows while paused, locked or asleep.\r\n");
     appendf(buf, cch, L"hide_pointer = %d\r\n", d.hide_pointer);
+    appendf(buf, cch, L"; A touchscreen touch that begins within this many pixels of a screen's\r\n");
+    appendf(buf, cch, L"; top (the fingers that close a laptop's lid) never moves the pointer or\r\n");
+    appendf(buf, cch, L"; clicks as a mouse; apps that read touch themselves (Chrome) still get\r\n");
+    appendf(buf, cch, L"; the tap. 0-1000, default 80; 0 = off.\r\n");
+    appendf(buf, cch, L"touch_top = %d\r\n", d.touch_top);
     appendf(buf, cch, L"; 1 = also write debug log lines to vim.log next to this file.\r\n");
     appendf(buf, cch, L"; 2 = also log what each hint open found in the active window, element by\r\n");
     appendf(buf, cch, L"; element, and why any was left out (for a window or panel without labels),\r\n");

@@ -120,6 +120,10 @@ typedef struct {
                                // back on exit, pause, lock and sleep); the real mouse shows
                                // it, and it hides again this many ms after the mouse last
                                // moved or clicked (0-60000). Default 2000; 0 = never hidden.
+    int    touch_top;          // a touchscreen touch that begins within this many pixels
+                               // of a screen's top (the fingers closing the lid) never
+                               // moves the pointer or clicks as a mouse (0-1000).
+                               // Default 80; 0 = off.
     int    log;                // 1 = also write log lines to vim.log; 2 = also what each
                                // hint open's scan made of every element of the active
                                // window (and no early scan), lines stamped to the ms;
