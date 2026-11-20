@@ -1394,6 +1394,30 @@ Invariants stated in `common.h` and enforced by history:
   to 1205,3, 1039,37 and 1150,0, each put back ("touch: raw, pointer moved
   to ... (top, putting it back)"). Built with `-Werror` (MinGW.org 6.3).
 
+### Phase 32: typing fast into a box a shortcut opened (2026-11-20)
+
+- "from zendesk, searching macro get inputs (shortcut ctrl+shift+m).
+  sometimes, if i focus that and type fast, hjkl works without alt which is
+  not intended." The shortcut opens the macro search and the page focuses
+  its input a little later; Chromium reports that focus later still (its
+  accessibility events are batched), and the window holding the focus
+  (`Chrome_RenderWidgetHostHWND`) is the same before and after, so
+  `focus_state_run` saw no move. Until the focus event or the next 500 ms
+  poll, the cached "no text field" answer from the page stood, and a fast
+  `h j k l` scrolled or went back instead of typing.
+- `focus_key_passed(vk, mods)`: besides Tab, Enter, Esc and F6 (100 ms as
+  before), a key that reaches the app with Ctrl, Alt or Win held, or a
+  typed key (`is_typing_key`), while the answer is not "text field",
+  forgets the answer through `uia_focus_changed(FOCUS_TYPED_DELAY_MS)`
+  (400 ms). The worker asks only once the keys pause that long (each such
+  key pushes `g_fx_not_before` on), and `uia_focus_wait` does not wait for
+  an ask that cannot start in time, so the bare keys type at once until
+  the answer. Inside a known text field nothing is asked. Also from mouse
+  mode's Ctrl / Alt / Win pass-through. The cost: after such a key outside
+  a text field, a bare key within 0.4 s types instead of acting (section
+  5, "Unknown means type the letter"). Built with `-Werror` (MinGW.org
+  6.3); not yet tried in Zendesk.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1732,6 +1756,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
   none). `focus_classify` asks for that caret (`caret_visible`) before UI
   Automation (`1c0a83b`). Ask the focused HWND only; Chromium's transparent child
   `Chrome_RenderWidgetHostHWND` has a caret that never moves.
+- **A shortcut or a typed key makes the answer old.** A shortcut can open
+  and focus a field inside the same window with no focus event for a while
+  (Zendesk's `Ctrl+Shift+M`, phase 32), and a typed key outside a known
+  text field means the answer may be wrong. `focus_key_passed` forgets the
+  answer and asks once the keys pause (`FOCUS_TYPED_DELAY_MS`); do not
+  narrow it to Tab / Enter / Esc / F6 again, and do not let it make the
+  hook wait.
 - **Classify by UIA patterns, not control type alone.** `5ea3a61`: a closed
   `<select>` (ComboBox) and a listbox (List) have a writable Value pattern but
   no Text pattern, so letters there only pick an item. They count as

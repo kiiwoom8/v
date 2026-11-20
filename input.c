@@ -243,6 +243,12 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // text field only once the app has had this long to move it.
 #define FOCUS_CLICK_DELAY_MS 150
 #define FOCUS_KEY_DELAY_MS   100
+// After a shortcut or a typed key that reached the app outside a known text
+// field, the answer is asked again only after this long without such a key:
+// the shortcut may open a field and focus it a little later (Zendesk's
+// Ctrl+Shift+M macro search), and Chromium reports that focus later still.
+// Until then the bare keys type, so fast typing there never scrolls.
+#define FOCUS_TYPED_DELAY_MS 400
 // Shift + g scrolls to the bottom through UI Automation on press; only where
 // that cannot scroll the area does the wheel wait for Shift to come up. If
 // Shift stays held longer than this, the press is forgotten.
@@ -2071,12 +2077,25 @@ static void hold_answer(void)
 }
 
 // Tab, Enter, Esc and F6 move the focus by keyboard; the app may not report
-// it, so ask again once it has.
-static void focus_key_passed(UINT vk)
+// it, so ask again once it has. A shortcut (Ctrl, Alt or Win held) or a typed
+// key that reached the app may move it too (Ctrl+Shift+M or / opening a
+// search box), and a typed key outside a known text field says the answer
+// may be wrong: the answer is forgotten and asked again once the keys pause
+// (FOCUS_TYPED_DELAY_MS), and the bare keys type until then. Inside a known
+// text field nothing changes. Never waits: the hook calls it.
+static void focus_key_passed(UINT vk, UINT mods)
 {
-    if (g_cfg.bare_keys &&
-        (vk == VK_TAB || vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_F6))
+    if (!g_cfg.bare_keys)
+        return;
+    if (vk == VK_TAB || vk == VK_RETURN || vk == VK_ESCAPE || vk == VK_F6) {
         uia_focus_changed(FOCUS_KEY_DELAY_MS);
+        return;
+    }
+    if (!(mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN)) && !is_typing_key(vk))
+        return;
+    if (uia_focus_state() == FOCUS_TEXT)
+        return;
+    uia_focus_changed(FOCUS_TYPED_DELAY_MS);
 }
 
 // A key reached the app: typing and shortcuts open and move things, so what
@@ -2326,6 +2345,7 @@ static BOOL handle_down(UINT vk)
     if (flag_get(&s_mouse_mode)) {
         if (mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN)) {
             s_owner[vk] = OWN_PASS;
+            focus_key_passed(vk, mods);
             ahead_key_passed();
             return FALSE;
         }
@@ -2387,7 +2407,7 @@ static BOOL handle_down(UINT vk)
     }
     center_key_down(vk, mods, center_tap);
     unfocus_key_down(vk, mods);
-    focus_key_passed(vk);
+    focus_key_passed(vk, mods);
     ahead_key_passed();
     s_owner[vk] = OWN_PASS;
     hold_key_down(vk, mods);
