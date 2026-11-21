@@ -1,5 +1,6 @@
 // A layered, mouse-transparent-around-the-art desktop secretary.
 #include "common.h"
+#include <objbase.h> // COM property types for the MinGW-w64 GDI+ headers
 #include <gdiplus.h>
 #include <shellapi.h>
 #include <windowsx.h>
@@ -254,7 +255,7 @@ static void draw_bubble(void)
     GpGraphics *g = speech.graphics;
     GpSolidFill *brush = NULL;
     GpFontFamily *family = NULL;
-    GpFont *regular = NULL, *bold = NULL, *small = NULL;
+    GpFont *regular = NULL, *bold = NULL, *footer_font = NULL;
     GpStringFormat *format = NULL;
     int shift = bubble_left ? 0 : 14;
     int x = 6 + shift, right = x + 226, bottom = bubble_height() - 8;
@@ -278,7 +279,7 @@ static void draw_bubble(void)
         goto done;
     if (GdipCreateFont(family, (REAL)px(14), FontStyleRegular, UnitPixel, &regular) != Ok ||
         GdipCreateFont(family, (REAL)px(15), FontStyleBold, UnitPixel, &bold) != Ok ||
-        GdipCreateFont(family, (REAL)px(12), FontStyleRegular, UnitPixel, &small) != Ok ||
+        GdipCreateFont(family, (REAL)px(12), FontStyleRegular, UnitPixel, &footer_font) != Ok ||
         GdipCreateStringFormat(StringFormatFlagsNoWrap, 0, &format) != Ok)
         goto done;
     GdipSetStringFormatTrimming(format, StringTrimmingEllipsisCharacter);
@@ -297,10 +298,10 @@ static void draw_bubble(void)
     if (!row_count)
         write_text(brush, regular, format, L"\xc124\xc815\xc5d0\xc11c \xbc14\xb85c\xac00\xae30\xb97c \xcd94\xac00\xd558\xc138\xc694",
                    x + 13, 50, 200, 24, 0xff554765);
-    write_text(brush, small, format, L"Esc   \xb2eb\xae30", x + 13, footer_y(), 195, 18, 0xff685678);
+    write_text(brush, footer_font, format, L"Esc   \xb2eb\xae30", x + 13, footer_y(), 195, 18, 0xff685678);
 done:
     if (format) GdipDeleteStringFormat(format);
-    if (small) GdipDeleteFont(small);
+    if (footer_font) GdipDeleteFont(footer_font);
     if (bold) GdipDeleteFont(bold);
     if (regular) GdipDeleteFont(regular);
     if (family) GdipDeleteFontFamily(family);

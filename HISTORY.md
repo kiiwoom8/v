@@ -1440,6 +1440,8 @@ Invariants stated in `common.h` and enforced by history:
   shortcut after release and use the target application's own fullscreen mode.
   App activation, artwork decoding, and painting stay on the UI thread, outside
   the low-level hook. Settings and reduced motion apply live.
+- Include `objbase.h` before `gdiplus.h`. The release runner's MinGW-w64
+  headers need the COM property type that the local MinGW.org SDK supplies.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
