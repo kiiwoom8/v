@@ -18,6 +18,8 @@
 #define POSITION_KEY L"Software\\vim mouse\\Secretary"
 #define FRAME_MS 33
 #define BUBBLE_MS 165
+#define POSES_PER_ROW 4
+#define POSE_COUNT (POSES_PER_ROW * POSES_PER_ROW)
 
 typedef struct {
     HDC dc;
@@ -29,15 +31,43 @@ typedef struct {
     SIZE size;
 } Canvas;
 
+typedef struct {
+    BYTE pose;
+    WORD duration_ms;
+} PoseStep;
+
+enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
+
+static const PoseStep idle[] = {
+    {0, 1150}, {1, 260}, {0, 450}, {2, 100}, {0, 675}, {3, 310}, {0, 820}
+};
+static const PoseStep bored[] = {
+    {4, 680}, {5, 245}, {6, 570}, {7, 480}, {4, 400}
+};
+static const PoseStep grabbed[] = {
+    {8, 160}, {9, 160}, {8, 120}, {10, 155}, {11, 140}
+};
+static const PoseStep clicked[] = {
+    {12, 90}, {13, 170}, {14, 240}, {15, 230}
+};
+static const PoseStep menu_reaction[] = {{12, 440}, {15, 210}};
+static const PoseStep landed[] = {{11, 85}, {15, 260}};
+
 static HWND pet, bubble;
 static ULONG_PTR gdiplus;
 static Canvas sprite, speech;
 static GpImage *image;
+static DWORD *pose_pixels;
+static POINT pose_clicks[POSE_COUNT];
+static RECT pose_bounds[POSE_COUNT], sprite_bounds;
+static int painted_pose = -1, reaction;
+static BOOL use_atlas;
+static BYTE painted_opacity;
 static WCHAR image_path[APP_PATH_MAX];
 static POINT anchor, pet_at, press, press_at, click_pixel, bubble_at;
 static RECT work;
 static UINT dpi;
-static DWORD born, pulse, bubble_tick, last_hint;
+static DWORD born, pulse, bubble_tick, last_hint, last_activity, press_started;
 static BOOL positioned, pressed, dragging, moved, opened, animate;
 static BOOL bubble_left;
 static int rows[SECRETARY_SLOTS], row_count, armed_key, selected = -1;
@@ -157,15 +187,104 @@ static void clear_backdrop(Canvas *c, RECT art)
     free(queue);
 }
 
+static BOOL measure_sprite(POINT *click, RECT *bounds)
+{
+    int width = sprite.size.cx, height = sprite.size.cy;
+    int x, y, nearest = INT_MAX;
+    SetRect(bounds, width, height, 0, 0);
+    for (y = 0; y < height; ++y) {
+        for (x = 0; x < width; ++x) {
+            int dx = x - width / 2, dy = y - height / 2;
+            int distance = dx * dx + dy * dy;
+            if (sprite.pixels[y * width + x] >> 24 < 128) continue;
+            if (x < bounds->left) bounds->left = x;
+            if (x >= bounds->right) bounds->right = x + 1;
+            if (y < bounds->top) bounds->top = y;
+            if (y >= bounds->bottom) bounds->bottom = y + 1;
+            if (distance < nearest) {
+                *click = (POINT){x, y};
+                nearest = distance;
+            }
+        }
+    }
+    return nearest != INT_MAX;
+}
+
+static BOOL has_alpha_haze(UINT width, UINT height)
+{
+    unsigned i;
+    GpPoint corners[4] = {{0, 0}, {(int)width - 1, 0},
+                         {0, (int)height - 1}, {(int)width - 1, (int)height - 1}};
+    for (i = 0; i < 4; ++i) {
+        ARGB pixel;
+        if (GdipBitmapGetPixel((GpBitmap *)image, corners[i].X, corners[i].Y, &pixel) != Ok ||
+            !(pixel >> 24) || pixel >> 24 > 48)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+// Some generated atlases leave low-opacity pixels across otherwise empty
+// cells. Clear the haze in the rendered window and retain soft ink edges.
+static void remove_alpha_haze(size_t count)
+{
+    size_t i;
+    for (i = 0; i < count; ++i) {
+        DWORD p = sprite.pixels[i];
+        int a = p >> 24;
+        if (a <= 48) {
+            sprite.pixels[i] = 0;
+        } else {
+            DWORD alpha = (DWORD)clamp((a - 48) * 255 / 200, 0, 255);
+            DWORD r = ((p >> 16) & 255) * alpha / a;
+            DWORD g = ((p >> 8) & 255) * alpha / a;
+            DWORD b = (p & 255) * alpha / a;
+            sprite.pixels[i] = (alpha << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+static BOOL draw_atlas(UINT width, UINT height)
+{
+    int pose, size = clamp(px(164), 64, 640);
+    size_t count = (size_t)size * size;
+    BOOL haze = has_alpha_haze(width, height);
+
+    if (width < 4 * 16 || height < 4 * 16 || width > 8192 || height > 8192 ||
+        !make_canvas(&sprite, size, size)) return FALSE;
+    pose_pixels = (DWORD *)malloc(POSE_COUNT * count * sizeof(DWORD));
+    if (!pose_pixels) return FALSE;
+    for (pose = 0; pose < POSE_COUNT; ++pose) {
+        int col = pose % POSES_PER_ROW, row = pose / POSES_PER_ROW;
+        int left = col * width / POSES_PER_ROW, top = row * height / POSES_PER_ROW;
+        int right = (col + 1) * width / POSES_PER_ROW;
+        int bottom = (row + 1) * height / POSES_PER_ROW;
+        GdipGraphicsClear(sprite.graphics, 0);
+        if (GdipDrawImageRectRectI(sprite.graphics, image, 0, 0, size, size,
+                                  left, top, right - left, bottom - top,
+                                  UnitPixel, NULL, NULL, NULL) != Ok)
+            return FALSE;
+        GdipFlush(sprite.graphics, FlushIntentionSync);
+        if (haze) remove_alpha_haze(count);
+        if (!measure_sprite(&pose_clicks[pose], &pose_bounds[pose])) return FALSE;
+        CopyMemory(pose_pixels + pose * count, sprite.pixels, count * sizeof(DWORD));
+    }
+    return TRUE;
+}
+
 static BOOL draw_sprite(void)
 {
     UINT w, h;
-    int width, height, x, y, nearest = INT_MAX;
+    int width, height;
     int size = px(144);
 
+    free(pose_pixels);
+    pose_pixels = NULL;
+    painted_pose = -1;
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
         !w || !h || w > INT_MAX || h > INT_MAX)
         return FALSE;
+    if (use_atlas) return draw_atlas(w, h);
     width = w >= h ? size : clamp(MulDiv(size, (int)w, (int)h), 1, size);
     height = h >= w ? size : clamp(MulDiv(size, (int)h, (int)w), 1, size);
     if (!make_canvas(&sprite, width, height)) return FALSE;
@@ -181,17 +300,7 @@ static BOOL draw_sprite(void)
     }
     GdipFlush(sprite.graphics, FlushIntentionSync);
     clear_backdrop(&sprite, (RECT){0, 0, width, height});
-    for (y = 0; y < height; ++y) {
-        for (x = 0; x < width; ++x) {
-            int dx = x - width / 2, dy = y - height / 2;
-            int distance = dx * dx + dy * dy;
-            if (distance < nearest && sprite.pixels[y * width + x] >> 24 >= 128) {
-                click_pixel = (POINT){x, y};
-                nearest = distance;
-            }
-        }
-    }
-    return nearest != INT_MAX;
+    return measure_sprite(&click_pixel, &sprite_bounds);
 }
 
 static BOOL update_monitor(POINT point)
@@ -338,7 +447,8 @@ void secretary_dismiss(void)
 
 static void open_bubble(void)
 {
-    int i, width, height;
+    int i, width, height, left = pet_at.x + sprite_bounds.left;
+    int right = pet_at.x + sprite_bounds.right;
     if (input_is_locked() || hint_is_open() || pending_slot >= 0) return;
     row_count = 0;
     for (i = 0; i < SECRETARY_SLOTS; ++i)
@@ -346,21 +456,25 @@ static void open_bubble(void)
     width = px(252);
     height = px(bubble_height());
     if (!make_canvas(&speech, width, height)) return;
-    bubble_left = pet_at.x - width + px(10) >= work.left ||
+    bubble_left = left - width + px(10) >= work.left ||
                   pet_at.x > (work.left + work.right) / 2;
-    bubble_at.x = bubble_left ? pet_at.x - width + px(12)
-                              : pet_at.x + sprite.size.cx - px(12);
+    bubble_at.x = bubble_left ? left - width + px(12) : right - px(12);
     bubble_at.x = clamp(bubble_at.x, work.left, work.right - width);
     bubble_at.y = clamp(pet_at.y + sprite.size.cy / 2 - px(45), work.top, work.bottom - height);
     selected = -1;
     draw_bubble();
     opened = TRUE;
     bubble_tick = GetTickCount();
-    pulse = bubble_tick;
     present(bubble, &speech, bubble_at, animate ? 75 : 255);
     // It owns the keyboard only as long as it has normal window focus.
     ShowWindow(bubble, SW_SHOW);
     SetForegroundWindow(bubble);
+}
+
+static void react(int action)
+{
+    reaction = action;
+    last_activity = pulse = GetTickCount();
 }
 
 static void select_slot(int slot)
@@ -370,7 +484,7 @@ static void select_slot(int slot)
     selected = slot;
     draw_bubble();
     pending_slot = slot;
-    pulse = GetTickCount();
+    react(REACT_CLICK);
     secretary_dismiss();
 }
 
@@ -551,12 +665,51 @@ static void release_pet(POINT pointer)
         clamp_anchor();
         moved = TRUE;
         store_position();
-        pulse = GetTickCount();
-    } else if (opened) {
-        secretary_dismiss();
+        react(REACT_LAND);
     } else {
-        open_bubble();
+        react(REACT_CLICK);
+        if (opened) secretary_dismiss();
+        else open_bubble();
     }
+}
+
+static int step_at(const PoseStep *steps, size_t count, DWORD elapsed, BOOL loop)
+{
+    size_t i;
+    if (loop) {
+        DWORD duration = 0;
+        for (i = 0; i < count; ++i) duration += steps[i].duration_ms;
+        elapsed %= duration;
+    }
+    for (i = 0; i < count; ++i) {
+        if (elapsed < steps[i].duration_ms) return steps[i].pose;
+        elapsed -= steps[i].duration_ms;
+    }
+    return -1;
+}
+
+#define CLIP(steps) (steps), (sizeof(steps) / sizeof((steps)[0]))
+
+static int animated_pose(DWORD now)
+{
+    DWORD asleep = now - last_activity, elapsed = now - pulse;
+    int pose = -1;
+
+    if (!animate) return 0;
+    if (dragging || (pressed && now - press_started >= 160))
+        return step_at(CLIP(grabbed), now - press_started, TRUE);
+    switch (reaction) {
+    case REACT_CLICK: pose = step_at(CLIP(clicked), elapsed, FALSE); break;
+    case REACT_MENU:  pose = step_at(CLIP(menu_reaction), elapsed, FALSE); break;
+    case REACT_LAND:  pose = step_at(CLIP(landed), elapsed, FALSE); break;
+    }
+    if (pose >= 0) return pose;
+    reaction = REACT_NONE;
+    if (!opened && asleep >= 14000) {
+        pose = step_at(CLIP(bored), (asleep - 14000) % 27000, FALSE);
+        if (pose >= 0) return pose;
+    }
+    return step_at(CLIP(idle), asleep, TRUE);
 }
 
 static void frame(void)
@@ -565,6 +718,7 @@ static void frame(void)
     POINT pointer, at;
     BYTE opacity = 255;
     BOOL hints = hint_is_open();
+    int pose = 0;
 
     if (GetCursorPos(&pointer) && pressed) {
         if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) move_from_press(pointer);
@@ -579,15 +733,30 @@ static void frame(void)
     finish_launch(now);
     render_bubble(now);
     if (hints) last_hint = now;
-    if (!dragging && now - last_hint < 400) return; // Keep the click point through selection.
+    if (!dragging && now - last_hint < 400 &&
+        (hints || now - pulse > now - last_hint)) return;
     at = pressed && !dragging ? press_at : anchor;
-    if (animate && !pressed && !opened) {
+    if (use_atlas) {
+        if (!pose_pixels) return;
+        pose = animated_pose(now);
+        if (animate && dragging) at.y -= px(5);
+    } else if (animate && !pressed && !opened) {
         if (!moved) at.x += (int)(px(6) * sin((now - born) / 1450.0));
         at.y -= (int)(px(4) * (1.0 + sin((now - born) / 540.0)));
         if (now - born < 320) opacity = (BYTE)(80 + (now - born) * 175 / 320);
         if (now - pulse < 290) at.y -= (int)(px(10) * sin((now - pulse) * 3.14159 / 290.0));
     }
-    if (dragging) opacity = 218;
+    if (dragging && !use_atlas) opacity = 218;
+    if (painted_pose == pose && painted_opacity == opacity &&
+        pet_at.x == at.x && pet_at.y == at.y) return;
+    if (use_atlas && painted_pose != pose) {
+        size_t count = (size_t)sprite.size.cx * sprite.size.cy;
+        CopyMemory(sprite.pixels, pose_pixels + count * pose, count * sizeof(DWORD));
+        click_pixel = pose_clicks[pose];
+        sprite_bounds = pose_bounds[pose];
+    }
+    painted_pose = pose;
+    painted_opacity = opacity;
     pet_at = at;
     present(pet, &sprite, pet_at, opacity);
 }
@@ -635,6 +804,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             message_pos = GetMessagePos();
             press = (POINT){GET_X_LPARAM(message_pos), GET_Y_LPARAM(message_pos)};
             pressed = TRUE;
+            last_activity = press_started = GetTickCount();
             press_at = pet_at;
             SetCapture(pet);
             return 0;
@@ -645,7 +815,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         case WM_RBUTTONUP:
             secretary_dismiss();
-            pulse = GetTickCount();
+            react(REACT_MENU);
             message_pos = GetMessagePos();
             PostMessageW(g_main_wnd, WM_APP_SECRETARY_MENU,
                          GET_X_LPARAM(message_pos), GET_Y_LPARAM(message_pos));
@@ -694,6 +864,8 @@ void secretary_shutdown(void)
     pet = bubble = NULL;
     free_canvas(&speech);
     free_canvas(&sprite);
+    free(pose_pixels);
+    pose_pixels = NULL;
     if (image) GdipDisposeImage(image);
     image = NULL;
     if (gdiplus) GdiplusShutdown(gdiplus);
@@ -702,7 +874,8 @@ void secretary_shutdown(void)
 
 void secretary_config_changed(void)
 {
-    const WCHAR *art = g_cfg.secretary_image;
+    BOOL atlas = g_cfg.secretary_sprite_sheet[0] != 0;
+    const WCHAR *art = atlas ? g_cfg.secretary_sprite_sheet : g_cfg.secretary_image;
     WCHAR path[APP_PATH_MAX];
     GdiplusStartupInput input = {1, NULL, FALSE, TRUE};
     DWORD styles = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
@@ -720,8 +893,9 @@ void secretary_config_changed(void)
     pending_slot = -1;
     secretary_dismiss();
     update_animation();
-    if (pet && _wcsicmp(image_path, path) == 0) return;
+    if (pet && use_atlas == atlas && _wcsicmp(image_path, path) == 0) return;
     secretary_shutdown();
+    use_atlas = atlas;
     if (GdiplusStartup(&gdiplus, &input, NULL) != Ok) goto fail;
     if (GdipLoadImageFromFile(path, &image) != Ok) goto fail;
     if (!positioned) {
@@ -744,6 +918,8 @@ void secretary_config_changed(void)
     if (!pet || !bubble) goto fail;
     lstrcpynW(image_path, path, APP_PATH_MAX);
     born = GetTickCount();
+    last_activity = born;
+    reaction = REACT_NONE;
     pulse = born - 300;
     last_hint = born - 400;
     frame();
@@ -752,7 +928,7 @@ void secretary_config_changed(void)
     return;
 fail:
     secretary_shutdown();
-    launch_error(L"Could not show the desktop secretary. Check the image in [secretary].");
+    launch_error(L"Could not show the desktop secretary. Check the image or sprite sheet in [secretary].");
 }
 
 void secretary_init(void)

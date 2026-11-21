@@ -204,6 +204,7 @@ static void test_parsing(void)
             CHECK(wcslen(tpl) < DEFAULT_INI_CAPACITY);
             CHECK(wcsstr(tpl, L"shutdown_at = none") != NULL);
             CHECK(wcsstr(tpl, L"[secretary]") != NULL);
+            CHECK(wcsstr(tpl, L"sprite_sheet =\r\n") != NULL);
             free(tpl);
         }
     }

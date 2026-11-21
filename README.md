@@ -483,8 +483,8 @@ may ask to save it, which holds the shutdown up until someone answers. Set
 
 ## Desktop secretary
 
-The secretary floats over the desktop and remembers where you drop it. Click
-its picture to open the speech bubble, or right-click it to open the Vim tray
+The secretary sits over the desktop and remembers where you drop it. Click
+the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). Click hints (`Alt+F` by default) also
 label the picture. Use `1`–`9` or click a row to launch it, and `Esc` to close
@@ -494,11 +494,19 @@ Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
 Use a local image path or a path relative to the INI. PNG transparency works
 directly. A JPEG can use a flat white background.
 
+`sprite_sheet` loads an animated character from a transparent PNG with four
+equal columns and four equal rows. Draw each pose at the same scale and origin
+within its cell. Put idle poses (neutral, breathe, blink, tail flick) in row 1,
+bored poses (droop, start yawn, yawn, recover) in row 2, dangling grab poses in
+row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When
+`sprite_sheet` is set, Vim uses it as the artwork. You can also use `image`
+by itself for a single picture.
+
 ```ini
 [secretary]
 enabled = 1
 animate = system
-image = secretary.png
+sprite_sheet = secretary-poses.png
 1 = Claude | claude
 2 = Wiki | https://example.org/wiki
 ```

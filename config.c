@@ -844,11 +844,13 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
             apply_bool(&c->secretary_animate, line, key, val);
         return;
     }
-    if (_wcsicmp(key, L"image") == 0) {
+    if (_wcsicmp(key, L"image") == 0 || _wcsicmp(key, L"sprite_sheet") == 0) {
+        WCHAR *path = _wcsicmp(key, L"image") == 0 ? c->secretary_image
+                                                   : c->secretary_sprite_sheet;
         if (wcslen(val) >= MAX_PATH)
-            warn_add(line, L"[secretary] image path is too long");
+            warn_add(line, L"[secretary] %ls path is too long", key);
         else
-            wcscpy(c->secretary_image, val);
+            wcscpy(path, val);
         return;
     }
     if (key[0] < L'1' || key[0] > L'9' || key[1]) {
@@ -1669,6 +1671,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
             L"; Set enabled to 1 and choose a local PNG or JPEG to show a desktop secretary.\r\n"
             L"; Relative image paths are read from the settings file's folder.\r\n"
             L"enabled = 0\r\nimage =\r\nanimate = system\r\n"
+            L"; Optional transparent 4x4 PNG atlas. Rows: idle, bored, grabbed, clicked.\r\n"
+            L"sprite_sheet =\r\n"
             L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
             L"; 1 = Claude | claude\r\n"
             L"; 2 = Wiki | https://example.org/wiki\r\n");

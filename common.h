@@ -150,6 +150,7 @@ typedef struct {
     int secretary_enabled;
     int secretary_animate;    // -1 = follow Windows animation effects, 0 = off, 1 = on
     WCHAR secretary_image[MAX_PATH];
+    WCHAR secretary_sprite_sheet[MAX_PATH]; // optional 4x4 transparent animation atlas
     SecretaryShortcut secretary_shortcuts[SECRETARY_SLOTS];
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second

@@ -1442,6 +1442,10 @@ Invariants stated in `common.h` and enforced by history:
   the low-level hook. Settings and reduced motion apply live.
 - Include `objbase.h` before `gdiplus.h`. The release runner's MinGW-w64
   headers need the COM property type that the local MinGW.org SDK supplies.
+- Kim asked for a character that moves by changing poses. The opt-in sprite
+  sheet uses a common drawing origin for idle, bored, grabbed, and clicked
+  frames. Dragging applies the grab cycle and releasing lands the character.
+  While a click hint is visible, preserve the current frame and hit point.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
