@@ -290,7 +290,8 @@ typedef struct IUIAutomationElementVtbl {
     // esc_unfocus: the page Document takes the focus from a text field.
     HRESULT (STDMETHODCALLTYPE *SetFocus)(IUIAutomationElement *This);
     void *GetRuntimeId;
-    void *FindFirst;
+    HRESULT (STDMETHODCALLTYPE *FindFirst)(IUIAutomationElement *This,
+        int scope, IUIAutomationCondition *condition, IUIAutomationElement **found);
     void *FindAll;
     // esc_unfocus: a page Document without a page window.
     HRESULT (STDMETHODCALLTYPE *FindFirstBuildCache)(IUIAutomationElement *This,
@@ -302,7 +303,8 @@ typedef struct IUIAutomationElementVtbl {
         IUIAutomationCacheRequest *cacheRequest,
         IUIAutomationElementArray **found);
     void *BuildUpdatedCache;
-    void *GetCurrentPropertyValue;
+    HRESULT (STDMETHODCALLTYPE *GetCurrentPropertyValue)(
+        IUIAutomationElement *This, int propertyId, VARIANT *retVal);
     void *GetCurrentPropertyValueEx;
     HRESULT (STDMETHODCALLTYPE *GetCachedPropertyValue)(
         IUIAutomationElement *This, int propertyId, VARIANT *retVal);
@@ -4600,6 +4602,248 @@ static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
     engine_unlock();
     return ok;
 }
+
+// Chromium's @tabs mode searches live tabs in the current browser profile.
+// Keep this on its own UIA worker, and act only on a confirmed shortcut URL.
+typedef struct {
+    HWND window;
+    UINT id;
+    WCHAR url[SECRETARY_TARGET_MAX];
+} BrowserTabRequest;
+
+typedef struct BrowserValue BrowserValue;
+typedef struct BrowserInvoke BrowserInvoke;
+struct BrowserValue {
+    struct {
+        void *query, *addref;
+        ULONG (STDMETHODCALLTYPE *release)(BrowserValue *);
+        HRESULT (STDMETHODCALLTYPE *set)(BrowserValue *, LPCWSTR);
+    } *vt;
+};
+struct BrowserInvoke {
+    struct {
+        void *query, *addref;
+        ULONG (STDMETHODCALLTYPE *release)(BrowserInvoke *);
+        HRESULT (STDMETHODCALLTYPE *invoke)(BrowserInvoke *);
+    } *vt;
+};
+
+static const GUID browser_value_iid = {0xa94cd8b1, 0x0844, 0x4cd6,
+                                        {0x9d,0x2d,0x64,0x05,0x37,0xab,0x39,0xe9}};
+static const GUID browser_invoke_iid = {0xfb377fbe, 0x8ea6, 0x46d5,
+                                         {0x9c,0x73,0x64,0x99,0x64,0x2d,0x30,0x59}};
+static volatile LONG browser_tab_request;
+
+static BOOL browser_request_current(const BrowserTabRequest *job)
+{
+    return (UINT)InterlockedCompareExchange(&browser_tab_request, 0, 0) == job->id;
+}
+
+static BOOL browser_in_front(const BrowserTabRequest *job)
+{
+    return browser_request_current(job) && GetForegroundWindow() == job->window &&
+           !secretary_modifiers_down();
+}
+
+static void browser_key(WORD vk)
+{
+    INPUT events[2] = {{0}, {0}};
+    events[0].type = events[1].type = INPUT_KEYBOARD;
+    events[0].ki.wVk = events[1].ki.wVk = vk;
+    events[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, events, sizeof(INPUT));
+}
+
+static IUIAutomationElement *browser_find(UiaEngine *engine, IUIAutomationElement *root,
+                                          int property, const WCHAR *text)
+{
+    IUIAutomationCondition *condition = NULL;
+    IUIAutomationElement *found = NULL;
+    VARIANT v;
+    VariantInit(&v);
+    V_VT(&v) = VT_BSTR;
+    V_BSTR(&v) = SysAllocString(text);
+    if (V_BSTR(&v) && SUCCEEDED(engine->automation->lpVtbl->CreatePropertyCondition(
+            engine->automation, property, v, &condition)) && condition) {
+        root->lpVtbl->FindFirst(root, UIA_TREESCOPE_DESCENDANTS, condition, &found);
+        condition->lpVtbl->Release(condition);
+    }
+    VariantClear(&v);
+    return found;
+}
+
+static const WCHAR *without_scheme(const WCHAR *url)
+{
+    if (!_wcsnicmp(url, L"https://", 8)) return url + 8;
+    if (!_wcsnicmp(url, L"http://", 7)) return url + 7;
+    return url;
+}
+
+static BOOL open_address_matches(const WCHAR *value, const WCHAR *url)
+{
+    const WCHAR *actual = without_scheme(value), *wanted = without_scheme(url);
+    size_t host = wcscspn(wanted, L"/?#");
+    if (actual != value && (size_t)(actual - value) != (size_t)(wanted - url)) return FALSE;
+    if (wcscspn(actual, L"/?#") != host || _wcsnicmp(actual, wanted, host)) return FALSE;
+    actual += host;
+    wanted += host;
+    return !wcscmp(actual, wanted) || (!*actual && !wcscmp(wanted, L"/")) ||
+           (!*wanted && !wcscmp(actual, L"/"));
+}
+
+static BOOL result_mentions_address(const WCHAR *name, const WCHAR *url)
+{
+    const WCHAR *address = without_scheme(url), *hit;
+    // Chrome elides the scheme and sometimes the leading www in the label.
+    int attempt;
+    for (attempt = 0; attempt < 2; ++attempt) {
+        size_t len = wcslen(address);
+        BOOL root_slash = len > 1 && address[len - 1] == L'/' && wcscspn(address, L"/?#") == len - 1;
+        if (root_slash) --len;
+        for (hit = name; *hit; ++hit) {
+            BOOL boundary = hit == name || wcschr(L" \t,(", hit[-1]) != NULL;
+            const WCHAR *end;
+            if (!boundary && hit - name >= address - url && address > url)
+                boundary = !_wcsnicmp(hit - (address - url), url, (size_t)(address - url));
+            if (!boundary || wcsncmp(hit, address, len)) continue;
+            end = hit + len;
+            if (root_slash && *end == L'/') ++end;
+            if (!*end || wcschr(L" \t,)", *end)) return TRUE;
+        }
+        if (_wcsnicmp(address, L"www.", 4) != 0) break;
+        address += 4;
+    }
+    return FALSE;
+}
+
+// A website can choose its own accessible IDs. Act on the browser controls
+// surrounding the document, never on a matching element in page content.
+static BOOL is_browser_chrome(UiaEngine *engine, IUIAutomationElement *root, IUIAutomationElement *el)
+{
+    IUIAutomationTreeWalker *walker = NULL;
+    IUIAutomationElement *parent = NULL;
+    BOOL known = FALSE;
+    int depth;
+    if (FAILED(engine->automation->lpVtbl->get_RawViewWalker(engine->automation, &walker)) || !walker)
+        return FALSE;
+    for (depth = 0; depth < 24; ++depth) {
+        IUIAutomationElement *next = NULL;
+        VARIANT prop;
+        BOOL document;
+        if (FAILED(walker->lpVtbl->GetParentElement(walker, parent ? parent : el, &next)) || !next) break;
+        if (parent) parent->lpVtbl->Release(parent);
+        parent = next;
+        if (FAILED(engine->automation->lpVtbl->CompareElements(engine->automation, parent, root, &known)) || known)
+            break;
+        VariantInit(&prop);
+        document = FAILED(parent->lpVtbl->GetCurrentPropertyValue(parent, UIA_ControlTypePropertyId, &prop)) ||
+                   (V_VT(&prop) == VT_I4 && V_I4(&prop) == UIA_DocumentControlTypeId);
+        VariantClear(&prop);
+        if (document) break;
+    }
+    if (parent) parent->lpVtbl->Release(parent);
+    walker->lpVtbl->Release(walker);
+    return known;
+}
+
+static HWND reuse_open_browser_tab(UiaEngine *engine, const BrowserTabRequest *job)
+{
+    IUIAutomationElement *root = NULL, *bar = NULL, *scope = NULL;
+    BrowserValue *value = NULL;
+    HWND used = NULL;
+    VARIANT text;
+    BOOL in_edit = FALSE;
+    int i;
+
+    if (!browser_in_front(job) || FAILED(engine->automation->lpVtbl->ElementFromHandle(
+        engine->automation, (UIA_HWND)job->window, &root)) || !root) goto done;
+    bar = browser_find(engine, root, UIA_ClassNamePropertyId, L"OmniboxViewViews");
+    if (!bar || !is_browser_chrome(engine, root, bar)) goto done;
+    VariantInit(&text);
+    if (SUCCEEDED(bar->lpVtbl->GetCurrentPropertyValue(bar, 30045, &text)) &&
+        V_VT(&text) == VT_BSTR && V_BSTR(&text) && open_address_matches(V_BSTR(&text), job->url))
+        used = job->window;
+    VariantClear(&text);
+    if (used || !browser_in_front(job) || FAILED(bar->lpVtbl->GetCurrentPatternAs(
+        bar, 10002, &browser_value_iid, (void **)&value)) || !value) goto done;
+    if (FAILED(bar->lpVtbl->SetFocus(bar)) || !browser_in_front(job) ||
+        FAILED(value->vt->set(value, L""))) goto done;
+    in_edit = TRUE;
+    if (!browser_in_front(job)) goto done;
+    input_type_text(L"@tabs");
+    Sleep(140);
+    if (!browser_in_front(job)) goto done;
+    browser_key(VK_SPACE);
+    Sleep(130);
+    scope = browser_find(engine, root, UIA_ClassNamePropertyId, L"SelectedKeywordView");
+    if (!scope || !is_browser_chrome(engine, root, scope) || !browser_in_front(job)) goto done;
+    input_type_text(without_scheme(job->url));
+    Sleep(235);
+    for (i = 0; i < 8 && browser_in_front(job); ++i) {
+        WCHAR id[20];
+        IUIAutomationElement *item;
+        BrowserInvoke *action = NULL;
+        _snwprintf(id, 20, L"match-%d", i);
+        item = browser_find(engine, root, 30011, id);
+        if (!item) break;
+        VariantInit(&text);
+        if (SUCCEEDED(item->lpVtbl->GetCurrentPropertyValue(item, UIA_NamePropertyId, &text)) &&
+            V_VT(&text) == VT_BSTR && V_BSTR(&text) && result_mentions_address(V_BSTR(&text), job->url) &&
+            is_browser_chrome(engine, root, item) &&
+            SUCCEEDED(item->lpVtbl->GetCurrentPatternAs(item, 10000, &browser_invoke_iid, (void **)&action)) &&
+            action && browser_in_front(job) && SUCCEEDED(action->vt->invoke(action))) {
+            in_edit = FALSE;
+            Sleep(140);
+            used = GetForegroundWindow();
+        }
+        if (action) action->vt->release(action);
+        VariantClear(&text);
+        item->lpVtbl->Release(item);
+        if (used) break;
+    }
+done:
+    if (in_edit && browser_in_front(job)) { browser_key(VK_ESCAPE); browser_key(VK_ESCAPE); }
+    if (value) value->vt->release(value);
+    if (scope) scope->lpVtbl->Release(scope);
+    if (bar) bar->lpVtbl->Release(bar);
+    if (root) root->lpVtbl->Release(root);
+    return used;
+}
+
+static DWORD WINAPI browser_tab_worker(void *parameter)
+{
+    BrowserTabRequest *job = (BrowserTabRequest *)parameter;
+    UiaEngine engine;
+    HWND used = NULL;
+    if (SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED))) {
+        if (browser_request_current(job) && uia_engine_init(&engine, FALSE)) {
+            used = reuse_open_browser_tab(&engine, job);
+            uia_engine_cleanup(&engine);
+        }
+        CoUninitialize();
+    }
+    if (browser_request_current(job))
+        PostMessageW(g_main_wnd, WM_APP_SECRETARY_TAB, job->id, (LPARAM)used);
+    free(job);
+    return 0;
+}
+
+BOOL uia_find_browser_tab(HWND browser, const WCHAR *url, UINT request)
+{
+    BrowserTabRequest *job = (BrowserTabRequest *)malloc(sizeof(*job));
+    HANDLE worker;
+    if (!job) return FALSE;
+    job->window = browser;
+    job->id = request;
+    lstrcpynW(job->url, url, SECRETARY_TARGET_MAX);
+    InterlockedExchange(&browser_tab_request, (LONG)request);
+    worker = CreateThread(NULL, 0, browser_tab_worker, job, 0, NULL);
+    if (!worker) { free(job); return FALSE; }
+    CloseHandle(worker);
+    return TRUE;
+}
+
+void uia_cancel_browser_tab(void) { InterlockedExchange(&browser_tab_request, 0); }
 
 typedef struct {
     UINT scan_id;

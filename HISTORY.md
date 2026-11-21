@@ -1453,6 +1453,14 @@ Invariants stated in `common.h` and enforced by history:
   or returns to the last manual drop point. Saving a slot keeps the other
   assignments and settings. Vim command reactions go through a single
   coalesced hook signal, with painting on the UI thread.
+- Keep Tailmon's hint click point in the opaque intersection of the displayed
+  poses so the hint remains stable while the character moves. Extra walk and
+  attention frames smooth each cycle, and held scroll keys keep animating.
+  The nap state discards Vim reactions until the character wakes.
+- Tab and Shift+Tab traverse the full shortcut bubble with visible focus.
+  Browser shortcuts check the active address and Chromium's open-tab results
+  before opening a new tab in the existing browser. The Claude prompt helper
+  assembles text locally and opens Claude after an explicit copy.
 
 ## 4. Complete commit log (non-merge, oldest first)
 

@@ -853,6 +853,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_SECRETARY_MENU:
         tray_show_menu((POINT){(LONG)wp, (LONG)lp});
         return 0;
+    case WM_APP_SECRETARY_TAB:
+        secretary_browser_result((UINT)wp, (HWND)lp);
+        return 0;
     case WM_COMMAND:
         if (tray_on_command((WORD)LOWORD(wp)))
             return 0;
@@ -894,6 +897,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         stop_watch_thread();
         snippet_editor_close();
         secretary_editor_close();
+        secretary_prompt_close();
         shutdown_stop();
         hint_shutdown();
         // Stop input first: its movement thread calls into UIA until joined.
@@ -1036,6 +1040,7 @@ int main(void)
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (snippet_editor_dialog_message(&msg) ||
             secretary_editor_message(&msg) ||
+            secretary_prompt_message(&msg) ||
             shutdown_dialog_message(&msg))
             continue;
         TranslateMessage(&msg);

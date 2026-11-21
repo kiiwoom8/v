@@ -488,15 +488,24 @@ between resting spots at different speeds and settles when you reach for it. Cli
 the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). Click hints (`Alt+F` by default) also
-label the picture. Use `1`–`9` or click a row to launch it, and `Esc` to close
-the bubble. `F11` leaves full screen in the launched app.
+label the picture. Use `1`–`9` for a numbered shortcut. `Tab` and `Shift+Tab`
+move the visible selection through every shortcut and button. `Enter` or
+`Space` activates the selection, and `Esc` closes the bubble. `F11` leaves
+full screen in the launched app.
 
 The bubble can edit a numbered shortcut, pause or resume roaming, or bring
 the secretary back to the last place you dropped it. **Next screen** moves
 it to the next monitor. On a single monitor that button opens Vim's click
 hints. The character reacts to Vim commands such as scrolling, clicks,
 hints, and mode changes. Held keys share a single reaction across repeats.
+Hints hold the character's position while its pose keeps moving. Scrolling
+up and down plays different continuous responses. Vim activity stays quiet
+while the secretary naps.
 It waves briefly when you quit Vim from the tray or the quit hotkey.
+
+**Claude 질문 준비** combines text you enter with a preset for summary,
+explanation, translation, or editing. It copies the result and opens Claude.
+Paste and send the prompt in Claude whenever you are ready.
 
 Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
 Use a local image path or a path relative to the INI. PNG transparency works
@@ -510,13 +519,16 @@ row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When
 `sprite_sheet` is set, Vim uses it as the artwork. You can also use `image`
 by itself for a single picture.
 
-Three optional sheets add more poses with the same transparent 4×4 layout.
+Optional sheets add poses with the same transparent 4×4 layout.
 
 | Setting | Four rows, in order |
 |---|---|
 | `movement_sheet` | walk, walk variation, trot, settle. Draw the character facing right. |
 | `rest_sheet` | doze, curl up asleep, wake and stretch, groom |
 | `reaction_sheet` | focus, follow a scroll, startle, wave |
+| `walk_detail_sheet` | one 16-frame right-facing walk cycle in reading order |
+| `attention_sheet` | one 16-frame seated attention cycle with a common body position |
+| `scroll_detail_sheet` | two 8-frame seated cycles, down first and up second |
 
 ```ini
 [secretary]
@@ -526,6 +538,8 @@ sprite_sheet = secretary-poses.png
 movement_sheet = secretary-movement.png
 rest_sheet = secretary-rest.png
 reaction_sheet = secretary-reactions.png
+walk_detail_sheet = secretary-walk-detail.png
+attention_sheet = secretary-attention.png
 roam = 1
 react = 1
 1 = Claude | claude
@@ -533,8 +547,8 @@ react = 1
 ```
 
 The slot number and label are editable. A target is `claude` for the Windows
-Claude app or an HTTP(S) URL, which opens in a fresh Chrome window using your
-current browser profile. Edge is the fallback when Chrome is unavailable.
+Claude app or an HTTP(S) URL. Vim reuses a matching open tab it can identify in
+Chrome or Edge. Otherwise it opens a tab in the existing browser profile.
 Set `enabled = 0` to hide the secretary. `animate = system` follows Windows'
 animation setting. `animate = 0` or `1` overrides it for the secretary.
 Set `roam = 0` to keep it in place, or `react = 0` to turn off Vim command reactions.

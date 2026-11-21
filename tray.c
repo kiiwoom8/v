@@ -41,7 +41,7 @@ static const WCHAR HELP_TITLE[] =
 #define IDM_SD_AT      1016
 #define IDM_SD_CANCEL  1017
 
-#define HELP_MAX_ROWS  68
+#define HELP_MAX_ROWS  69
 #define HELP_INF       0x3fffffff
 
 #ifndef NIN_SELECT
@@ -1036,6 +1036,7 @@ static void build_help_rows(void)
         help_add_header(L"Desktop secretary");
         help_add_row(L"Click / drag", L"Open shortcuts / move the secretary");
         help_add_row(L"1-9 / Esc", L"Open a full-screen shortcut / close the bubble");
+        help_add_row(L"Tab / Shift+Tab", L"Move between bubble actions and use Enter to select");
         help_add_row(L"Right-click", L"Open this same Vim tray menu");
     }
 

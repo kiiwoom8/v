@@ -206,6 +206,7 @@ static void test_parsing(void)
             CHECK(wcsstr(tpl, L"[secretary]") != NULL);
             CHECK(wcsstr(tpl, L"sprite_sheet =\r\n") != NULL);
             CHECK(wcsstr(tpl, L"reaction_sheet =\r\n") != NULL);
+            CHECK(wcsstr(tpl, L"attention_sheet =\r\n") != NULL);
             free(tpl);
         }
         {

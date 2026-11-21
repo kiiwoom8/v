@@ -2132,7 +2132,7 @@ static BOOL alt_should_withhold(void)
     // and the overlay still needs Alt hidden so its keys arrive intact.
     if (flag_get(&s_capture))
         return TRUE;
-    if (secretary_editor_has_focus()) return FALSE;
+    if (secretary_editor_has_focus() || secretary_prompt_has_focus()) return FALSE;
     return !flag_get(&s_paused) && popup_open(FALSE, NULL);
 }
 
@@ -2277,12 +2277,13 @@ static BOOL handle_down(UINT vk)
         s_owner[vk] = OWN_SWALLOW;
         return TRUE;
     }
-    if (!flag_get(&s_capture) && secretary_editor_has_focus()) {
+    if (!flag_get(&s_capture) && (secretary_editor_has_focus() || secretary_prompt_has_focus())) {
         s_owner[vk] = OWN_PASS;
         return FALSE;
     }
-    if (mods == 0 && (vk == VK_ESCAPE || (vk >= '1' && vk <= '9') ||
-                      (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9)) &&
+    if (((vk == VK_TAB && !(mods & ~KMOD_SHIFT)) ||
+         (mods == 0 && (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_SPACE ||
+                        (vk >= '1' && vk <= '9') || (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9)))) &&
         secretary_has_focus()) {
         s_owner[vk] = OWN_PASS;
         return FALSE;
@@ -2727,7 +2728,9 @@ static void react_to_command(UINT vk, BOOL captured)
         command = SECRETARY_HINT;
     else if (act >= ACT_MOVE_LEFT && act <= ACT_MOVE_RIGHT)
         command = SECRETARY_MOVE;
-    else if ((act >= ACT_SCROLL_UP && act <= ACT_FAST_DOWN) || act == ACT_SCROLL_END ||
+    else if (act == ACT_SCROLL_UP || act == ACT_FAST_UP) command = SECRETARY_SCROLL_UP;
+    else if (act == ACT_SCROLL_DOWN || act == ACT_FAST_DOWN) command = SECRETARY_SCROLL_DOWN;
+    else if ((act >= ACT_SCROLL_LEFT && act <= ACT_SCROLL_RIGHT) || act == ACT_SCROLL_END ||
              act == ACT_ZOOM_IN || act == ACT_ZOOM_OUT ||
              (act == ACT_NONE && alt_key_action(vk) == ACT_SCROLL_END))
         command = SECRETARY_SCROLL;
@@ -5173,6 +5176,17 @@ BOOL input_mouse_mode_active(void)
 BOOL input_left_button_held(void)
 {
     return flag_get(&s_left_held);
+}
+
+int input_secretary_motion(void)
+{
+    LONG scroll = InterlockedCompareExchange(&s_scroll_flags, 0, 0);
+    if (scroll & ((1 << (ACT_SCROLL_UP - ACT_SCROLL_UP)) | (1 << (ACT_FAST_UP - ACT_SCROLL_UP))))
+        return SECRETARY_SCROLL_UP;
+    if (scroll & ((1 << (ACT_SCROLL_DOWN - ACT_SCROLL_UP)) | (1 << (ACT_FAST_DOWN - ACT_SCROLL_UP))))
+        return SECRETARY_SCROLL_DOWN;
+    if (scroll) return SECRETARY_SCROLL;
+    return flag_get(&s_move_flags) ? SECRETARY_MOVE : 0;
 }
 
 void input_set_key_capture(BOOL on)

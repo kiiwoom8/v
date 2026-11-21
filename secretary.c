@@ -25,6 +25,9 @@
 #define WALK_FIRST (POSES_PER_SHEET * (1 + SECRETARY_MOVEMENT))
 #define REST_FIRST (POSES_PER_SHEET * (1 + SECRETARY_REST))
 #define COMMAND_FIRST (POSES_PER_SHEET * (1 + SECRETARY_REACTIONS))
+#define WALK_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_WALK_DETAIL))
+#define ATTENTION_FIRST (POSES_PER_SHEET * (1 + SECRETARY_ATTENTION))
+#define SCROLL_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_SCROLL_DETAIL))
 
 typedef struct {
     HDC dc;
@@ -43,7 +46,7 @@ typedef struct {
 
 enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
 enum { PET_WAIT, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH };
-enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME };
+enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME, BUBBLE_PROMPT, BUBBLE_ACTIONS };
 
 static const PoseStep idle[] = {
     {0, 1150}, {1, 260}, {0, 450}, {2, 100}, {0, 675}, {3, 310}, {0, 820}
@@ -98,11 +101,13 @@ static UINT dpi;
 static DWORD born, pulse, bubble_tick, last_hint, last_activity, press_started;
 static BOOL positioned, pressed, dragging, moved, opened, animate;
 static BOOL bubble_left;
-static int rows[SECRETARY_SLOTS], row_count, armed_key, selected = -1;
+static int rows[SECRETARY_SLOTS], row_count, armed_key, focus_item, selected = -1;
 static int pending_slot = -1;
 static volatile LONG pending_command;
 static int command_pose;
-static DWORD command_started;
+static DWORD command_started, command_activity, attention_started;
+static POINT attention_hit, sleeping_hit, hint_hit;
+static BOOL attention_safe, sleeping_safe, hint_animate, hint_sleeping;
 static BOOL saying_goodbye;
 static struct {
     double speed, cruise, distance, traveled, gait;
@@ -114,15 +119,17 @@ static struct {
 } pet_motion;
 static BOOL (WINAPI *process_path)(HANDLE, DWORD, LPWSTR, PDWORD);
 
-// A new browser window keeps the user's current tabs, profile, and sign-in.
-// Track existing windows so F11 can only go to the one the shortcut opened.
+// A web shortcut works in the open browser and checks for an existing tab.
 static struct {
     const WCHAR *exe;
-    HWND before[128], target;
-    size_t count;
+    HWND target;
     DWORD began, sent;
-    BOOL browser, overflow;
+    UINT request;
+    int lookup;
+    WCHAR browser_path[MAX_PATH];
+    WCHAR url[SECRETARY_TARGET_MAX];
 } launch;
+static UINT next_browser_request;
 
 static int px(int n) { return MulDiv(n, dpi, 96); }
 
@@ -316,6 +323,28 @@ static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first)
     return TRUE;
 }
 
+// Keep the hint's click on the body through every frame it can display.
+static BOOL stable_clip_hit(int first, int frames, POINT *hit)
+{
+    int w = sprite.size.cx, h = sprite.size.cy;
+    size_t count = (size_t)w * h;
+    int x, y, best = INT_MAX;
+    for (y = 0; y < h; ++y) {
+        for (x = 0; x < w; ++x) {
+            int dx = x - w / 2, dy = y - h * 5 / 8;
+            int distance = dx * dx + dy * dy, pose;
+            if (distance >= best) continue;
+            for (pose = first; pose < first + frames; ++pose)
+                if (pose_pixels[pose * count + y * w + x] >> 24 < 160) break;
+            if (pose == first + frames) {
+                *hit = (POINT){x, y};
+                best = distance;
+            }
+        }
+    }
+    return best != INT_MAX;
+}
+
 static BOOL draw_sprite(void)
 {
     UINT w, h;
@@ -343,6 +372,8 @@ static BOOL draw_sprite(void)
             if (extra && !extra_ready[sheet])
                 app_log(L"secretary: an extra animation sheet could not be drawn");
         }
+        attention_safe = extra_ready[SECRETARY_ATTENTION] && stable_clip_hit(ATTENTION_FIRST, 16, &attention_hit);
+        sleeping_safe = extra_ready[SECRETARY_REST] && stable_clip_hit(REST_FIRST, 8, &sleeping_hit);
         return TRUE;
     }
     width = w >= h ? size : clamp(MulDiv(size, (int)w, (int)h), 1, size);
@@ -417,8 +448,25 @@ static void write_text(GpSolidFill *brush, GpFont *font, GpStringFormat *format,
 }
 
 static int actions_y(void) { return 49 + 37 * (row_count ? row_count : 1); }
-static int footer_y(void) { return actions_y() + 74; }
+static int footer_y(void) { return actions_y() + 109; }
 static int bubble_height(void) { return footer_y() + 33; }
+
+static RECT action_rect(int action)
+{
+    int x = (bubble_left ? 16 : 30) + (action % 2) * 106;
+    int y = actions_y() + (action / 2) * 34;
+    return (RECT){x, y, x + (action == BUBBLE_PROMPT ? 206 : 100), y + 29};
+}
+
+static void bubble_focus_box(GpGraphics *g, GpSolidFill *brush, RECT r, BOOL focused, ARGB fill)
+{
+    RECT box = {px(r.left), px(r.top), px(r.right), px(r.bottom)};
+    rounded(g, brush, box, px(8), focused ? 0xff7149a4 : fill);
+    if (focused) {
+        InflateRect(&box, -px(2), -px(2));
+        rounded(g, brush, box, px(6), fill);
+    }
+}
 
 static void draw_bubble(void)
 {
@@ -457,8 +505,8 @@ static void draw_bubble(void)
     for (i = 0; i < row_count; ++i) {
         int slot = rows[i], y = 42 + 37 * i;
         WCHAR key[] = {(WCHAR)(L'1' + slot), 0};
-        rounded(g, brush, (RECT){px(x + 10), px(y), px(right - 10), px(y + 33)},
-                px(9), slot == selected ? 0xffded0f7 : 0xfff1eaf9);
+        bubble_focus_box(g, brush, (RECT){x + 10, y, right - 10, y + 33},
+                         i == focus_item, slot == selected ? 0xffded0f7 : 0xfff1eaf9);
         rounded(g, brush, (RECT){px(x + 16), px(y + 5), px(x + 39), px(y + 28)},
                 px(6), slot == selected ? 0xff57368b : 0xff7149a4);
         write_text(brush, bold, format, key, x + 22, y + 7, 16, 22, 0xffffffff);
@@ -468,18 +516,18 @@ static void draw_bubble(void)
     if (!row_count)
         write_text(brush, regular, format, L"\xc124\xc815\xc5d0\xc11c \xbc14\xb85c\xac00\xae30\xb97c \xcd94\xac00\xd558\xc138\xc694",
                    x + 13, 50, 200, 24, 0xff554765);
-    for (i = 0; i < 4; ++i) {
+    for (i = 0; i < BUBBLE_ACTIONS; ++i) {
         const WCHAR *labels[] = {
             L"바로가기 편집", GetSystemMetrics(SM_CMONITORS) > 1 ? L"다음 화면" : L"Vim 힌트",
-            g_cfg.secretary_roam ? L"이동 멈춤" : L"자유 이동", L"제자리로"
+            g_cfg.secretary_roam ? L"이동 멈춤" : L"자유 이동", L"제자리로", L"Claude 질문 준비"
         };
-        int bx = x + 10 + (i % 2) * 106;
-        int by = actions_y() + (i / 2) * 34;
-        rounded(g, brush, (RECT){px(bx), px(by), px(bx + 100), px(by + 29)},
-                px(7), 0xffece1f6);
-        write_text(brush, footer_font, format, labels[i], bx + 7, by + 6, 93, 20, 0xff47305c);
+        RECT box = action_rect(i);
+        bubble_focus_box(g, brush, box, row_count + i == focus_item, 0xffece1f6);
+        write_text(brush, footer_font, format, labels[i], box.left + 7, box.top + 6,
+                   box.right - box.left - 7, 20, 0xff47305c);
     }
-    write_text(brush, footer_font, format, L"Esc   \xb2eb\xae30", x + 13, footer_y(), 195, 18, 0xff685678);
+    write_text(brush, footer_font, format, L"Tab 이동   Enter 선택   Esc 닫기",
+               x + 13, footer_y(), 205, 18, 0xff685678);
 done:
     if (format) GdipDeleteStringFormat(format);
     if (footer_font) GdipDeleteFont(footer_font);
@@ -534,6 +582,7 @@ static void open_bubble(void)
     bubble_at.x = clamp(bubble_at.x, work.left, work.right - width);
     bubble_at.y = clamp(pet_at.y + sprite.size.cy / 2 - px(45), work.top, work.bottom - height);
     selected = -1;
+    focus_item = 0;
     draw_bubble();
     opened = TRUE;
     bubble_tick = GetTickCount();
@@ -616,6 +665,9 @@ static void run_bubble_action(int action)
         update_monitor(anchor);
         clamp_anchor();
         break;
+    case BUBBLE_PROMPT:
+        secretary_prompt_open();
+        break;
     }
 }
 
@@ -652,25 +704,13 @@ static BOOL app_window(HWND wnd, const WCHAR *exe)
     return match;
 }
 
-static BOOL CALLBACK note_window(HWND wnd, LPARAM lp)
+static BOOL CALLBACK find_browser_window(HWND wnd, LPARAM lp)
 {
-    (void)lp;
     if (app_window(wnd, launch.exe)) {
-        if (launch.count == sizeof(launch.before) / sizeof(launch.before[0])) {
-            launch.overflow = TRUE;
-            return FALSE;
-        }
-        launch.before[launch.count++] = wnd;
+        *(HWND *)lp = wnd;
+        return FALSE;
     }
     return TRUE;
-}
-
-static BOOL before_launch(HWND wnd)
-{
-    size_t i;
-    for (i = 0; i < launch.count; ++i)
-        if (launch.before[i] == wnd) return TRUE;
-    return FALSE;
 }
 
 static BOOL in_fullscreen(HWND wnd)
@@ -685,7 +725,9 @@ static BOOL in_fullscreen(HWND wnd)
 
 static void launch_error(const WCHAR *message)
 {
+    uia_cancel_browser_tab();
     launch.exe = NULL;
+    launch.lookup = 0;
     app_log(L"secretary: %ls", message);
     tray_balloon(L"Desktop secretary", message);
 }
@@ -714,57 +756,132 @@ static BOOL browser_path(const WCHAR *exe, WCHAR *path)
                          &(DWORD){(MAX_PATH - 1) * sizeof(WCHAR)});
 }
 
-static void start_shortcut(int slot, DWORD now)
+static BOOL send_fullscreen_key(void)
 {
-    const WCHAR *target = g_cfg.secretary_shortcuts[slot].target;
-    const WCHAR *file, *args = NULL;
-    WCHAR path[MAX_PATH], command[SECRETARY_TARGET_MAX + 48];
+    INPUT keys[2] = {{0}, {0}};
+    keys[0].type = keys[1].type = INPUT_KEYBOARD;
+    keys[0].ki.wVk = keys[1].ki.wVk = VK_F11;
+    keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    return SendInput(2, keys, sizeof(INPUT)) == 2;
+}
+
+BOOL secretary_modifiers_down(void)
+{
+    return ((GetAsyncKeyState(VK_SHIFT) | GetAsyncKeyState(VK_CONTROL) |
+             GetAsyncKeyState(VK_MENU) | GetAsyncKeyState(VK_LWIN) |
+             GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0;
+}
+
+static void open_browser_url(DWORD now)
+{
+    WCHAR command[SECRETARY_TARGET_MAX + 32];
+    HINSTANCE result;
+    uia_cancel_browser_tab();
+    launch.lookup = 0;
+    launch.target = NULL;
+    launch.began = now;
+    launch.sent = 0;
+    app_log(L"secretary: opening a browser tab");
+    _snwprintf(command, sizeof(command) / sizeof(*command), L"\"%ls\"", launch.url);
+    result = ShellExecuteW(NULL, L"open", launch.browser_path, command, NULL, SW_SHOWNORMAL);
+    if ((INT_PTR)result <= 32) launch_error(L"Windows could not open this shortcut.");
+}
+
+static void start_target(const WCHAR *target, DWORD now)
+{
+    HWND foreground = GetForegroundWindow(), existing = NULL;
     HINSTANCE result;
 
+    uia_cancel_browser_tab();
     ZeroMemory(&launch, sizeof(launch));
     launch.began = now;
     if (_wcsicmp(target, L"claude") == 0) {
-        HWND foreground = GetForegroundWindow();
         launch.exe = L"claude.exe";
         if (app_window(foreground, launch.exe)) return;
-        file = L"shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude";
-    } else {
-        launch.exe = L"chrome.exe";
-        launch.browser = TRUE;
-        if (!browser_path(launch.exe, path)) {
-            launch.exe = L"msedge.exe";
-            if (!browser_path(launch.exe, path)) {
-                launch_error(L"Install Chrome or Edge for full-screen web shortcuts.");
-                return;
-            }
-        }
-        EnumWindows(note_window, 0);
-        if (launch.overflow) {
-            launch_error(L"Too many browser windows are open. Close one and try again.");
+        result = ShellExecuteW(NULL, L"open", L"shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude",
+                               NULL, NULL, SW_SHOWNORMAL);
+        if ((INT_PTR)result <= 32) launch_error(L"Windows could not open Claude.");
+        return;
+    }
+    launch.exe = app_window(foreground, L"msedge.exe") ? L"msedge.exe" : L"chrome.exe";
+    if (!browser_path(launch.exe, launch.browser_path)) {
+        launch.exe = L"msedge.exe";
+        if (!browser_path(launch.exe, launch.browser_path)) {
+            launch_error(L"Install Chrome or Edge for full-screen web shortcuts.");
             return;
         }
-        _snwprintf(command, sizeof(command) / sizeof(*command),
-                   L"--new-window --start-fullscreen \"%ls\"", target);
-        file = path;
-        args = command;
     }
-    result = ShellExecuteW(NULL, L"open", file, args, NULL, SW_SHOWNORMAL);
-    if ((INT_PTR)result <= 32) launch_error(L"Windows could not open this shortcut.");
+    lstrcpynW(launch.url, target, SECRETARY_TARGET_MAX);
+    if (app_window(foreground, launch.exe)) existing = foreground;
+    else EnumWindows(find_browser_window, (LPARAM)&existing);
+    if (!existing && _wcsicmp(launch.exe, L"chrome.exe") == 0) {
+        launch.exe = L"msedge.exe";
+        EnumWindows(find_browser_window, (LPARAM)&existing);
+        if (!existing || !browser_path(launch.exe, launch.browser_path)) {
+            launch.exe = L"chrome.exe";
+            browser_path(launch.exe, launch.browser_path);
+            existing = NULL;
+        }
+    }
+    if (!existing) {
+        open_browser_url(now);
+        return;
+    }
+    if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
+    SetForegroundWindow(existing);
+    launch.target = existing;
+    launch.lookup = 1;
+}
+
+static void start_shortcut(int slot, DWORD now)
+{
+    start_target(g_cfg.secretary_shortcuts[slot].target, now);
+}
+
+void secretary_open_claude(void) { start_target(L"claude", GetTickCount()); }
+
+void secretary_browser_result(UINT request, HWND browser)
+{
+    DWORD now = GetTickCount();
+    if (launch.lookup != 2 || request != launch.request) return;
+    if (!app_window(browser, launch.exe)) {
+        open_browser_url(now);
+        return;
+    }
+    launch.target = browser;
+    app_log(L"secretary: reused a browser tab");
+    launch.lookup = 0;
+    launch.began = now;
+    launch.sent = 0;
 }
 
 static void finish_launch(DWORD now)
 {
     HWND foreground;
-    INPUT keys[2] = {{0}, {0}};
     if (!launch.exe) return;
+    foreground = GetForegroundWindow();
+    if (launch.lookup) {
+        if (now - launch.began >= (launch.lookup == 1 ? 1750u : 4200u)) {
+            open_browser_url(now);
+        } else if (launch.lookup == 1 && foreground == launch.target && !secretary_modifiers_down()) {
+            if (in_fullscreen(foreground)) {
+                if (!launch.sent && send_fullscreen_key()) launch.sent = now;
+            } else if (!launch.sent || now - launch.sent >= 190) {
+                launch.request = ++next_browser_request;
+                if (uia_find_browser_tab(foreground, launch.url, launch.request)) {
+                    launch.lookup = 2;
+                    launch.began = now;
+                } else open_browser_url(now);
+            }
+        }
+        return;
+    }
     if (now - launch.began >= 10000 || (launch.sent && now - launch.sent >= 2500)) {
         launch_error(L"The shortcut did not enter full screen. Try F11 in the opened window.");
         return;
     }
-    foreground = GetForegroundWindow();
     if (!launch.target) {
-        if (!app_window(foreground, launch.exe) ||
-            (launch.browser && before_launch(foreground))) return;
+        if (!app_window(foreground, launch.exe)) return;
         launch.target = foreground;
     }
     if (in_fullscreen(launch.target)) {
@@ -772,11 +889,8 @@ static void finish_launch(DWORD now)
         return;
     }
     if (launch.sent || now - launch.began < 250 || foreground != launch.target ||
-        input_modifier_held()) return;
-    keys[0].type = keys[1].type = INPUT_KEYBOARD;
-    keys[0].ki.wVk = keys[1].ki.wVk = VK_F11;
-    keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    if (SendInput(2, keys, sizeof(INPUT)) == 2) launch.sent = now;
+        secretary_modifiers_down()) return;
+    if (send_fullscreen_key()) launch.sent = now;
 }
 
 static void move_from_press(POINT pointer)
@@ -864,10 +978,10 @@ static void start_walk(DWORD now)
     pet_motion.goal = (POINT){x, clamp(anchor.y + px(y_drift), top, bottom)};
     pet_motion.origin = anchor;
     pet_motion.distance = hypot(pet_motion.goal.x - anchor.x, pet_motion.goal.y - anchor.y);
-    pet_motion.curve = px((int)random_below(79) - 39);
+    pet_motion.curve = px((int)random_below(49) - 24);
     pet_motion.left = x < anchor.x;
-    pet_motion.fast = abs(x - anchor.x) > px(185) && random_below(4) == 0;
-    pet_motion.cruise = px(pet_motion.fast ? 123 + random_below(31) : 56 + random_below(35));
+    pet_motion.fast = abs(x - anchor.x) > px(200) && random_below(8) == 0;
+    pet_motion.cruise = px(pet_motion.fast ? 68 + random_below(17) : 37 + random_below(19));
     pet_motion.speed = pet_motion.gait = pet_motion.traveled = 0.0;
     pet_motion.state = PET_WALK;
     pet_motion.started = now;
@@ -876,7 +990,7 @@ static void start_walk(DWORD now)
 static void advance_walk(DWORD now, double seconds)
 {
     double remaining = pet_motion.distance - pet_motion.traveled;
-    double acceleration = px(pet_motion.fast ? 290 : 180);
+    double acceleration = px(pet_motion.fast ? 115 : 80);
     double goal_speed = fmin(pet_motion.cruise, sqrt(2.0 * acceleration * remaining));
     double step, progress;
 
@@ -892,7 +1006,7 @@ static void advance_walk(DWORD now, double seconds)
         return;
     }
     pet_motion.traveled += step;
-    pet_motion.gait += step / px(pet_motion.fast ? 13 : 9);
+    pet_motion.gait += step / px(extra_ready[SECRETARY_WALK_DETAIL] ? (pet_motion.fast ? 5 : 4) : 7);
     progress = pet_motion.traveled / pet_motion.distance;
     anchor.x = pet_motion.origin.x + (LONG)lround((pet_motion.goal.x - pet_motion.origin.x) * progress);
     anchor.y = pet_motion.origin.y + (LONG)lround((pet_motion.goal.y - pet_motion.origin.y) * progress +
@@ -908,12 +1022,13 @@ static void advance_pet(DWORD now, POINT pointer)
     unsigned choice;
 
     pet_motion.last_frame = now;
-    if (!animate || !use_atlas || input_is_locked()) {
+    if (!animate || !use_atlas || (input_is_locked() &&
+        pet_motion.state != PET_NAP && pet_motion.state != PET_STRETCH)) {
         wait_to_roam(now, 3000);
         return;
     }
     InflateRect(&hover_zone, px(25), px(19));
-    if (pressed || opened || secretary_editor_visible() ||
+    if (pressed || opened || secretary_editor_visible() || secretary_prompt_has_focus() ||
         reaction != REACT_NONE || PtInRect(&hover_zone, pointer)) {
         if (pet_motion.state == PET_WALK || pet_motion.state == PET_SETTLE)
             wait_to_roam(now, 2200);
@@ -927,7 +1042,7 @@ static void advance_pet(DWORD now, POINT pointer)
         else wait_to_roam(now, 2800);
         return;
     case PET_SETTLE:
-        if (elapsed >= 545) wait_to_roam(now, 1900 + random_below(5350));
+        if (elapsed >= 545) wait_to_roam(now, 4000 + random_below(6500));
         return;
     case PET_NAP:
         if (elapsed >= pet_motion.duration) {
@@ -951,7 +1066,8 @@ static void advance_pet(DWORD now, POINT pointer)
         if (choice < 83) pet_motion.state = PET_GROOM;
         else {
             pet_motion.state = PET_NAP;
-            pet_motion.duration = 5600 + random_below(8200);
+            pet_motion.duration = 8500 + random_below(11500);
+            command_pose = 0;
         }
     } else {
         wait_to_roam(now, 2700 + random_below(3000));
@@ -968,10 +1084,14 @@ void secretary_command(int command)
 static void receive_command(DWORD now)
 {
     int command = (int)InterlockedExchange(&pending_command, 0);
-    if (!command || !g_cfg.secretary_react || pressed) return;
-    if (command == command_pose && now - command_started < 600) return;
-    command_pose = command;
-    command_started = now;
+    if (!g_cfg.secretary_react || pressed || pet_motion.state == PET_NAP) return;
+    if (!command) command = input_secretary_motion();
+    if (!command) return;
+    if (command != command_pose || now - command_activity > 450) {
+        command_pose = command;
+        command_started = now;
+    }
+    command_activity = now;
     last_activity = now;
     wait_to_roam(now, 2400);
 }
@@ -980,12 +1100,34 @@ static int command_frame(DWORD now)
 {
     DWORD elapsed = now - command_started;
     int row, col;
-    if (!command_pose || !g_cfg.secretary_react || elapsed >= 600) return -1;
+    static const BYTE down[] = {0, 2, 4, 5, 6, 6, 8, 10, 13, 15};
+    static const BYTE up[] = {0, 1, 2, 3, 4, 5, 7, 10, 13, 15};
+    if (!command_pose || !g_cfg.secretary_react || pet_motion.state == PET_NAP) return -1;
+    if (command_pose == SECRETARY_SCROLL || command_pose == SECRETARY_SCROLL_UP || command_pose == SECRETARY_SCROLL_DOWN) {
+        DWORD cycle = extra_ready[SECRETARY_SCROLL_DETAIL] ? 8 * 110 : 10 * 100;
+        BOOL upward = command_pose == SECRETARY_SCROLL_UP;
+        if (now - command_activity >= cycle) return -1;
+        if (extra_ready[SECRETARY_SCROLL_DETAIL])
+            return SCROLL_DETAIL_FIRST + (upward ? 8 : 0) + (int)(elapsed / 110 % 8);
+        if (extra_ready[SECRETARY_ATTENTION]) {
+            col = (int)(elapsed / 100 % 10);
+            if (!upward && extra_ready[SECRETARY_REACTIONS] && col >= 3 && col <= 5)
+                return COMMAND_FIRST + down[col];
+            return ATTENTION_FIRST + (upward ? up[col] : down[col]);
+        }
+    }
+    if (extra_ready[SECRETARY_ATTENTION] && (command_pose == SECRETARY_MOVE || command_pose == SECRETARY_HINT)) {
+        if (now - command_activity >= 16 * 108) return -1;
+        return ATTENTION_FIRST + (int)(elapsed / 108 % 16);
+    }
+    if (elapsed >= 600) return -1;
     if (!extra_ready[SECRETARY_REACTIONS]) return 12 + (int)(elapsed / 150);
     switch (command_pose) {
     case SECRETARY_MOVE:
     case SECRETARY_HINT: row = 0; break;
-    case SECRETARY_SCROLL: row = 1; break;
+    case SECRETARY_SCROLL:
+    case SECRETARY_SCROLL_UP:
+    case SECRETARY_SCROLL_DOWN: row = 1; break;
     case SECRETARY_CLICK: row = 2; break;
     default: row = 3; break;
     }
@@ -1013,6 +1155,7 @@ static int animated_pose(DWORD now)
     elapsed = now - pet_motion.started;
     switch (pet_motion.state) {
     case PET_WALK:
+        if (extra_ready[SECRETARY_WALK_DETAIL]) return WALK_DETAIL_FIRST + (int)pet_motion.gait % 16;
         return WALK_FIRST + (pet_motion.fast ? 8 + (int)pet_motion.gait % 4 : (int)pet_motion.gait % 8);
     case PET_SETTLE:
         pose = step_at(CLIP(settling), elapsed, FALSE);
@@ -1042,6 +1185,7 @@ static void frame(void)
     POINT pointer = {INT_MIN / 2, INT_MIN / 2}, at;
     BYTE opacity = 255;
     BOOL hints = hint_is_open();
+    BOOL pinned;
     int pose = 0, pose_key;
     BOOL flip;
 
@@ -1058,19 +1202,20 @@ static void frame(void)
     finish_launch(now);
     render_bubble(now);
     if (hints) last_hint = now;
-    if (!dragging && now - last_hint < 400 &&
-        (hints || now - pulse > now - last_hint)) {
+    pinned = !dragging && now - last_hint < 400 && (hints || now - pulse > now - last_hint);
+    if (pinned) {
         pet_motion.last_frame = now;
-        return;
-    }
-    if (!saying_goodbye) {
+        if (pet_motion.state == PET_NAP) InterlockedExchange(&pending_command, 0);
+        if (!hint_animate || !animate) return;
+    } else if (!saying_goodbye) {
         receive_command(now);
         advance_pet(now, pointer);
     }
-    at = pressed && !dragging ? press_at : anchor;
+    at = pinned ? pet_at : (pressed && !dragging ? press_at : anchor);
     if (use_atlas) {
         if (!pose_pixels) return;
-        pose = animated_pose(now);
+        pose = pinned && !hint_sleeping ? ATTENTION_FIRST + (int)((now - attention_started) / 108 % 16)
+                                        : animated_pose(now);
         if (animate && dragging) at.y -= px(5);
     } else if (animate && !pressed && !opened) {
         if (!moved) at.x += (int)(px(6) * sin((now - born) / 1450.0));
@@ -1079,7 +1224,8 @@ static void frame(void)
         if (now - pulse < 290) at.y -= (int)(px(10) * sin((now - pulse) * 3.14159 / 290.0));
     }
     if (dragging && !use_atlas) opacity = 218;
-    flip = use_atlas && pet_motion.left && pose >= WALK_FIRST && pose < REST_FIRST;
+    flip = use_atlas && pet_motion.left && ((pose >= WALK_FIRST && pose < REST_FIRST) ||
+           (pose >= WALK_DETAIL_FIRST && pose < ATTENTION_FIRST));
     pose_key = pose + (flip ? POSE_COUNT : 0);
     if (painted_pose == pose_key && painted_opacity == opacity &&
         pet_at.x == at.x && pet_at.y == at.y) return;
@@ -1107,19 +1253,23 @@ static void frame(void)
 void secretary_hint_reaction(void)
 {
     DWORD now = GetTickCount();
-    secretary_command(SECRETARY_HINT);
-    if (pet && !hint_is_open()) {
-        receive_command(now);
-        if (command_pose == SECRETARY_HINT) command_started = now - 150;
-        last_hint = now - 400;
-        frame();
-    }
+    if (!pet || hint_is_open()) return;
+    hint_sleeping = pet_motion.state == PET_NAP;
+    if (!hint_sleeping) secretary_command(SECRETARY_HINT);
+    else InterlockedExchange(&pending_command, 0);
+    if (!hint_sleeping) receive_command(now);
+    last_hint = now - 400;
+    if (!hint_sleeping) frame();
+    hint_animate = use_atlas && animate && (hint_sleeping ? sleeping_safe :
+                   g_cfg.secretary_react && attention_safe);
+    hint_hit = hint_animate ? (hint_sleeping ? sleeping_hit : attention_hit) : click_pixel;
+    attention_started = now;
 }
 
 BOOL secretary_farewell(void)
 {
     DWORD now = GetTickCount();
-    if (!pet || !animate || !use_atlas || !g_cfg.secretary_react || input_is_locked())
+    if (!pet || !animate || !use_atlas || !g_cfg.secretary_react || input_is_locked() || pet_motion.state == PET_NAP)
         return FALSE;
     if (saying_goodbye) return TRUE;
     if (!SetTimer(g_main_wnd, SECRETARY_FAREWELL_TIMER, 590, NULL)) return FALSE;
@@ -1130,6 +1280,7 @@ BOOL secretary_farewell(void)
     if (GetCapture() == pet) ReleaseCapture();
     pending_slot = -1;
     launch.exe = NULL;
+    uia_cancel_browser_tab();
     reaction = REACT_NONE;
     command_pose = SECRETARY_ACTION;
     command_started = now;
@@ -1155,25 +1306,43 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             if (LOWORD(wp) == WA_INACTIVE) secretary_dismiss();
             break;
         case WM_KEYDOWN:
-            if (!(lp & (1L << 30)) && !input_modifier_held()) armed_key = (int)wp;
+            if (wp == VK_TAB && !(lp & (1L << 30))) {
+                int count = row_count + BUBBLE_ACTIONS;
+                int offset = GetKeyState(VK_SHIFT) < 0 ? -1 : 1;
+                focus_item = (focus_item + count + offset) % count;
+                armed_key = 0;
+                draw_bubble();
+                render_bubble(GetTickCount());
+                return 0;
+            }
+            if (!(lp & (1L << 30)) && !secretary_modifiers_down()) armed_key = (int)wp;
             return 0;
         case WM_KEYUP:
             if ((int)wp != armed_key) return 0;
             armed_key = 0;
             if (wp == VK_ESCAPE) secretary_dismiss();
+            else if (wp == VK_RETURN || wp == VK_SPACE) {
+                if (focus_item < row_count) select_slot(rows[focus_item]);
+                else run_bubble_action(focus_item - row_count);
+            }
             else if (wp >= '1' && wp <= '9') select_slot((int)wp - '1');
             else if (wp >= VK_NUMPAD1 && wp <= VK_NUMPAD9) select_slot((int)wp - VK_NUMPAD1);
             return 0;
         case WM_LBUTTONUP: {
             int row = GET_Y_LPARAM(lp) - px(42);
             int x = GET_X_LPARAM(lp), left = px(bubble_left ? 16 : 30);
-            int action_y = GET_Y_LPARAM(lp) - px(actions_y());
+            POINT logical = {MulDiv(x, 96, dpi), MulDiv(GET_Y_LPARAM(lp), 96, dpi)};
             int index = row / px(37);
-            if (opened && action_y >= 0 && action_y < px(68) && x >= left && x < left + px(206)) {
-                int col = x - left >= px(106), button_row = action_y >= px(34);
-                if (x - left - col * px(106) < px(100) && action_y - button_row * px(34) < px(29))
-                    run_bubble_action(button_row * 2 + col);
-            } else if (row >= 0 && index < row_count && x >= left && x < left + px(206))
+            int action;
+            if (!opened) return 0;
+            for (action = 0; action < BUBBLE_ACTIONS; ++action) {
+                RECT box = action_rect(action);
+                if (PtInRect(&box, logical)) {
+                    run_bubble_action(action);
+                    return 0;
+                }
+            }
+            if (row >= 0 && index < row_count && x >= left && x < left + px(206))
                 select_slot(rows[index]);
             return 0;
         }
@@ -1226,7 +1395,8 @@ BOOL secretary_has_focus(void)
 
 BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target)
 {
-    POINT point = {pet_at.x + click_pixel.x, pet_at.y + click_pixel.y};
+    POINT hit = hint_is_open() ? hint_hit : click_pixel;
+    POINT point = {pet_at.x + hit.x, pet_at.y + hit.y};
     if (!pet || !IsWindowVisible(pet) || !PtInRect(monitor, point) || dragging)
         return FALSE;
     target->click = point;
@@ -1242,6 +1412,7 @@ void secretary_shutdown(void)
     opened = pressed = dragging = FALSE;
     pending_slot = -1;
     launch.exe = NULL;
+    uia_cancel_browser_tab();
     if (pet) DestroyWindow(pet);
     if (bubble) DestroyWindow(bubble);
     pet = bubble = NULL;

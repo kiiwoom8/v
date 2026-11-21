@@ -74,6 +74,7 @@
 #define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
 #define WM_APP_TOUCHPAD_TOGGLE  (WM_APP + 18) // touchpad_hotkey pressed; -> touchpad_toggle
 #define WM_APP_SECRETARY_MENU   (WM_APP + 19) // mascot right-click; -> tray_show_menu
+#define WM_APP_SECRETARY_TAB    (WM_APP + 20) // wParam = browser request, lParam = reused HWND or NULL
 #define SECRETARY_FAREWELL_TIMER  201 // on g_main_wnd, for user-requested quit
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,8 @@ enum { SCAN_MONITOR = 0, SCAN_WINDOW = 1 };
 
 #define SECRETARY_SLOTS 9
 #define SECRETARY_TARGET_MAX 2048
-enum { SECRETARY_MOVEMENT, SECRETARY_REST, SECRETARY_REACTIONS, SECRETARY_EXTRA_SHEETS };
+enum { SECRETARY_MOVEMENT, SECRETARY_REST, SECRETARY_REACTIONS, SECRETARY_WALK_DETAIL,
+       SECRETARY_ATTENTION, SECRETARY_SCROLL_DETAIL, SECRETARY_EXTRA_SHEETS };
 typedef struct {
     WCHAR label[80];
     WCHAR target[SECRETARY_TARGET_MAX];
@@ -396,6 +398,7 @@ BOOL input_modifier_held(void);
 void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)
+int input_secretary_motion(void);       // current held move/scroll, or 0; atomic snapshot
 // Key capture for the hint overlay: while on, every non-modifier key is
 // swallowed and posted to the main window as WM_APP_HINT_KEY. The hook turns
 // capture on by itself at the moment it posts WM_APP_HINT_OPEN (so fast typing
@@ -455,9 +458,10 @@ void secretary_shutdown(void);
 void secretary_config_changed(void);
 void secretary_dismiss(void);
 BOOL secretary_has_focus(void);
+BOOL secretary_modifiers_down(void);   // actual Windows key state, outside hooks
 BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target);
 enum { SECRETARY_MOVE = 1, SECRETARY_SCROLL, SECRETARY_HINT, SECRETARY_CLICK,
-       SECRETARY_ACTION, SECRETARY_MODE };
+       SECRETARY_ACTION, SECRETARY_MODE, SECRETARY_SCROLL_UP, SECRETARY_SCROLL_DOWN };
 void secretary_command(int command);    // asynchronous, safe on the low-level hook
 void secretary_hint_reaction(void);     // UI thread, immediately before opening hints
 BOOL secretary_farewell(void);          // play a wave before a normal user quit
@@ -468,6 +472,14 @@ void secretary_editor_close(void);
 BOOL secretary_editor_message(MSG *message);
 BOOL secretary_editor_visible(void);
 BOOL secretary_editor_has_focus(void);
+void secretary_prompt_open(void);
+void secretary_prompt_close(void);
+BOOL secretary_prompt_message(MSG *message);
+BOOL secretary_prompt_has_focus(void);
+void secretary_open_claude(void);
+void secretary_browser_result(UINT request, HWND browser);
+BOOL uia_find_browser_tab(HWND browser, const WCHAR *url, UINT request);
+void uia_cancel_browser_tab(void);
 
 typedef struct ClickList {
     UINT scan_id;   // the id passed to uia_scan
