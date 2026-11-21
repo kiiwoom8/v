@@ -12,6 +12,7 @@
 //   uia.c    UI Automation workers: clickable-element scan, Alt scroll
 //            targets, text-field focus for bare keys
 //   tray.c   tray icon + menu, help window, start-with-Windows
+//   secretary.c desktop mascot, speech bubble and full-screen shortcuts
 //   snippet.c text shortcut editor window (tray "Text shortcuts...")
 //   update.c self-update from the latest GitHub release (tray "Update to
 //            latest version")
@@ -72,6 +73,7 @@
                                               // uia_flush request; -> hint_flush_done
 #define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
 #define WM_APP_TOUCHPAD_TOGGLE  (WM_APP + 18) // touchpad_hotkey pressed; -> touchpad_toggle
+#define WM_APP_SECRETARY_MENU   (WM_APP + 19) // mascot right-click; -> tray_show_menu
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -93,6 +95,13 @@ typedef struct {
 enum { INDICATOR_CURSOR = 0, INDICATOR_CORNER = 1, INDICATOR_OFF = 2 };
 enum { HINT_MODE_ELEMENTS = 0, HINT_MODE_GRID = 1 };
 enum { SCAN_MONITOR = 0, SCAN_WINDOW = 1 };
+
+#define SECRETARY_SLOTS 9
+#define SECRETARY_TARGET_MAX 2048
+typedef struct {
+    WCHAR label[80];
+    WCHAR target[SECRETARY_TARGET_MAX];
+} SecretaryShortcut;
 
 typedef struct {
     // [general]
@@ -136,6 +145,12 @@ typedef struct {
                                // shutdown (0-300, default 60; 0 = none)
     int    shutdown_force;     // 1 = a scheduled shutdown closes apps even with unsaved work;
                                // default 0 (only hung apps; others may hold it up)
+
+    // [secretary] opt-in desktop image and numbered full-screen shortcuts.
+    int secretary_enabled;
+    int secretary_animate;    // -1 = follow Windows animation effects, 0 = off, 1 = on
+    WCHAR secretary_image[MAX_PATH];
+    SecretaryShortcut secretary_shortcuts[SECRETARY_SLOTS];
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
     double speed;              // default 600
@@ -427,6 +442,15 @@ typedef struct {
     POINT click;    // visible point inside rc to click (physical screen px)
 } ClickTarget;
 
+// The secretary is a native click target. Only the focus check is used by the
+// keyboard hook; it never sends a message or waits.
+void secretary_init(void);
+void secretary_shutdown(void);
+void secretary_config_changed(void);
+void secretary_dismiss(void);
+BOOL secretary_has_focus(void);
+BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target);
+
 typedef struct ClickList {
     UINT scan_id;   // the id passed to uia_scan
     BOOL done;      // FALSE = partial result, more windows still being scanned
@@ -577,6 +601,7 @@ void tray_init(HWND main_wnd);
 void tray_shutdown(void);
 void tray_update(void);                 // refresh icon, tooltip (mouse mode / paused)
 void tray_on_message(WPARAM wp, LPARAM lp);    // WM_APP_TRAY
+void tray_show_menu(POINT at);
 BOOL tray_on_command(WORD id);          // WM_COMMAND from the tray menu; TRUE if handled
 void tray_on_taskbar_created(void);     // Explorer restarted: re-add icon
 void tray_balloon(const WCHAR *title, const WCHAR *text);

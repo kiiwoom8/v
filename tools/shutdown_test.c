@@ -201,8 +201,9 @@ static void test_parsing(void)
         tpl = (WCHAR *)calloc(65536, sizeof(WCHAR));
         if (tpl) {
             build_default_ini(tpl, 65536);
-            CHECK(wcslen(tpl) < 16000);
+            CHECK(wcslen(tpl) < DEFAULT_INI_CAPACITY);
             CHECK(wcsstr(tpl, L"shutdown_at = none") != NULL);
+            CHECK(wcsstr(tpl, L"[secretary]") != NULL);
             free(tpl);
         }
     }

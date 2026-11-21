@@ -2275,6 +2275,12 @@ static BOOL handle_down(UINT vk)
         s_owner[vk] = OWN_SWALLOW;
         return TRUE;
     }
+    if (mods == 0 && (vk == VK_ESCAPE || (vk >= '1' && vk <= '9') ||
+                      (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9)) &&
+        secretary_has_focus()) {
+        s_owner[vk] = OWN_PASS;
+        return FALSE;
+    }
     // The hint overlay can be open while input is paused (from the tray); its
     // keys must still reach it, including Esc to close it.
     if (flag_get(&s_capture)) {

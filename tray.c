@@ -41,7 +41,7 @@ static const WCHAR HELP_TITLE[] =
 #define IDM_SD_AT      1016
 #define IDM_SD_CANCEL  1017
 
-#define HELP_MAX_ROWS  64
+#define HELP_MAX_ROWS  68
 #define HELP_INF       0x3fffffff
 
 #ifndef NIN_SELECT
@@ -657,11 +657,10 @@ static void append_shutdown_menu(HMENU menu)
                 (UINT_PTR)sub, text);
 }
 
-static void show_menu(void)
+void tray_show_menu(POINT pt)
 {
     HMENU  menu;
     WCHAR  hk[64];
-    POINT  pt;
     UINT   cmd;
 
     // v4 can deliver both WM_CONTEXTMENU and WM_RBUTTONUP for one click.
@@ -706,7 +705,6 @@ static void show_menu(void)
     append_shutdown_menu(menu);
     append_item(menu, IDM_QUIT, L"Quit", NULL, FALSE);
 
-    GetCursorPos(&pt);
     SetForegroundWindow(g_tray_wnd);
     cmd = (UINT)TrackPopupMenu(menu,
                                TPM_RIGHTBUTTON | TPM_RETURNCMD |
@@ -723,6 +721,7 @@ BOOL tray_on_command(WORD id)
 {
     switch (id) {
     case IDM_HINTS:
+        secretary_dismiss();
         hint_open();
         return TRUE;
     case IDM_MOUSE:
@@ -787,6 +786,7 @@ BOOL tray_on_command(WORD id)
 void tray_on_message(WPARAM wp, LPARAM lp)
 {
     UINT event;
+    POINT at;
 
     (void)wp;
     event = g_tray_v4 ? (UINT)LOWORD(lp) : (UINT)lp;
@@ -796,7 +796,7 @@ void tray_on_message(WPARAM wp, LPARAM lp)
     case WM_CONTEXTMENU:
     case NIN_SELECT:
     case NIN_KEYSELECT:
-        show_menu();
+        if (GetCursorPos(&at)) tray_show_menu(at);
         break;
     default:
         break;
@@ -1029,6 +1029,13 @@ static void build_help_rows(void)
     _snwprintf(buf, 127, L"%s again", mode);
     buf[127] = L'\0';
     help_add_row(buf, L"Rescan (Esc closes)");
+
+    if (g_cfg.secretary_enabled) {
+        help_add_header(L"Desktop secretary");
+        help_add_row(L"Click / drag", L"Open shortcuts / move the secretary");
+        help_add_row(L"1-9 / Esc", L"Open a full-screen shortcut / close the bubble");
+        help_add_row(L"Right-click", L"Open this same Vim tray menu");
+    }
 
     // The grid opens with hint_mode = grid or the grid key.
     if (g_cfg.hint_mode != HINT_MODE_GRID && !g_cfg.key_grid)

@@ -3624,6 +3624,25 @@ static BOOL scan_ready(const ClickList *list)
            list->count > 0 && g_cfg.scan_refresh > 0;
 }
 
+static ClickList *include_secretary(ClickList *list)
+{
+    ClickTarget target;
+    ClickList *expanded;
+
+    if (!list || !secretary_hint_target(&g_mon_rect, &target))
+        return list;
+    if (list->count >= MAX_TARGETS) {
+        list->items[MAX_TARGETS - 1] = target;
+        return list;
+    }
+    expanded = (ClickList *)realloc(list, sizeof(*list) +
+                                  (size_t)(list->count + 1) * sizeof(target));
+    if (!expanded)
+        return list;
+    expanded->items[expanded->count++] = target;
+    return expanded;
+}
+
 static void finalize_scan(void)
 {
     ClickList *list = g_scan_list;
@@ -3632,6 +3651,7 @@ static void finalize_scan(void)
     int n, room;
 
     g_scan_list = NULL;
+    list = include_secretary(list);
     n = list ? list->count : 0;
     if (n > MAX_TARGETS) n = MAX_TARGETS;
     if (list) load_note(list);
@@ -4404,6 +4424,8 @@ void hint_on_elements(ClickList *list)
         BOOL done = list->done;
         BOOL fg_in = list->fg_done;
         int added;
+
+        list = include_secretary(list);
 
         if (g_prefix_len > 0) {
             // Mid-type: leave the shown labels alone; catch up next time.

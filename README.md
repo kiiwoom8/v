@@ -481,6 +481,34 @@ may ask to save it, which holds the shutdown up until someone answers. Set
   quitting or updating vim mouse cancels it. `shutdown_at` applies whenever
   vim mouse runs (see "Start with Windows").
 
+## Desktop secretary
+
+The secretary floats over the desktop and remembers where you drop it. Click
+its picture to open the speech bubble, or right-click it to open the Vim tray
+menu. Drag the picture with the mouse or with mouse mode's left button (`a`
+held down, or `v` to grab and release). Click hints (`Alt+F` by default) also
+label the picture. Use `1`–`9` or click a row to launch it, and `Esc` to close
+the bubble. `F11` leaves full screen in the launched app.
+
+Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
+Use a local image path or a path relative to the INI. PNG transparency works
+directly. A JPEG can use a flat white background.
+
+```ini
+[secretary]
+enabled = 1
+animate = system
+image = secretary.png
+1 = Claude | claude
+2 = Wiki | https://example.org/wiki
+```
+
+The slot number and label are editable. A target is `claude` for the Windows
+Claude app or an HTTP(S) URL, which opens in a fresh Chrome window using your
+current browser profile. Edge is the fallback when Chrome is unavailable.
+Set `enabled = 0` to hide the secretary. `animate = system` follows Windows'
+animation setting. `animate = 0` or `1` overrides it for the secretary.
+
 ## Settings
 
 `vim.ini` lives next to `vim.exe`, or in `%APPDATA%\vim mouse` when the

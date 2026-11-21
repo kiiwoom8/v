@@ -23,6 +23,8 @@
 #define VK_F24 0x87
 #endif
 
+#define DEFAULT_INI_CAPACITY 32768
+
 static WCHAR g_exe_ini[APP_PATH_MAX];
 static WCHAR g_appdata_ini[APP_PATH_MAX];
 static BOOL  g_exe_ini_ready = FALSE;
@@ -553,6 +555,7 @@ void config_set_defaults(Config *c)
     if (c == NULL)
         return;
     memset(c, 0, sizeof(*c));
+    c->secretary_animate = -1;
 
     parse_hotkey(L"Alt+F", &c->hint_hotkey);
     parse_hotkey(L"Ctrl+Alt+Q", &c->quit_hotkey);
@@ -809,7 +812,7 @@ static void apply_subgrid_keys(WCHAR *dst, int line, const WCHAR *val)
 // ---------------------------------------------------------------------------
 // INI parser
 
-enum { SEC_NONE = 0, SEC_GENERAL, SEC_MOUSE, SEC_HINTS, SEC_SHORTCUTS,
+enum { SEC_NONE = 0, SEC_GENERAL, SEC_MOUSE, SEC_HINTS, SEC_SHORTCUTS, SEC_SECRETARY,
        SEC_UNKNOWN };
 
 static const WCHAR *section_name(int sec)
@@ -819,9 +822,65 @@ static const WCHAR *section_name(int sec)
     case SEC_MOUSE:   return L"mouse";
     case SEC_HINTS:   return L"hints";
     case SEC_SHORTCUTS: return L"shortcuts";
+    case SEC_SECRETARY: return L"secretary";
     case SEC_UNKNOWN: return L"unknown";
     default:          return L"";
     }
+}
+
+static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
+{
+    SecretaryShortcut *slot;
+    WCHAR *target;
+
+    if (_wcsicmp(key, L"enabled") == 0) {
+        apply_bool(&c->secretary_enabled, line, key, val);
+        return;
+    }
+    if (_wcsicmp(key, L"animate") == 0) {
+        if (_wcsicmp(val, L"system") == 0)
+            c->secretary_animate = -1;
+        else
+            apply_bool(&c->secretary_animate, line, key, val);
+        return;
+    }
+    if (_wcsicmp(key, L"image") == 0) {
+        if (wcslen(val) >= MAX_PATH)
+            warn_add(line, L"[secretary] image path is too long");
+        else
+            wcscpy(c->secretary_image, val);
+        return;
+    }
+    if (key[0] < L'1' || key[0] > L'9' || key[1]) {
+        warn_add(line, L"unknown key \"%ls\" in [secretary]", key);
+        return;
+    }
+    slot = &c->secretary_shortcuts[key[0] - L'1'];
+    if (!*val) {
+        ZeroMemory(slot, sizeof(*slot));
+        return;
+    }
+    target = wcschr(val, L'|');
+    if (target) {
+        *target++ = 0;
+        trim(&val);
+        trim(&target);
+        if (*val && wcslen(val) < sizeof(slot->label) / sizeof(WCHAR) &&
+            wcslen(target) < SECRETARY_TARGET_MAX &&
+            (_wcsicmp(target, L"claude") == 0 ||
+             ((_wcsnicmp(target, L"https://", 8) == 0 && target[8]) ||
+              (_wcsnicmp(target, L"http://", 7) == 0 && target[7])))) {
+            const WCHAR *p;
+            // The browser receives a single quoted URL argument.
+            for (p = target; *p && *p > L' ' && *p != L'"' && *p != L'\\'; ++p) {}
+            if (!*p) {
+                wcscpy(slot->label, val);
+                wcscpy(slot->target, target);
+                return;
+            }
+        }
+    }
+    warn_add(line, L"[secretary] %ls must be a label | claude or label | http(s) URL", key);
 }
 
 static void process_general(Config *c, int line, const WCHAR *key,
@@ -1280,6 +1339,8 @@ static void process_line(Config *c, int line, WCHAR *text, int *section)
             *section = SEC_HINTS;
         else if (_wcsicmp(name, L"shortcuts") == 0)
             *section = SEC_SHORTCUTS;
+        else if (_wcsicmp(name, L"secretary") == 0)
+            *section = SEC_SECRETARY;
         else {
             warn_add(line, L"unknown section \"[%ls]\"", name);
             *section = SEC_UNKNOWN;
@@ -1316,6 +1377,7 @@ static void process_line(Config *c, int line, WCHAR *text, int *section)
     case SEC_MOUSE:   process_mouse(c, line, key, val);   break;
     case SEC_HINTS:   process_hints(c, line, key, val);   break;
     case SEC_SHORTCUTS: process_shortcut(line, key, val);  break;
+    case SEC_SECRETARY: process_secretary(c, line, key, val); break;
     default: break;
     }
 }
@@ -1603,6 +1665,13 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; work can hold the shutdown up until someone answers.\r\n");
     appendf(buf, cch, L"shutdown_force = %d\r\n", d.shutdown_force ? 1 : 0);
 
+    appendf(buf, cch, L"\r\n[secretary]\r\n"
+            L"; Set enabled to 1 and choose a local PNG or JPEG to show a desktop secretary.\r\n"
+            L"; Relative image paths are read from the settings file's folder.\r\n"
+            L"enabled = 0\r\nimage =\r\nanimate = system\r\n"
+            L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
+            L"; 1 = Claude | claude\r\n"
+            L"; 2 = Wiki | https://example.org/wiki\r\n");
     appendf(buf, cch, L"\r\n[mouse]\r\n");
     appendf(buf, cch, L"; Movement speeds in pixels per second. speed is where movement starts\r\n");
     appendf(buf, cch, L"; and max_speed is reached after accel_time seconds; accel_curve shapes it.\r\n");
@@ -2019,7 +2088,7 @@ static BOOL write_text_file(const WCHAR *path, const WCHAR *text)
 
 static void write_default_file(const WCHAR *path)
 {
-    static WCHAR text[16384];
+    static WCHAR text[DEFAULT_INI_CAPACITY];
 
     build_default_ini(text, sizeof(text) / sizeof(text[0]));
     if (!write_text_file(path, text))
@@ -2127,7 +2196,7 @@ static BOOL is_section_header(const WCHAR *line, size_t n)
 BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
                     int count)
 {
-    static WCHAR defaults[16384];
+    static WCHAR defaults[DEFAULT_INI_CAPACITY];
     const WCHAR *path = config_path();
     WCHAR tmp_path[APP_PATH_MAX];
     WCHAR *text = NULL;

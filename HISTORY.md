@@ -1428,6 +1428,19 @@ Invariants stated in `common.h` and enforced by history:
   checker. The shutdown test includes `common.h` first so MinGW.org sees
   the same Unicode and Windows API declarations as the application.
 
+### Desktop secretary (2026-11-22)
+
+- An opt-in layered Win32 mascot uses local artwork and shortcuts from
+  `[secretary]`. A click opens a speech bubble, a drag saves the new position,
+  and a right-click calls the existing Vim tray menu at the click point.
+- The hint overlay adds the mascot as a native screen target. Hold its drawn
+  position while hints are visible and use queued button coordinates so an
+  instant `click_return` cannot look like a drag.
+- Pass the digits and Escape to the focused speech bubble. Dispatch its
+  shortcut after release and use the target application's own fullscreen mode.
+  App activation, artwork decoding, and painting stay on the UI thread, outside
+  the low-level hook. Settings and reduced motion apply live.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)

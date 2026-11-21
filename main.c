@@ -758,6 +758,7 @@ void app_reload_config(BOOL notify)
     snippet_editor_refresh();
     input_config_changed();
     shutdown_config_changed();
+    secretary_config_changed();
     tray_update();
     touchpad_update();
     app_log(L"config: reloaded");
@@ -794,6 +795,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
 
     switch (msg) {
     case WM_APP_HINT_OPEN:
+        secretary_dismiss();
         hint_open();
         return 0;
     case WM_APP_HINT_PREPARE:
@@ -821,6 +823,8 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         help_toggle();
         return 0;
     case WM_APP_STATE_CHANGED:
+        if (input_is_locked())
+            secretary_dismiss();
         tray_update();
         touchpad_update();
         return 0;
@@ -836,6 +840,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         return 0;
     case WM_APP_TRAY:
         tray_on_message(wp, lp);
+        return 0;
+    case WM_APP_SECRETARY_MENU:
+        tray_show_menu((POINT){(LONG)wp, (LONG)lp});
         return 0;
     case WM_COMMAND:
         if (tray_on_command((WORD)LOWORD(wp)))
@@ -881,6 +888,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         hint_shutdown();
         // Stop input first: its movement thread calls into UIA until joined.
         input_stop();
+        secretary_shutdown();
         uia_stop();
         // After input_stop: the wait for the quit hotkey's keys blocks no hook.
         touchpad_stop();
@@ -986,6 +994,7 @@ int main(void)
             CloseHandle(mutex);
         return 1;
     }
+    secretary_init();
 
     // Without UI Automation only hint_mode = grid opens anything.
     if (!uia_start())
