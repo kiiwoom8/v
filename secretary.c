@@ -14,10 +14,9 @@
 #define SPI_GETCLIENTAREAANIMATION 0x1042
 #endif
 
-#define PET_CLASS L"VimMouseSecretary"
 #define BUBBLE_CLASS L"VimMouseSecretaryBubble"
 #define POSITION_KEY L"Software\\vim mouse\\Secretary"
-#define FRAME_MS 33
+#define FRAME_MS 16
 #define BUBBLE_MS 165
 #define POSES_PER_ROW 4
 #define POSES_PER_SHEET (POSES_PER_ROW * POSES_PER_ROW)
@@ -28,6 +27,8 @@
 #define WALK_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_WALK_DETAIL))
 #define ATTENTION_FIRST (POSES_PER_SHEET * (1 + SECRETARY_ATTENTION))
 #define SCROLL_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_SCROLL_DETAIL))
+#define IDLE_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_IDLE_DETAIL))
+#define INTERACTION_FIRST (POSES_PER_SHEET * (1 + SECRETARY_INTERACTION_DETAIL))
 
 typedef struct {
     HDC dc;
@@ -45,7 +46,7 @@ typedef struct {
 } PoseStep;
 
 enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
-enum { PET_WAIT, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH };
+enum { PET_WAIT, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH, PET_YAWN };
 enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME, BUBBLE_PROMPT, BUBBLE_ACTIONS };
 
 static const PoseStep idle[] = {
@@ -59,6 +60,35 @@ static const PoseStep grabbed[] = {
 };
 static const PoseStep clicked[] = {
     {12, 90}, {13, 170}, {14, 240}, {15, 230}
+};
+static const PoseStep breathing_detail[] = {
+    {IDLE_DETAIL_FIRST, 570}, {IDLE_DETAIL_FIRST + 1, 420},
+    {IDLE_DETAIL_FIRST + 2, 390}, {IDLE_DETAIL_FIRST + 3, 85},
+    {IDLE_DETAIL_FIRST + 4, 90}, {IDLE_DETAIL_FIRST + 5, 70},
+    {IDLE_DETAIL_FIRST + 6, 210}, {IDLE_DETAIL_FIRST + 7, 490},
+    {IDLE_DETAIL_FIRST + 6, 375}, {IDLE_DETAIL_FIRST + 1, 410}
+};
+static const PoseStep yawn_detail[] = {
+    {IDLE_DETAIL_FIRST + 8, 300}, {IDLE_DETAIL_FIRST + 9, 210},
+    {IDLE_DETAIL_FIRST + 10, 150}, {IDLE_DETAIL_FIRST + 11, 150},
+    {IDLE_DETAIL_FIRST + 12, 520}, {IDLE_DETAIL_FIRST + 13, 200},
+    {IDLE_DETAIL_FIRST + 14, 240}, {IDLE_DETAIL_FIRST + 15, 220}
+};
+static const PoseStep grab_detail[] = {
+    {INTERACTION_FIRST, 125}, {INTERACTION_FIRST + 1, 90},
+    {INTERACTION_FIRST + 2, 105}, {INTERACTION_FIRST + 3, 130},
+    {INTERACTION_FIRST + 4, 135}, {INTERACTION_FIRST + 5, 95},
+    {INTERACTION_FIRST + 6, 105}, {INTERACTION_FIRST + 7, 115}
+};
+static const PoseStep click_detail[] = {
+    {INTERACTION_FIRST + 8, 65}, {INTERACTION_FIRST + 9, 80},
+    {INTERACTION_FIRST + 10, 90}, {INTERACTION_FIRST + 11, 95},
+    {INTERACTION_FIRST + 12, 195}, {INTERACTION_FIRST + 13, 105},
+    {INTERACTION_FIRST + 14, 115}, {INTERACTION_FIRST + 15, 130}
+};
+static const PoseStep landing_detail[] = {
+    {INTERACTION_FIRST + 6, 60}, {INTERACTION_FIRST + 7, 70},
+    {INTERACTION_FIRST + 14, 120}, {INTERACTION_FIRST + 15, 170}
 };
 static const PoseStep menu_reaction[] = {{12, 440}, {15, 210}};
 static const PoseStep landed[] = {{11, 85}, {15, 260}};
@@ -88,29 +118,35 @@ static GpImage *image;
 static GpImage *extra_images[SECRETARY_EXTRA_SHEETS];
 static BOOL extra_ready[SECRETARY_EXTRA_SHEETS];
 static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
-static DWORD *pose_pixels;
+static DWORD *pose_pixels, *blend_source;
 static POINT pose_clicks[POSE_COUNT];
 static RECT pose_bounds[POSE_COUNT], sprite_bounds;
-static int painted_pose = -1, reaction;
+static int painted_pose = -1, reaction, queued_reaction;
+static int blend_from_group;
+static DWORD blend_started, blend_ms, last_yawn;
 static BOOL use_atlas;
 static BYTE painted_opacity;
 static WCHAR image_path[APP_PATH_MAX];
 static POINT anchor, home, pet_at, press, press_at, click_pixel, bubble_at;
 static RECT work;
 static UINT dpi;
-static DWORD born, pulse, bubble_tick, last_hint, last_activity, press_started;
+static DWORD born, pulse, reaction_started, bubble_tick, last_hint, last_activity, press_started;
 static BOOL positioned, pressed, dragging, moved, opened, animate;
 static BOOL bubble_left;
+static BOOL bubble_dirty;
+static BYTE bubble_opacity;
+static POINT bubble_painted_at;
 static int rows[SECRETARY_SLOTS], row_count, armed_key, focus_item, selected = -1;
 static int pending_slot = -1;
 static volatile LONG pending_command;
-static int command_pose;
-static DWORD command_started, command_activity, attention_started;
+static int command_pose, queued_command;
+static DWORD command_started, attention_started;
 static POINT attention_hit, sleeping_hit, hint_hit;
 static BOOL attention_safe, sleeping_safe, hint_animate, hint_sleeping;
+static BOOL hint_waiting;
 static BOOL saying_goodbye;
 static struct {
-    double speed, cruise, distance, traveled, gait;
+    double speed, cruise, distance, traveled, stop, gait;
     POINT origin, goal;
     int curve;
     DWORD started, next, last_frame, duration, seed;
@@ -123,9 +159,10 @@ static BOOL (WINAPI *process_path)(HANDLE, DWORD, LPWSTR, PDWORD);
 static struct {
     const WCHAR *exe;
     HWND target;
-    DWORD began, sent;
+    DWORD began, sent, browser_ready;
     UINT request;
     int lookup;
+    BOOL maximizing;
     WCHAR browser_path[MAX_PATH];
     WCHAR url[SECRETARY_TARGET_MAX];
 } launch;
@@ -294,37 +331,89 @@ static void align_floor(RECT *bounds, POINT *click, int floor)
     click->y += dy;
 }
 
+static int pose_group(int pose)
+{
+    int first = pose / POSES_PER_SHEET * POSES_PER_SHEET;
+    int cel = pose - first;
+    switch (first) {
+    case ATTENTION_FIRST:
+    case WALK_DETAIL_FIRST: return first;
+    case WALK_FIRST: return cel < 12 ? first : first + 12;
+    case SCROLL_DETAIL_FIRST:
+    case IDLE_DETAIL_FIRST:
+    case INTERACTION_FIRST: return first + cel / 8 * 8;
+    default: return first + cel / 4 * 4;
+    }
+}
+
+static BOOL render_cel(GpImage *sheet, UINT width, UINT height, int index, int x, int y, int size)
+{
+    int cel = index % POSES_PER_SHEET, col = cel % POSES_PER_ROW, row = cel / POSES_PER_ROW;
+    int left = col * width / POSES_PER_ROW, top = row * height / POSES_PER_ROW;
+    int right = (col + 1) * width / POSES_PER_ROW, bottom = (row + 1) * height / POSES_PER_ROW;
+    GdipGraphicsClear(sprite.graphics, 0);
+    if (GdipDrawImageRectRectI(sprite.graphics, sheet, x, y, size, size,
+                              left, top, right - left, bottom - top,
+                              UnitPixel, NULL, NULL, NULL) != Ok) return FALSE;
+    GdipFlush(sprite.graphics, FlushIntentionSync);
+    remove_alpha_haze((size_t)sprite.size.cx * sprite.size.cy);
+    return measure_sprite(&pose_clicks[index], &pose_bounds[index]);
+}
+
 static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first)
 {
-    int pose, size = sprite.size.cx;
+    int index, begin, end = first + POSES_PER_SHEET, size = sprite.size.cx;
+    int safe_margin = px(4), floor = MulDiv(size, 88, 100);
     size_t count = (size_t)size * size;
     if (width < 4 * 16 || height < 4 * 16 || width > 8192 || height > 8192) return FALSE;
-    for (pose = 0; pose < POSES_PER_SHEET; ++pose) {
-        int col = pose % POSES_PER_ROW, row = pose / POSES_PER_ROW;
-        int left = col * width / POSES_PER_ROW, top = row * height / POSES_PER_ROW;
-        int right = (col + 1) * width / POSES_PER_ROW;
-        int bottom = (row + 1) * height / POSES_PER_ROW;
-        int index = first + pose;
-        GdipGraphicsClear(sprite.graphics, 0);
-        if (GdipDrawImageRectRectI(sprite.graphics, sheet, 0, 0, size, size,
-                                  left, top, right - left, bottom - top,
-                                  UnitPixel, NULL, NULL, NULL) != Ok)
-            return FALSE;
-        GdipFlush(sprite.graphics, FlushIntentionSync);
-        remove_alpha_haze(count);
-        if (!measure_sprite(&pose_clicks[index], &pose_bounds[index])) return FALSE;
-        if (first != 0 || row != 2) {
-            int floor = MulDiv(size, 88, 100);
-            if (first == WALK_FIRST && row == 2 && (col & 1)) floor -= px(6);
-            align_floor(&pose_bounds[index], &pose_clicks[index], floor);
+    for (index = first; index < end; ++index)
+        if (!render_cel(sheet, width, height, index, 0, 0, size)) return FALSE;
+    for (begin = first; begin < end;) {
+        int stop = begin, edges[POSES_PER_SHEET], centers = 0;
+        int span_x = 0, span_y = 0, scaled, center;
+        BOOL carried = begin == 8 || begin == INTERACTION_FIRST;
+        // Use one scale for a whole clip. An ear flick or a pose that extends
+        // a paw can change the silhouette without zooming the other drawings.
+        for (; stop < end && pose_group(stop) == begin; ++stop) {
+            RECT b = pose_bounds[stop];
+            int w = b.right - b.left, h = b.bottom - b.top, j = stop - begin;
+            int edge = max(w, h);
+            while (j > 0 && edges[j - 1] > edge) {
+                edges[j] = edges[j - 1];
+                --j;
+            }
+            edges[j] = edge;
+            centers += (b.left + b.right) / 2;
+            span_x = max(span_x, w);
+            span_y = max(span_y, h);
         }
-        CopyMemory(pose_pixels + index * count, sprite.pixels, count * sizeof(DWORD));
+        center = centers / (stop - begin);
+        scaled = MulDiv(size, MulDiv(size, 84, 100), edges[(stop - begin) / 2]);
+        scaled = clamp(scaled, MulDiv(size, 78, 100), MulDiv(size, 118, 100));
+        scaled = min(scaled, (size - 2 * safe_margin) * size / span_x);
+        scaled = min(scaled, ((carried ? size - safe_margin : floor) - safe_margin) * size / span_y);
+        for (index = begin; index < stop; ++index) {
+            RECT b = pose_bounds[index];
+            int baseline = floor;
+            int x = size / 2 - MulDiv(center, scaled, size), y;
+            if (index >= WALK_FIRST + 8 && index < WALK_FIRST + 12 && (index & 1))
+                baseline -= px(6);
+            x = clamp(x, safe_margin - MulDiv(b.left, scaled, size),
+                      size - safe_margin - MulDiv(b.right, scaled, size));
+            y = carried ? (size - scaled) / 2 : baseline - MulDiv(b.bottom, scaled, size);
+            y = clamp(y, safe_margin - MulDiv(b.top, scaled, size),
+                      size - safe_margin - MulDiv(b.bottom, scaled, size));
+            if (!render_cel(sheet, width, height, index, x, y, scaled)) return FALSE;
+            if (!carried) align_floor(&pose_bounds[index], &pose_clicks[index], baseline);
+            CopyMemory(pose_pixels + index * count, sprite.pixels, count * sizeof(DWORD));
+        }
+        begin = stop;
     }
     return TRUE;
 }
 
 // Keep the hint's click on the body through every frame it can display.
-static BOOL stable_clip_hit(int first, int frames, POINT *hit)
+static BOOL stable_clip_hit(int first, int frames, const int *leading, int leading_count, POINT *hit)
 {
     int w = sprite.size.cx, h = sprite.size.cy;
     size_t count = (size_t)w * h;
@@ -334,9 +423,14 @@ static BOOL stable_clip_hit(int first, int frames, POINT *hit)
             int dx = x - w / 2, dy = y - h * 5 / 8;
             int distance = dx * dx + dy * dy, pose;
             if (distance >= best) continue;
+            if (leading && sprite.pixels[y * w + x] >> 24 < 160) continue;
             for (pose = first; pose < first + frames; ++pose)
                 if (pose_pixels[pose * count + y * w + x] >> 24 < 160) break;
             if (pose == first + frames) {
+                int i;
+                for (i = 0; i < leading_count; ++i)
+                    if (pose_pixels[leading[i] * count + y * w + x] >> 24 < 160) break;
+                if (i != leading_count) continue;
                 *hit = (POINT){x, y};
                 best = distance;
             }
@@ -352,7 +446,10 @@ static BOOL draw_sprite(void)
     int size = px(144);
 
     free(pose_pixels);
+    free(blend_source);
     pose_pixels = NULL;
+    blend_source = NULL;
+    blend_ms = 0;
     painted_pose = -1;
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
         !w || !h || w > INT_MAX || h > INT_MAX)
@@ -364,7 +461,8 @@ static BOOL draw_sprite(void)
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet)
             if (extra_images[sheet]) poses = (sheet + 2) * POSES_PER_SHEET;
         pose_pixels = (DWORD *)malloc((size_t)poses * size * size * sizeof(DWORD));
-        if (!pose_pixels || !draw_atlas(image, w, h, 0)) return FALSE;
+        blend_source = (DWORD *)malloc((size_t)size * size * sizeof(DWORD));
+        if (!pose_pixels || !blend_source || !draw_atlas(image, w, h, 0)) return FALSE;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet) {
             GpImage *extra = extra_images[sheet];
             extra_ready[sheet] = extra && GdipGetImageWidth(extra, &w) == Ok &&
@@ -372,8 +470,8 @@ static BOOL draw_sprite(void)
             if (extra && !extra_ready[sheet])
                 app_log(L"secretary: an extra animation sheet could not be drawn");
         }
-        attention_safe = extra_ready[SECRETARY_ATTENTION] && stable_clip_hit(ATTENTION_FIRST, 16, &attention_hit);
-        sleeping_safe = extra_ready[SECRETARY_REST] && stable_clip_hit(REST_FIRST, 8, &sleeping_hit);
+        attention_safe = extra_ready[SECRETARY_ATTENTION] && stable_clip_hit(ATTENTION_FIRST, 16, NULL, 0, &attention_hit);
+        sleeping_safe = extra_ready[SECRETARY_REST] && stable_clip_hit(REST_FIRST, 8, NULL, 0, &sleeping_hit);
         return TRUE;
     }
     width = w >= h ? size : clamp(MulDiv(size, (int)w, (int)h), 1, size);
@@ -485,6 +583,7 @@ static void draw_bubble(void)
                       {px(edge), px(tail_y + 8)}};
     int i;
 
+    bubble_dirty = TRUE;
     GdipGraphicsClear(g, 0);
     if (GdipCreateSolidFill(0xfffdfaff, &brush) != Ok) return;
     rounded(g, brush, (RECT){px(x), px(7), px(right), px(bottom + 5)}, px(18), 0x503a2354);
@@ -553,7 +652,13 @@ static void render_bubble(DWORD now)
         opacity = opened ? (BYTE)(75 + progress * 180 / 255) : (BYTE)(255 - progress);
         at.x += (bubble_left ? 1 : -1) * px(8) * (255 - opacity) / 255;
     }
-    present(bubble, &speech, at, opacity);
+    if (bubble_dirty || bubble_opacity != opacity ||
+        bubble_painted_at.x != at.x || bubble_painted_at.y != at.y) {
+        present(bubble, &speech, at, opacity);
+        bubble_dirty = FALSE;
+        bubble_opacity = opacity;
+        bubble_painted_at = at;
+    }
 }
 
 void secretary_dismiss(void)
@@ -594,10 +699,13 @@ static void open_bubble(void)
 
 static void react(int action)
 {
-    reaction = action;
+    queued_reaction = action;
     last_activity = pulse = GetTickCount();
-    pet_motion.state = PET_WAIT;
     pet_motion.next = pulse + 3000;
+    if (pet_motion.state == PET_NAP) {
+        pet_motion.state = PET_STRETCH;
+        pet_motion.started = pulse;
+    }
 }
 
 typedef struct { HMONITOR handle; RECT area; } PetMonitor;
@@ -781,6 +889,7 @@ static void open_browser_url(DWORD now)
     launch.target = NULL;
     launch.began = now;
     launch.sent = 0;
+    launch.maximizing = FALSE;
     app_log(L"secretary: opening a browser tab");
     _snwprintf(command, sizeof(command) / sizeof(*command), L"\"%ls\"", launch.url);
     result = ShellExecuteW(NULL, L"open", launch.browser_path, command, NULL, SW_SHOWNORMAL);
@@ -807,7 +916,7 @@ static void start_target(const WCHAR *target, DWORD now)
     if (!browser_path(launch.exe, launch.browser_path)) {
         launch.exe = L"msedge.exe";
         if (!browser_path(launch.exe, launch.browser_path)) {
-            launch_error(L"Install Chrome or Edge for full-screen web shortcuts.");
+            launch_error(L"Install Chrome or Edge for web shortcuts.");
             return;
         }
     }
@@ -853,20 +962,26 @@ void secretary_browser_result(UINT request, HWND browser)
     launch.lookup = 0;
     launch.began = now;
     launch.sent = 0;
+    launch.maximizing = FALSE;
 }
 
 static void finish_launch(DWORD now)
 {
     HWND foreground;
+    BOOL web = launch.url[0] != 0;
     if (!launch.exe) return;
     foreground = GetForegroundWindow();
     if (launch.lookup) {
-        if (now - launch.began >= (launch.lookup == 1 ? 1750u : 4200u)) {
+        if (now - launch.began >= (launch.lookup == 1 ? 2500u : 4200u)) {
             open_browser_url(now);
         } else if (launch.lookup == 1 && foreground == launch.target && !secretary_modifiers_down()) {
             if (in_fullscreen(foreground)) {
                 if (!launch.sent && send_fullscreen_key()) launch.sent = now;
-            } else if (!launch.sent || now - launch.sent >= 190) {
+            } else if (!IsZoomed(foreground)) {
+                if (!launch.maximizing) launch.maximizing = ShowWindowAsync(foreground, SW_MAXIMIZE);
+            } else if (!launch.browser_ready) {
+                launch.browser_ready = now;
+            } else if (now - launch.browser_ready >= 350) {
                 launch.request = ++next_browser_request;
                 if (uia_find_browser_tab(foreground, launch.url, launch.request)) {
                     launch.lookup = 2;
@@ -877,12 +992,25 @@ static void finish_launch(DWORD now)
         return;
     }
     if (now - launch.began >= 10000 || (launch.sent && now - launch.sent >= 2500)) {
-        launch_error(L"The shortcut did not enter full screen. Try F11 in the opened window.");
+        launch_error(web ? L"The browser window did not maximize."
+                         : L"The shortcut did not enter full screen. Try F11 in the opened window.");
         return;
     }
     if (!launch.target) {
         if (!app_window(foreground, launch.exe)) return;
         launch.target = foreground;
+    }
+    if (web) {
+        if (foreground != launch.target || now - launch.began < 250) return;
+        if (in_fullscreen(launch.target)) {
+            // F11 here only leaves a full-screen mode the browser was already in.
+            if (!launch.sent && !secretary_modifiers_down() && send_fullscreen_key()) launch.sent = now;
+        } else if (IsZoomed(launch.target)) {
+            launch.exe = NULL;
+        } else if (!launch.maximizing) {
+            launch.maximizing = ShowWindowAsync(launch.target, SW_MAXIMIZE);
+        }
+        return;
     }
     if (in_fullscreen(launch.target)) {
         launch.exe = NULL;
@@ -897,6 +1025,8 @@ static void move_from_press(POINT pointer)
 {
     if (!dragging && (abs(pointer.x - press.x) >= px(5) || abs(pointer.y - press.y) >= px(5))) {
         dragging = TRUE;
+        reaction = queued_reaction = REACT_NONE;
+        command_pose = queued_command = 0;
         secretary_dismiss();
     }
     if (dragging) {
@@ -978,6 +1108,7 @@ static void start_walk(DWORD now)
     pet_motion.goal = (POINT){x, clamp(anchor.y + px(y_drift), top, bottom)};
     pet_motion.origin = anchor;
     pet_motion.distance = hypot(pet_motion.goal.x - anchor.x, pet_motion.goal.y - anchor.y);
+    pet_motion.stop = pet_motion.distance;
     pet_motion.curve = px((int)random_below(49) - 24);
     pet_motion.left = x < anchor.x;
     pet_motion.fast = abs(x - anchor.x) > px(200) && random_below(8) == 0;
@@ -987,27 +1118,29 @@ static void start_walk(DWORD now)
     pet_motion.started = now;
 }
 
-static void advance_walk(DWORD now, double seconds)
+static void advance_walk(DWORD now, double seconds, BOOL stopping)
 {
-    double remaining = pet_motion.distance - pet_motion.traveled;
     double acceleration = px(pet_motion.fast ? 115 : 80);
-    double goal_speed = fmin(pet_motion.cruise, sqrt(2.0 * acceleration * remaining));
-    double step, progress;
+    double remaining, goal_speed, step, progress;
+    if (stopping && pet_motion.stop == pet_motion.distance)
+        pet_motion.stop = fmin(pet_motion.distance, pet_motion.traveled +
+                              pet_motion.speed * pet_motion.speed / (2.0 * acceleration) + px(4));
+    remaining = pet_motion.stop - pet_motion.traveled;
+    goal_speed = fmin(pet_motion.cruise, sqrt(2.0 * acceleration * remaining));
 
     if (pet_motion.speed < goal_speed)
         pet_motion.speed = fmin(goal_speed, pet_motion.speed + acceleration * seconds);
     else
         pet_motion.speed = fmax(goal_speed, pet_motion.speed - acceleration * seconds);
-    step = pet_motion.speed * seconds;
+    step = fmin(remaining, pet_motion.speed * seconds);
     if (remaining <= 1.0 || step >= remaining) {
-        anchor = pet_motion.goal;
+        step = remaining;
         pet_motion.state = PET_SETTLE;
         pet_motion.started = now;
-        return;
     }
     pet_motion.traveled += step;
     pet_motion.gait += step / px(extra_ready[SECRETARY_WALK_DETAIL] ? (pet_motion.fast ? 5 : 4) : 7);
-    progress = pet_motion.traveled / pet_motion.distance;
+    progress = pet_motion.distance > 0 ? pet_motion.traveled / pet_motion.distance : 1.0;
     anchor.x = pet_motion.origin.x + (LONG)lround((pet_motion.goal.x - pet_motion.origin.x) * progress);
     anchor.y = pet_motion.origin.y + (LONG)lround((pet_motion.goal.y - pet_motion.origin.y) * progress +
                                                  pet_motion.curve * sin(progress * 3.14159265));
@@ -1019,27 +1152,25 @@ static void advance_pet(DWORD now, POINT pointer)
     double seconds = clamp((int)(now - pet_motion.last_frame), 0, 60) / 1000.0;
     DWORD elapsed = now - pet_motion.started;
     RECT hover_zone = {pet_at.x, pet_at.y, pet_at.x + sprite.size.cx, pet_at.y + sprite.size.cy};
+    BOOL hovered;
     unsigned choice;
 
     pet_motion.last_frame = now;
+    InflateRect(&hover_zone, px(25), px(19));
+    hovered = PtInRect(&hover_zone, pointer);
     if (!animate || !use_atlas || (input_is_locked() &&
         pet_motion.state != PET_NAP && pet_motion.state != PET_STRETCH)) {
         wait_to_roam(now, 3000);
         return;
     }
-    InflateRect(&hover_zone, px(25), px(19));
-    if (pressed || opened || secretary_editor_visible() || secretary_prompt_has_focus() ||
-        reaction != REACT_NONE || PtInRect(&hover_zone, pointer)) {
-        if (pet_motion.state == PET_WALK || pet_motion.state == PET_SETTLE)
-            wait_to_roam(now, 2200);
-        else if ((LONG)(now - pet_motion.next) >= 0)
-            pet_motion.next = now + 1500;
-        return;
-    }
     switch (pet_motion.state) {
     case PET_WALK:
-        if (g_cfg.secretary_roam) advance_walk(now, seconds);
-        else wait_to_roam(now, 2800);
+        if (!pressed && !opened && g_cfg.secretary_roam)
+            advance_walk(now, seconds, hovered || queued_command || queued_reaction);
+        else {
+            pet_motion.state = PET_SETTLE;
+            pet_motion.started = now;
+        }
         return;
     case PET_SETTLE:
         if (elapsed >= 545) wait_to_roam(now, 4000 + random_below(6500));
@@ -1056,6 +1187,20 @@ static void advance_pet(DWORD now, POINT pointer)
     case PET_GROOM:
         if (elapsed >= 1215) wait_to_roam(now, 4300 + random_below(5500));
         return;
+    case PET_YAWN:
+        if (elapsed >= (extra_ready[SECRETARY_IDLE_DETAIL] ? 1990 : 2375))
+            wait_to_roam(now, 3200 + random_below(4500));
+        return;
+    }
+    if (pressed || opened || secretary_editor_visible() || secretary_prompt_has_focus() ||
+        reaction || queued_reaction || command_pose || queued_command || hovered) {
+        if ((LONG)(now - pet_motion.next) >= 0) pet_motion.next = now + 1500;
+        return;
+    }
+    if (now - last_activity >= 14000 && now - last_yawn >= 27000) {
+        pet_motion.state = PET_YAWN;
+        pet_motion.started = last_yawn = now;
+        return;
     }
     if ((LONG)(now - pet_motion.next) < 0) return;
     choice = random_below(100);
@@ -1067,7 +1212,7 @@ static void advance_pet(DWORD now, POINT pointer)
         else {
             pet_motion.state = PET_NAP;
             pet_motion.duration = 8500 + random_below(11500);
-            command_pose = 0;
+            command_pose = queued_command = 0;
         }
     } else {
         wait_to_roam(now, 2700 + random_below(3000));
@@ -1084,16 +1229,13 @@ void secretary_command(int command)
 static void receive_command(DWORD now)
 {
     int command = (int)InterlockedExchange(&pending_command, 0);
-    if (!g_cfg.secretary_react || pressed || pet_motion.state == PET_NAP) return;
+    if (!g_cfg.secretary_react) command_pose = queued_command = 0;
+    if (!animate || !use_atlas || !g_cfg.secretary_react || pressed || pet_motion.state == PET_NAP) return;
     if (!command) command = input_secretary_motion();
     if (!command) return;
-    if (command != command_pose || now - command_activity > 450) {
-        command_pose = command;
-        command_started = now;
-    }
-    command_activity = now;
+    if (command != command_pose) queued_command = command;
     last_activity = now;
-    wait_to_roam(now, 2400);
+    pet_motion.next = now + 2400;
 }
 
 static int command_frame(DWORD now)
@@ -1106,7 +1248,7 @@ static int command_frame(DWORD now)
     if (command_pose == SECRETARY_SCROLL || command_pose == SECRETARY_SCROLL_UP || command_pose == SECRETARY_SCROLL_DOWN) {
         DWORD cycle = extra_ready[SECRETARY_SCROLL_DETAIL] ? 8 * 110 : 10 * 100;
         BOOL upward = command_pose == SECRETARY_SCROLL_UP;
-        if (now - command_activity >= cycle) return -1;
+        if (elapsed >= cycle) return -1;
         if (extra_ready[SECRETARY_SCROLL_DETAIL])
             return SCROLL_DETAIL_FIRST + (upward ? 8 : 0) + (int)(elapsed / 110 % 8);
         if (extra_ready[SECRETARY_ATTENTION]) {
@@ -1117,8 +1259,8 @@ static int command_frame(DWORD now)
         }
     }
     if (extra_ready[SECRETARY_ATTENTION] && (command_pose == SECRETARY_MOVE || command_pose == SECRETARY_HINT)) {
-        if (now - command_activity >= 16 * 108) return -1;
-        return ATTENTION_FIRST + (int)(elapsed / 108 % 16);
+        if (elapsed >= 16 * 108) return -1;
+        return ATTENTION_FIRST + (int)(elapsed / 108);
     }
     if (elapsed >= 600) return -1;
     if (!extra_ready[SECRETARY_REACTIONS]) return 12 + (int)(elapsed / 150);
@@ -1135,24 +1277,46 @@ static int command_frame(DWORD now)
     return COMMAND_FIRST + row * POSES_PER_ROW + col;
 }
 
+static int reaction_frame(DWORD now)
+{
+    DWORD elapsed = now - reaction_started;
+    BOOL interactions = extra_ready[SECRETARY_INTERACTION_DETAIL];
+    switch (reaction) {
+    case REACT_CLICK:
+        return interactions ? step_at(CLIP(click_detail), elapsed, FALSE)
+                            : step_at(CLIP(clicked), elapsed, FALSE);
+    case REACT_MENU: return step_at(CLIP(menu_reaction), elapsed, FALSE);
+    case REACT_LAND:
+        return interactions ? step_at(CLIP(landing_detail), elapsed, FALSE)
+                            : step_at(CLIP(landed), elapsed, FALSE);
+    }
+    return -1;
+}
+
 static int animated_pose(DWORD now)
 {
-    DWORD asleep = now - last_activity, elapsed = now - pulse;
+    DWORD elapsed = now - pet_motion.started;
     int pose = -1;
+    BOOL detailed_idle = extra_ready[SECRETARY_IDLE_DETAIL];
 
-    if (!animate) return 0;
-    if (dragging || (pressed && now - press_started >= 160))
-        return step_at(CLIP(grabbed), now - press_started, TRUE);
-    switch (reaction) {
-    case REACT_CLICK: pose = step_at(CLIP(clicked), elapsed, FALSE); break;
-    case REACT_MENU:  pose = step_at(CLIP(menu_reaction), elapsed, FALSE); break;
-    case REACT_LAND:  pose = step_at(CLIP(landed), elapsed, FALSE); break;
+    if (!animate) {
+        reaction = queued_reaction = REACT_NONE;
+        command_pose = queued_command = 0;
+        return 0;
     }
+    if (dragging || (pressed && now - press_started >= 160)) {
+        elapsed = now - press_started - 160;
+        return extra_ready[SECRETARY_INTERACTION_DETAIL] ? step_at(CLIP(grab_detail), elapsed, TRUE)
+                                                        : step_at(CLIP(grabbed), elapsed, TRUE);
+    }
+    pose = reaction_frame(now);
     if (pose >= 0) return pose;
     reaction = REACT_NONE;
     pose = command_frame(now);
     if (pose >= 0) return pose;
-    elapsed = now - pet_motion.started;
+    if (command_pose && !queued_command && command_pose == input_secretary_motion())
+        queued_command = command_pose;
+    command_pose = 0;
     switch (pet_motion.state) {
     case PET_WALK:
         if (extra_ready[SECRETARY_WALK_DETAIL]) return WALK_DETAIL_FIRST + (int)pet_motion.gait % 16;
@@ -1170,13 +1334,98 @@ static int animated_pose(DWORD now)
     case PET_GROOM:
         pose = step_at(CLIP(grooming), elapsed, FALSE);
         break;
+    case PET_YAWN:
+        pose = detailed_idle ? step_at(CLIP(yawn_detail), elapsed, FALSE)
+                             : step_at(CLIP(bored), elapsed, FALSE);
+        break;
     }
     if (pose >= 0) return pose;
-    if (!opened && asleep >= 14000) {
-        pose = step_at(CLIP(bored), (asleep - 14000) % 27000, FALSE);
-        if (pose >= 0) return pose;
+    if (queued_reaction) {
+        reaction = queued_reaction;
+        queued_reaction = REACT_NONE;
+        reaction_started = now;
+        return reaction_frame(now);
     }
-    return step_at(CLIP(idle), asleep, TRUE);
+    if (queued_command && g_cfg.secretary_react) {
+        command_pose = queued_command;
+        queued_command = 0;
+        command_started = now;
+        return command_frame(now);
+    }
+    elapsed = now - born;
+    return detailed_idle ? step_at(CLIP(breathing_detail), elapsed, TRUE)
+                         : step_at(CLIP(idle), elapsed, TRUE);
+}
+
+static int hint_pose(DWORD now)
+{
+    if (hint_waiting) {
+        int pose = reaction_frame(now);
+        if (pose < 0) pose = command_frame(now);
+        if (pose >= 0) return pose;
+        reaction = REACT_NONE;
+        command_pose = 0;
+        hint_waiting = FALSE;
+        attention_started = now;
+    }
+    return ATTENTION_FIRST + (int)((now - attention_started) / 108 % 16);
+}
+
+static void paint_atlas_pose(int pose, BOOL flip, int key, DWORD now)
+{
+    int x, y, w = sprite.size.cx, h = sprite.size.cy;
+    size_t count = (size_t)w * h;
+    const DWORD *target = pose_pixels + count * pose;
+    DWORD weight = 256;
+    if (painted_pose != key) {
+        int previous = painted_pose < 0 ? -1 : pose_group(painted_pose % POSE_COUNT) +
+                                               (painted_pose >= POSE_COUNT ? POSE_COUNT : 0);
+        int group = pose_group(pose) + (flip ? POSE_COUNT : 0);
+        if (previous < 0 || !animate) blend_ms = 0;
+        else if (previous != group || !blend_ms || now - blend_started >= blend_ms ||
+                 blend_from_group == group) {
+            // Retarget an in-flight bridge within its destination clip. A
+            // quick walk cycle would otherwise restart the bridge every cel.
+            CopyMemory(blend_source, sprite.pixels, count * sizeof(DWORD));
+            blend_started = now;
+            blend_from_group = previous;
+            if (group != previous) blend_ms = 170;
+            else if ((pose >= WALK_FIRST && pose < WALK_FIRST + 12) ||
+                     (pose >= WALK_DETAIL_FIRST && pose < ATTENTION_FIRST)) blend_ms = 55;
+            else if (group == IDLE_DETAIL_FIRST || group == 0) blend_ms = 165;
+            else blend_ms = 100;
+        }
+    }
+    if (blend_ms && animate && now - blend_started < blend_ms) {
+        double ratio = (double)(now - blend_started) / blend_ms;
+        weight = (DWORD)(256 * ratio * ratio * (3.0 - 2.0 * ratio));
+    } else {
+        blend_ms = 0;
+    }
+    if (weight == 256 && !flip) {
+        CopyMemory(sprite.pixels, target, count * sizeof(DWORD));
+    } else {
+        const DWORD mask = 0x00ff00ff;
+        DWORD remaining = 256 - weight;
+        for (y = 0; y < h; ++y) {
+            for (x = 0; x < w; ++x) {
+                int i = y * w + x;
+                DWORD b = target[y * w + (flip ? w - 1 - x : x)];
+                DWORD a = remaining ? blend_source[i] : 0;
+                DWORD rb = ((a & mask) * remaining + (b & mask) * weight) >> 8;
+                DWORD ag = (((a >> 8) & mask) * remaining + ((b >> 8) & mask) * weight);
+                sprite.pixels[i] = (rb & mask) | (ag & ~mask);
+            }
+        }
+    }
+    if (blend_ms && measure_sprite(&click_pixel, &sprite_bounds)) return;
+    click_pixel = pose_clicks[pose];
+    sprite_bounds = pose_bounds[pose];
+    if (flip) {
+        click_pixel.x = w - 1 - click_pixel.x;
+        sprite_bounds.left = w - pose_bounds[pose].right;
+        sprite_bounds.right = w - pose_bounds[pose].left;
+    }
 }
 
 static void frame(void)
@@ -1206,6 +1455,7 @@ static void frame(void)
     if (pinned) {
         pet_motion.last_frame = now;
         if (pet_motion.state == PET_NAP) InterlockedExchange(&pending_command, 0);
+        else InterlockedCompareExchange(&pending_command, 0, SECRETARY_HINT);
         if (!hint_animate || !animate) return;
     } else if (!saying_goodbye) {
         receive_command(now);
@@ -1214,8 +1464,7 @@ static void frame(void)
     at = pinned ? pet_at : (pressed && !dragging ? press_at : anchor);
     if (use_atlas) {
         if (!pose_pixels) return;
-        pose = pinned && !hint_sleeping ? ATTENTION_FIRST + (int)((now - attention_started) / 108 % 16)
-                                        : animated_pose(now);
+        pose = pinned && !hint_sleeping ? hint_pose(now) : animated_pose(now);
         if (animate && dragging) at.y -= px(5);
     } else if (animate && !pressed && !opened) {
         if (!moved) at.x += (int)(px(6) * sin((now - born) / 1450.0));
@@ -1227,23 +1476,10 @@ static void frame(void)
     flip = use_atlas && pet_motion.left && ((pose >= WALK_FIRST && pose < REST_FIRST) ||
            (pose >= WALK_DETAIL_FIRST && pose < ATTENTION_FIRST));
     pose_key = pose + (flip ? POSE_COUNT : 0);
-    if (painted_pose == pose_key && painted_opacity == opacity &&
+    if (!blend_ms && painted_pose == pose_key && painted_opacity == opacity &&
         pet_at.x == at.x && pet_at.y == at.y) return;
-    if (use_atlas && painted_pose != pose_key) {
-        size_t count = (size_t)sprite.size.cx * sprite.size.cy;
-        const DWORD *source = pose_pixels + count * pose;
-        click_pixel = pose_clicks[pose];
-        sprite_bounds = pose_bounds[pose];
-        if (flip) {
-            int x, y, w = sprite.size.cx;
-            for (y = 0; y < sprite.size.cy; ++y)
-                for (x = 0; x < w; ++x)
-                    sprite.pixels[y * w + x] = source[y * w + w - 1 - x];
-            click_pixel.x = w - 1 - click_pixel.x;
-            sprite_bounds.left = w - pose_bounds[pose].right;
-            sprite_bounds.right = w - pose_bounds[pose].left;
-        } else CopyMemory(sprite.pixels, source, count * sizeof(DWORD));
-    }
+    if (use_atlas && (painted_pose != pose_key || blend_ms))
+        paint_atlas_pose(pose, flip, pose_key, now);
     painted_pose = pose_key;
     painted_opacity = opacity;
     pet_at = at;
@@ -1253,16 +1489,37 @@ static void frame(void)
 void secretary_hint_reaction(void)
 {
     DWORD now = GetTickCount();
+    int leading[POSES_PER_SHEET * 2], count = 0;
     if (!pet || hint_is_open()) return;
     hint_sleeping = pet_motion.state == PET_NAP;
-    if (!hint_sleeping) secretary_command(SECRETARY_HINT);
-    else InterlockedExchange(&pending_command, 0);
-    if (!hint_sleeping) receive_command(now);
+    if (hint_sleeping) InterlockedExchange(&pending_command, 0);
+    else {
+        InterlockedCompareExchange(&pending_command, 0, SECRETARY_HINT);
+        if (queued_command == SECRETARY_HINT) queued_command = 0;
+        if (pet_motion.state == PET_WALK) {
+            pet_motion.state = PET_SETTLE;
+            pet_motion.started = now;
+        }
+    }
     last_hint = now - 400;
-    if (!hint_sleeping) frame();
     hint_animate = use_atlas && animate && (hint_sleeping ? sleeping_safe :
                    g_cfg.secretary_react && attention_safe);
     hint_hit = hint_animate ? (hint_sleeping ? sleeping_hit : attention_hit) : click_pixel;
+    if (hint_animate && !hint_sleeping) {
+        DWORD t;
+        for (t = 0; t <= 16 * 108 && count < (int)(sizeof(leading) / sizeof(leading[0])); t += FRAME_MS) {
+            int pose = reaction_frame(now + t);
+            if (pose < 0) pose = command_frame(now + t);
+            if (pose < 0) break;
+            if (!count || leading[count - 1] != pose) leading[count++] = pose;
+        }
+    }
+    hint_waiting = count > 0;
+    if (hint_animate && (hint_waiting || sprite.pixels[hint_hit.y * sprite.size.cx + hint_hit.x] >> 24 < 160)) {
+        hint_animate = stable_clip_hit(hint_sleeping ? REST_FIRST : ATTENTION_FIRST,
+                                      hint_sleeping ? 8 : 16, leading, count, &hint_hit);
+        if (!hint_animate) hint_hit = click_pixel;
+    }
     attention_started = now;
 }
 
@@ -1281,7 +1538,8 @@ BOOL secretary_farewell(void)
     pending_slot = -1;
     launch.exe = NULL;
     uia_cancel_browser_tab();
-    reaction = REACT_NONE;
+    reaction = queued_reaction = REACT_NONE;
+    queued_command = 0;
     command_pose = SECRETARY_ACTION;
     command_started = now;
     last_hint = now - 400;
@@ -1350,6 +1608,11 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
     } else if (wnd == pet) {
         switch (msg) {
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+            point = (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            input_forward_wheel(point, msg, wp);
+            return 0;
         case WM_LBUTTONDOWN:
             // Vim's hint click may already have returned the real cursor.
             message_pos = GetMessagePos();
@@ -1419,7 +1682,9 @@ void secretary_shutdown(void)
     free_canvas(&speech);
     free_canvas(&sprite);
     free(pose_pixels);
+    free(blend_source);
     pose_pixels = NULL;
+    blend_source = NULL;
     if (image) GdipDisposeImage(image);
     image = NULL;
     for (extra = 0; extra < SECRETARY_EXTRA_SHEETS; ++extra) {
@@ -1486,15 +1751,16 @@ void secretary_config_changed(void)
     clamp_anchor();
     if (!positioned) home = anchor;
     positioned = TRUE;
-    pet = CreateWindowExW(styles | WS_EX_NOACTIVATE, PET_CLASS, L"Desktop secretary", WS_POPUP,
+    pet = CreateWindowExW(styles | WS_EX_NOACTIVATE, SECRETARY_PET_CLASS, L"Desktop secretary", WS_POPUP,
                           0, 0, 0, 0, NULL, NULL, g_hinst, NULL);
     bubble = CreateWindowExW(styles, BUBBLE_CLASS, L"Secretary shortcuts", WS_POPUP,
                              0, 0, 0, 0, NULL, NULL, g_hinst, NULL);
     if (!pet || !bubble) goto fail;
     born = GetTickCount();
     last_activity = born;
-    reaction = REACT_NONE;
-    command_pose = 0;
+    reaction = queued_reaction = REACT_NONE;
+    command_pose = queued_command = 0;
+    last_yawn = born - 27000;
     pet_motion.seed = (born ^ GetCurrentProcessId() ^ GetCurrentThreadId()) | 1;
     pet_motion.last_frame = born;
     wait_to_roam(born, 2500);
@@ -1517,7 +1783,7 @@ void secretary_init(void)
     cls.hInstance = g_hinst;
     cls.lpfnWndProc = secretary_proc;
     cls.hCursor = LoadCursorW(NULL, IDC_HAND);
-    cls.lpszClassName = PET_CLASS;
+    cls.lpszClassName = SECRETARY_PET_CLASS;
     if (!RegisterClassW(&cls)) return;
     cls.lpszClassName = BUBBLE_CLASS;
     if (!RegisterClassW(&cls)) return;

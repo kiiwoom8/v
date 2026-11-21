@@ -4716,13 +4716,15 @@ static BOOL result_mentions_address(const WCHAR *name, const WCHAR *url)
     return FALSE;
 }
 
-// A website can choose its own accessible IDs. Act on the browser controls
-// surrounding the document, never on a matching element in page content.
-static BOOL is_browser_chrome(UiaEngine *engine, IUIAutomationElement *root, IUIAutomationElement *el)
+// Chrome can render the address popup as a browser-owned WebUI document.
+// Accept that one document only when it is inside the native result frame.
+static BOOL is_browser_chrome(UiaEngine *engine, IUIAutomationElement *root,
+                             IUIAutomationElement *el, BOOL results)
 {
     IUIAutomationTreeWalker *walker = NULL;
     IUIAutomationElement *parent = NULL;
     BOOL known = FALSE;
+    BOOL document_seen = FALSE, popup_seen = FALSE;
     int depth;
     if (FAILED(engine->automation->lpVtbl->get_RawViewWalker(engine->automation, &walker)) || !walker)
         return FALSE;
@@ -4739,11 +4741,51 @@ static BOOL is_browser_chrome(UiaEngine *engine, IUIAutomationElement *root, IUI
         document = FAILED(parent->lpVtbl->GetCurrentPropertyValue(parent, UIA_ControlTypePropertyId, &prop)) ||
                    (V_VT(&prop) == VT_I4 && V_I4(&prop) == UIA_DocumentControlTypeId);
         VariantClear(&prop);
-        if (document) break;
+        if (document) {
+            if (!results || document_seen || popup_seen) break;
+            document_seen = TRUE;
+        } else if (document_seen && !popup_seen) {
+            VariantInit(&prop);
+            if (SUCCEEDED(parent->lpVtbl->GetCurrentPropertyValue(parent, UIA_ClassNamePropertyId, &prop)) &&
+                V_VT(&prop) == VT_BSTR && V_BSTR(&prop) &&
+                !wcscmp(V_BSTR(&prop), L"RoundedOmniboxResultsFrame"))
+                popup_seen = TRUE;
+            VariantClear(&prop);
+        }
     }
     if (parent) parent->lpVtbl->Release(parent);
     walker->lpVtbl->Release(walker);
-    return known;
+    return known && (!document_seen || popup_seen);
+}
+
+static HWND choose_tab_suggestion(UiaEngine *engine, IUIAutomationElement *root,
+                                   const BrowserTabRequest *job)
+{
+    int i;
+    for (i = 0; i < 8 && browser_in_front(job); ++i) {
+        WCHAR id[20];
+        IUIAutomationElement *item;
+        BrowserInvoke *action = NULL;
+        VARIANT text;
+        BOOL selected;
+        _snwprintf(id, 20, L"match-%d", i);
+        item = browser_find(engine, root, 30011, id);
+        if (!item) break;
+        VariantInit(&text);
+        selected = SUCCEEDED(item->lpVtbl->GetCurrentPropertyValue(item, UIA_NamePropertyId, &text)) &&
+            V_VT(&text) == VT_BSTR && V_BSTR(&text) && result_mentions_address(V_BSTR(&text), job->url) &&
+            is_browser_chrome(engine, root, item, TRUE) &&
+            SUCCEEDED(item->lpVtbl->GetCurrentPatternAs(item, 10000, &browser_invoke_iid, (void **)&action)) &&
+            action && browser_in_front(job) && SUCCEEDED(action->vt->invoke(action));
+        if (action) action->vt->release(action);
+        VariantClear(&text);
+        item->lpVtbl->Release(item);
+        if (selected) {
+            Sleep(140);
+            return GetForegroundWindow();
+        }
+    }
+    return NULL;
 }
 
 static HWND reuse_open_browser_tab(UiaEngine *engine, const BrowserTabRequest *job)
@@ -4753,12 +4795,12 @@ static HWND reuse_open_browser_tab(UiaEngine *engine, const BrowserTabRequest *j
     HWND used = NULL;
     VARIANT text;
     BOOL in_edit = FALSE;
-    int i;
+    int poll;
 
     if (!browser_in_front(job) || FAILED(engine->automation->lpVtbl->ElementFromHandle(
         engine->automation, (UIA_HWND)job->window, &root)) || !root) goto done;
     bar = browser_find(engine, root, UIA_ClassNamePropertyId, L"OmniboxViewViews");
-    if (!bar || !is_browser_chrome(engine, root, bar)) goto done;
+    if (!bar || !is_browser_chrome(engine, root, bar, FALSE)) goto done;
     VariantInit(&text);
     if (SUCCEEDED(bar->lpVtbl->GetCurrentPropertyValue(bar, 30045, &text)) &&
         V_VT(&text) == VT_BSTR && V_BSTR(&text) && open_address_matches(V_BSTR(&text), job->url))
@@ -4775,31 +4817,19 @@ static HWND reuse_open_browser_tab(UiaEngine *engine, const BrowserTabRequest *j
     if (!browser_in_front(job)) goto done;
     browser_key(VK_SPACE);
     Sleep(130);
-    scope = browser_find(engine, root, UIA_ClassNamePropertyId, L"SelectedKeywordView");
-    if (!scope || !is_browser_chrome(engine, root, scope) || !browser_in_front(job)) goto done;
+    for (poll = 0; poll < 3 && !scope && browser_in_front(job); ++poll) {
+        scope = browser_find(engine, root, UIA_ClassNamePropertyId, L"SelectedKeywordView");
+        if (!scope) Sleep(85);
+    }
+    if (!scope || !is_browser_chrome(engine, root, scope, FALSE) || !browser_in_front(job)) goto done;
     input_type_text(without_scheme(job->url));
     Sleep(235);
-    for (i = 0; i < 8 && browser_in_front(job); ++i) {
-        WCHAR id[20];
-        IUIAutomationElement *item;
-        BrowserInvoke *action = NULL;
-        _snwprintf(id, 20, L"match-%d", i);
-        item = browser_find(engine, root, 30011, id);
-        if (!item) break;
-        VariantInit(&text);
-        if (SUCCEEDED(item->lpVtbl->GetCurrentPropertyValue(item, UIA_NamePropertyId, &text)) &&
-            V_VT(&text) == VT_BSTR && V_BSTR(&text) && result_mentions_address(V_BSTR(&text), job->url) &&
-            is_browser_chrome(engine, root, item) &&
-            SUCCEEDED(item->lpVtbl->GetCurrentPatternAs(item, 10000, &browser_invoke_iid, (void **)&action)) &&
-            action && browser_in_front(job) && SUCCEEDED(action->vt->invoke(action))) {
-            in_edit = FALSE;
-            Sleep(140);
-            used = GetForegroundWindow();
-        }
-        if (action) action->vt->release(action);
-        VariantClear(&text);
-        item->lpVtbl->Release(item);
-        if (used) break;
+    // Chromium rebuilds the suggestion popup asynchronously after a window
+    // transition. Allow a few refreshes before treating a result as absent.
+    for (poll = 0; poll < 3 && !used && browser_in_front(job); ++poll) {
+        used = choose_tab_suggestion(engine, root, job);
+        if (used) in_edit = FALSE;
+        else if (poll < 2) Sleep(125);
     }
 done:
     if (in_edit && browser_in_front(job)) { browser_key(VK_ESCAPE); browser_key(VK_ESCAPE); }
@@ -5923,11 +5953,50 @@ static BOOL scroll_worker_start_nonblocking(void)
     return InterlockedCompareExchange(&g_sc_state, 2, 2) == 2;
 }
 
+HWND uia_scroll_window(POINT pt, BOOL *over_pet)
+{
+    HWND hit = WindowFromPoint(pt), candidate;
+    DwmGetWindowAttributeFn dwm;
+    WCHAR name[32];
+    BOOL through = hit && GetClassNameW(hit, name, sizeof(name) / sizeof(name[0])) &&
+                   lstrcmpW(name, SECRETARY_PET_CLASS) == 0;
+    int remaining = 128;
+    if (over_pet) *over_pet = through;
+    if (!through) return hit;
+
+    // The pet keeps its mouse buttons and drag. Wheel input goes to the app
+    // immediately underneath it, even when another app has focus.
+    dwm = dwm_get_window_attribute();
+    for (candidate = GetWindow(hit, GW_HWNDNEXT); candidate && remaining-- > 0;
+         candidate = GetWindow(candidate, GW_HWNDNEXT)) {
+        RECT bounds;
+        DWORD cloaked = 0;
+        if (!IsWindowVisible(candidate) || !IsWindowEnabled(candidate) || IsIconic(candidate) ||
+            (GetWindowLongW(candidate, GWL_EXSTYLE) & WS_EX_TRANSPARENT) ||
+            !GetWindowRect(candidate, &bounds) || !PtInRect(&bounds, pt))
+            continue;
+        if (dwm && SUCCEEDED(dwm(candidate, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+            continue;
+        hit = candidate;
+        for (;;) {
+            POINT client = pt;
+            HWND child;
+            if (!ScreenToClient(hit, &client)) break;
+            child = ChildWindowFromPointEx(hit, client,
+                        CWP_SKIPINVISIBLE | CWP_SKIPDISABLED | CWP_SKIPTRANSPARENT);
+            if (!child || child == hit) break;
+            hit = child;
+        }
+        return hit;
+    }
+    return NULL;
+}
+
 // The window to search: the one under the pointer, or the foreground window
 // when the pointer is over the desktop, the taskbar or one of ours.
 static HWND scroll_root_for(POINT pt)
 {
-    HWND hwnd = WindowFromPoint(pt);
+    HWND hwnd = uia_scroll_window(pt, NULL);
     HWND root = hwnd ? GetAncestor(hwnd, GA_ROOT) : NULL;
     WCHAR cls[64];
     DWORD pid = 0;
@@ -6129,10 +6198,13 @@ static BOOL scroll_end_at(IUIAutomation *automation, POINT pt, BOOL top)
     HWND hwnd;
     DWORD pid = 0;
     BOOL found = FALSE;
+    BOOL over_pet;
     int depth;
 
-    hwnd = WindowFromPoint(pt);
-    if (!hwnd)
+    hwnd = uia_scroll_window(pt, &over_pet);
+    // ElementFromPoint sees the pet. Fall back to the normal wheel jump,
+    // which can reach a specific pane in the app under the pointer.
+    if (!hwnd || over_pet)
         return FALSE;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId())

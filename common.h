@@ -40,6 +40,10 @@
 
 #include <windows.h>
 
+#ifndef WM_MOUSEHWHEEL
+#define WM_MOUSEHWHEEL 0x020E
+#endif
+
 #define APP_NAME        L"vim mouse"
 #define MAIN_WND_CLASS  L"VimMouseMainWindow"
 #define INSTANCE_MUTEX  L"Local\\vim_mouse_single_instance"
@@ -101,7 +105,8 @@ enum { SCAN_MONITOR = 0, SCAN_WINDOW = 1 };
 #define SECRETARY_SLOTS 9
 #define SECRETARY_TARGET_MAX 2048
 enum { SECRETARY_MOVEMENT, SECRETARY_REST, SECRETARY_REACTIONS, SECRETARY_WALK_DETAIL,
-       SECRETARY_ATTENTION, SECRETARY_SCROLL_DETAIL, SECRETARY_EXTRA_SHEETS };
+       SECRETARY_ATTENTION, SECRETARY_SCROLL_DETAIL, SECRETARY_IDLE_DETAIL,
+       SECRETARY_INTERACTION_DETAIL, SECRETARY_EXTRA_SHEETS };
 typedef struct {
     WCHAR label[80];
     WCHAR target[SECRETARY_TARGET_MAX];
@@ -399,6 +404,7 @@ void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)
 int input_secretary_motion(void);       // current held move/scroll, or 0; atomic snapshot
+void input_forward_wheel(POINT point, UINT message, WPARAM keys_and_delta);
 // Key capture for the hint overlay: while on, every non-modifier key is
 // swallowed and posted to the main window as WM_APP_HINT_KEY. The hook turns
 // capture on by itself at the moment it posts WM_APP_HINT_OPEN (so fast typing
@@ -458,6 +464,7 @@ void secretary_shutdown(void);
 void secretary_config_changed(void);
 void secretary_dismiss(void);
 BOOL secretary_has_focus(void);
+#define SECRETARY_PET_CLASS L"VimMouseSecretary"
 BOOL secretary_modifiers_down(void);   // actual Windows key state, outside hooks
 BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target);
 enum { SECRETARY_MOVE = 1, SECRETARY_SCROLL, SECRETARY_HINT, SECRETARY_CLICK,
@@ -520,6 +527,7 @@ void uia_forget_slow(void);
 // answers with what it has. One caller thread at a time (the movement
 // thread). uia_stop stops it too.
 enum { SCROLL_AIM_POINTER = 0, SCROLL_AIM_TARGET = 1, SCROLL_AIM_ASKING = -1 };
+HWND uia_scroll_window(POINT pt, BOOL *over_pet);
 int  uia_scroll_aim(POINT pt, BOOL vertical, DWORD since_ms, POINT *target);
 void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);

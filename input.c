@@ -108,9 +108,6 @@ typedef BOOL (WINAPI *UnregisterPowerSettingNotificationFn)(PVOID);
 #ifndef MOUSEEVENTF_HWHEEL
 #define MOUSEEVENTF_HWHEEL 0x01000
 #endif
-#ifndef WM_MOUSEHWHEEL
-#define WM_MOUSEHWHEEL 0x020E
-#endif
 #ifndef LLKHF_INJECTED
 #define LLKHF_INJECTED 0x10
 #endif
@@ -628,9 +625,41 @@ static void click_button(int button)
     SendInput(2, in, sizeof(INPUT));
 }
 
+static void post_wheel_to(HWND hwnd, POINT pt, UINT message, WPARAM keys_and_delta)
+{
+    typedef BOOL (WINAPI *ToLogicalFn)(HWND, LPPOINT);
+    ToLogicalFn to_logical = (ToLogicalFn)(void *)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "PhysicalToLogicalPointForPerMonitorDPI");
+
+    if (to_logical) to_logical(hwnd, &pt);
+    PostMessageW(hwnd, message, keys_and_delta, MAKELPARAM((WORD)(SHORT)pt.x, (WORD)(SHORT)pt.y));
+}
+
+void input_forward_wheel(POINT pt, UINT message, WPARAM keys_and_delta)
+{
+    HWND hwnd = uia_scroll_window(pt, NULL);
+    if (hwnd) post_wheel_to(hwnd, pt, message, keys_and_delta);
+}
+
+static BOOL wheel_through_pet(BOOL vertical, int delta, int count)
+{
+    POINT pt;
+    HWND hwnd;
+    BOOL over_pet;
+    if (!GetCursorPos(&pt)) return FALSE;
+    hwnd = uia_scroll_window(pt, &over_pet);
+    if (!over_pet || !hwnd) return FALSE;
+    page_acted_at(PAGE_SCROLL, &pt);
+    while (count-- > 0)
+        post_wheel_to(hwnd, pt, vertical ? WM_MOUSEWHEEL : WM_MOUSEHWHEEL,
+                      MAKEWPARAM(0, (WORD)(SHORT)delta));
+    return TRUE;
+}
+
 static void send_wheel(BOOL vertical, int delta)
 {
     INPUT in;
+    if (wheel_through_pet(vertical, delta, 1)) return;
     page_acted(PAGE_SCROLL);
     ZeroMemory(&in, sizeof(in));
     in.type = INPUT_MOUSE;
@@ -647,6 +676,7 @@ static void send_wheel_jump(BOOL vertical, int delta)
     INPUT in[64];
     int i;
 
+    if (wheel_through_pet(vertical, delta, 64)) return;
     page_acted(PAGE_SCROLL);
     ZeroMemory(in, sizeof(in));
     for (i = 0; i < 64; i++) {
@@ -1187,28 +1217,16 @@ static int scroll_notch(int idx)
 // point, it is posted there instead, so the cursor does not move.
 static void post_wheel(POINT pt, BOOL vertical, int delta)
 {
-    typedef BOOL (WINAPI *ToLogicalFn)(HWND, LPPOINT);
-    static BOOL tried = FALSE;
-    static ToLogicalFn to_logical = NULL;
-    HWND hwnd = WindowFromPoint(pt);
+    HWND hwnd = uia_scroll_window(pt, NULL);
 
     if (!hwnd) {
         send_wheel(vertical, delta);
         return;
     }
     page_acted_at(PAGE_SCROLL, &pt);
-    if (!tried) {
-        tried = TRUE;
-        to_logical = (ToLogicalFn)(void *)GetProcAddress(
-            GetModuleHandleW(L"user32.dll"),
-            "PhysicalToLogicalPointForPerMonitorDPI");
-    }
     // A DPI-unaware window expects its own (scaled) coordinates.
-    if (to_logical)
-        to_logical(hwnd, &pt);
-    PostMessageW(hwnd, vertical ? WM_MOUSEWHEEL : WM_MOUSEHWHEEL,
-                 MAKEWPARAM(0, (WORD)(SHORT)delta),
-                 MAKELPARAM((WORD)(SHORT)pt.x, (WORD)(SHORT)pt.y));
+    post_wheel_to(hwnd, pt, vertical ? WM_MOUSEWHEEL : WM_MOUSEHWHEEL,
+                  MAKEWPARAM(0, (WORD)(SHORT)delta));
 }
 
 static DWORD qpc_us_from(LARGE_INTEGER counter, LARGE_INTEGER freq)

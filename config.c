@@ -878,6 +878,8 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
     else if (_wcsicmp(key, L"walk_detail_sheet") == 0) path = c->secretary_extra[SECRETARY_WALK_DETAIL];
     else if (_wcsicmp(key, L"attention_sheet") == 0) path = c->secretary_extra[SECRETARY_ATTENTION];
     else if (_wcsicmp(key, L"scroll_detail_sheet") == 0) path = c->secretary_extra[SECRETARY_SCROLL_DETAIL];
+    else if (_wcsicmp(key, L"idle_detail_sheet") == 0) path = c->secretary_extra[SECRETARY_IDLE_DETAIL];
+    else if (_wcsicmp(key, L"interaction_detail_sheet") == 0) path = c->secretary_extra[SECRETARY_INTERACTION_DETAIL];
     if (path) {
         if (wcslen(val) >= MAX_PATH)
             warn_add(line, L"[secretary] %ls path is too long", key);
@@ -1703,6 +1705,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
             L"; Additional 4x4 PNG sheets for walking, resting, and reacting to Vim.\r\n"
             L"movement_sheet =\r\nrest_sheet =\r\nreaction_sheet =\r\n"
             L"walk_detail_sheet =\r\nattention_sheet =\r\nscroll_detail_sheet =\r\n"
+            L"idle_detail_sheet =\r\ninteraction_detail_sheet =\r\n"
             L"roam = 1\r\nreact = 1\r\n"
             L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
             L"; 1 = Claude | claude\r\n"

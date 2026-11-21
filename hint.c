@@ -2539,7 +2539,7 @@ static HWND settle_root(void)
     if (fg && uia_chromium_window(fg))
         return GetAncestor(fg, GA_ROOT);
     if (GetCursorPos(&pt)) {
-        under = WindowFromPoint(pt);
+        under = uia_scroll_window(pt, NULL);
         if (under && uia_chromium_window(under))
             return GetAncestor(under, GA_ROOT);
     }

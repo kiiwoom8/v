@@ -1457,10 +1457,19 @@ Invariants stated in `common.h` and enforced by history:
   poses so the hint remains stable while the character moves. Extra walk and
   attention frames smooth each cycle, and held scroll keys keep animating.
   The nap state discards Vim reactions until the character wakes.
+- Normalize the artwork per clip and blend changes from the drawn pose.
+  Finish short reactions before playing queued commands. Add intermediate
+  frames for the idle, yawn, grab, and click cycles, and use alternating
+  front-paw strides in the local walk sheet. Send wheel input through the
+  mascot while keeping its click hints, buttons, and drag.
 - Tab and Shift+Tab traverse the full shortcut bubble with visible focus.
   Browser shortcuts check the active address and Chromium's open-tab results
   before opening a new tab in the existing browser. The Claude prompt helper
   assembles text locally and opens Claude after an explicit copy.
+- Kim clarified that web shortcuts should maximize the browser. Keep the
+  existing tab selection, leave any pre-existing full screen, and then use the
+  native maximize action. Detailed sheets add more breathing, yawn, grab, and
+  click poses. The drawing timer also updates positions in shorter intervals.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
