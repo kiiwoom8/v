@@ -487,7 +487,8 @@ The secretary remembers where you drop it. With a movement sheet, it wanders
 between resting spots at different speeds and settles when you reach for it. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Drag the picture with the mouse or with mouse mode's left button (`a`
-held down, or `v` to grab and release). Click hints (`Alt+F` by default) also
+held down, or `v` to grab and release). The grabbed pose keeps the character
+at its idle size. Click hints (`Alt+F` by default) also
 label the picture. Use `1`–`9` for a numbered shortcut. `Tab` and `Shift+Tab`
 move the visible selection through every shortcut and button. `Enter` or
 `Space` activates the selection, and `Esc` closes the bubble. `F11` leaves

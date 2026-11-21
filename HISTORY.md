@@ -1470,6 +1470,8 @@ Invariants stated in `common.h` and enforced by history:
   existing tab selection, leave any pre-existing full screen, and then use the
   native maximize action. Detailed sheets add more breathing, yawn, grab, and
   click poses. The drawing timer also updates positions in shorter intervals.
+- Kim reported that Tailmon looked smaller when grabbed. Match the grab clip
+  to the default pose's visible area and leave room for its longer silhouette.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2365,6 +2367,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   than it does nothing, so a tap must still move past it.
 
 ### Settings, files, Windows integration
+
+- **Keep Tailmon at its idle size when grabbed.** The longest edge makes
+  dangling poses shrink because they are taller and narrower. Scale the
+  whole grab clip using its opaque area and let those frames extend below
+  the normal square layout.
 
 - **A process that vanished did not necessarily crash: ask Windows first.**
   Phase 27. A fault in a MinGW program always leaves an Application Error

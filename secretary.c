@@ -170,6 +170,8 @@ static UINT next_browser_request;
 
 static int px(int n) { return MulDiv(n, dpi, 96); }
 
+static int layout_height(void) { return use_atlas ? sprite.size.cx : sprite.size.cy; }
+
 static int clamp(int value, int low, int high)
 {
     if (high < low || value < low) return low;
@@ -271,16 +273,17 @@ static void clear_backdrop(Canvas *c, RECT art)
     free(queue);
 }
 
-static BOOL measure_sprite(POINT *click, RECT *bounds)
+static int measure_sprite(POINT *click, RECT *bounds)
 {
-    int width = sprite.size.cx, height = sprite.size.cy;
-    int x, y, nearest = INT_MAX;
+    int width = sprite.size.cx, height = sprite.size.cy, center_y = layout_height() / 2;
+    int x, y, area = 0, nearest = INT_MAX;
     SetRect(bounds, width, height, 0, 0);
     for (y = 0; y < height; ++y) {
         for (x = 0; x < width; ++x) {
-            int dx = x - width / 2, dy = y - height / 2;
+            int dx = x - width / 2, dy = y - center_y;
             int distance = dx * dx + dy * dy;
             if (sprite.pixels[y * width + x] >> 24 < 128) continue;
+            ++area;
             if (x < bounds->left) bounds->left = x;
             if (x >= bounds->right) bounds->right = x + 1;
             if (y < bounds->top) bounds->top = y;
@@ -291,7 +294,7 @@ static BOOL measure_sprite(POINT *click, RECT *bounds)
             }
         }
     }
-    return nearest != INT_MAX;
+    return area;
 }
 
 // Some generated atlases leave low-opacity pixels across otherwise empty
@@ -316,16 +319,16 @@ static void remove_alpha_haze(size_t count)
 
 static void align_floor(RECT *bounds, POINT *click, int floor)
 {
-    int size = sprite.size.cx;
-    int dy = clamp(floor - bounds->bottom, -bounds->top, size - bounds->bottom);
-    size_t stride = (size_t)size * sizeof(DWORD);
+    int height = layout_height();
+    int dy = clamp(floor - bounds->bottom, -bounds->top, height - bounds->bottom);
+    size_t stride = (size_t)sprite.size.cx * sizeof(DWORD);
     BYTE *pixels = (BYTE *)sprite.pixels;
     if (dy > 0) {
-        MoveMemory(pixels + dy * stride, pixels, (size_t)(size - dy) * stride);
+        MoveMemory(pixels + dy * stride, pixels, (size_t)(height - dy) * stride);
         ZeroMemory(pixels, dy * stride);
     } else if (dy < 0) {
-        MoveMemory(pixels, pixels + (size_t)(-dy) * stride, (size_t)(size + dy) * stride);
-        ZeroMemory(pixels + (size + dy) * stride, -dy * stride);
+        MoveMemory(pixels, pixels + (size_t)(-dy) * stride, (size_t)(height + dy) * stride);
+        ZeroMemory(pixels + (height + dy) * stride, -dy * stride);
     }
     OffsetRect(bounds, 0, dy);
     click->y += dy;
@@ -346,32 +349,40 @@ static int pose_group(int pose)
     }
 }
 
-static BOOL render_cel(GpImage *sheet, UINT width, UINT height, int index, int x, int y, int size)
+static int render_cel(GpImage *sheet, UINT width, UINT height, int index, int x, int y, int size, int clip_height)
 {
     int cel = index % POSES_PER_SHEET, col = cel % POSES_PER_ROW, row = cel / POSES_PER_ROW;
+    size_t count = (size_t)sprite.size.cx * clip_height;
     int left = col * width / POSES_PER_ROW, top = row * height / POSES_PER_ROW;
     int right = (col + 1) * width / POSES_PER_ROW, bottom = (row + 1) * height / POSES_PER_ROW;
     GdipGraphicsClear(sprite.graphics, 0);
     if (GdipDrawImageRectRectI(sprite.graphics, sheet, x, y, size, size,
                               left, top, right - left, bottom - top,
-                              UnitPixel, NULL, NULL, NULL) != Ok) return FALSE;
+                              UnitPixel, NULL, NULL, NULL) != Ok) return 0;
     GdipFlush(sprite.graphics, FlushIntentionSync);
-    remove_alpha_haze((size_t)sprite.size.cx * sprite.size.cy);
+    ZeroMemory(sprite.pixels + count, (size_t)sprite.size.cx * (sprite.size.cy - clip_height) * sizeof(DWORD));
+    remove_alpha_haze(count);
     return measure_sprite(&pose_clicks[index], &pose_bounds[index]);
 }
 
-static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first)
+static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first, int *idle_area)
 {
     int index, begin, end = first + POSES_PER_SHEET, size = sprite.size.cx;
+    int areas[POSES_PER_SHEET], height_limit = sprite.size.cy;
+    int idle_reference = *idle_area;
     int safe_margin = px(4), floor = MulDiv(size, 88, 100);
-    size_t count = (size_t)size * size;
+    size_t count = (size_t)size * height_limit;
     if (width < 4 * 16 || height < 4 * 16 || width > 8192 || height > 8192) return FALSE;
-    for (index = first; index < end; ++index)
-        if (!render_cel(sheet, width, height, index, 0, 0, size)) return FALSE;
+    for (index = first; index < end; ++index) {
+        areas[index - first] = render_cel(sheet, width, height, index, 0, 0, size, size);
+        if (!areas[index - first]) return FALSE;
+    }
     for (begin = first; begin < end;) {
         int stop = begin, edges[POSES_PER_SHEET], centers = 0;
-        int span_x = 0, span_y = 0, scaled, center;
+        int span_x = 0, span_y = 0, scaled, center, area_total = 0;
         BOOL carried = begin == 8 || begin == INTERACTION_FIRST;
+        int clip_height = carried ? height_limit : size;
+        int bottom = carried ? clip_height - safe_margin : floor;
         // Use one scale for a whole clip. An ear flick or a pose that extends
         // a paw can change the silhouette without zooming the other drawings.
         for (; stop < end && pose_group(stop) == begin; ++stop) {
@@ -384,31 +395,39 @@ static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first)
             }
             edges[j] = edge;
             centers += (b.left + b.right) / 2;
+            area_total += areas[stop - first];
             span_x = max(span_x, w);
             span_y = max(span_y, h);
         }
         center = centers / (stop - begin);
         scaled = MulDiv(size, MulDiv(size, 84, 100), edges[(stop - begin) / 2]);
+        // Dangling poses are longer and narrower. Match their visible ink to
+        // idle instead of shrinking the whole character to match its height.
+        if (carried)
+            scaled = (int)(size * sqrt((double)idle_reference * (stop - begin) / area_total) + 0.5);
         scaled = clamp(scaled, MulDiv(size, 78, 100), MulDiv(size, 118, 100));
         scaled = min(scaled, (size - 2 * safe_margin) * size / span_x);
-        scaled = min(scaled, ((carried ? size - safe_margin : floor) - safe_margin) * size / span_y);
+        scaled = min(scaled, (bottom - safe_margin) * size / span_y);
         for (index = begin; index < stop; ++index) {
             RECT b = pose_bounds[index];
             int baseline = floor;
-            int x = size / 2 - MulDiv(center, scaled, size), y;
+            int x = size / 2 - MulDiv(center, scaled, size), y, area;
             if (index >= WALK_FIRST + 8 && index < WALK_FIRST + 12 && (index & 1))
                 baseline -= px(6);
             x = clamp(x, safe_margin - MulDiv(b.left, scaled, size),
                       size - safe_margin - MulDiv(b.right, scaled, size));
             y = carried ? (size - scaled) / 2 : baseline - MulDiv(b.bottom, scaled, size);
             y = clamp(y, safe_margin - MulDiv(b.top, scaled, size),
-                      size - safe_margin - MulDiv(b.bottom, scaled, size));
-            if (!render_cel(sheet, width, height, index, x, y, scaled)) return FALSE;
+                      clip_height - safe_margin - MulDiv(b.bottom, scaled, size));
+            area = render_cel(sheet, width, height, index, x, y, scaled, clip_height);
+            if (!area) return FALSE;
+            if (index == 0 || index == IDLE_DETAIL_FIRST) idle_reference = area;
             if (!carried) align_floor(&pose_bounds[index], &pose_clicks[index], baseline);
             CopyMemory(pose_pixels + index * count, sprite.pixels, count * sizeof(DWORD));
         }
         begin = stop;
     }
+    *idle_area = idle_reference;
     return TRUE;
 }
 
@@ -416,11 +435,12 @@ static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first)
 static BOOL stable_clip_hit(int first, int frames, const int *leading, int leading_count, POINT *hit)
 {
     int w = sprite.size.cx, h = sprite.size.cy;
+    int center_y = layout_height() * 5 / 8;
     size_t count = (size_t)w * h;
     int x, y, best = INT_MAX;
     for (y = 0; y < h; ++y) {
         for (x = 0; x < w; ++x) {
-            int dx = x - w / 2, dy = y - h * 5 / 8;
+            int dx = x - w / 2, dy = y - center_y;
             int distance = dx * dx + dy * dy, pose;
             if (distance >= best) continue;
             if (leading && sprite.pixels[y * w + x] >> 24 < 160) continue;
@@ -455,18 +475,21 @@ static BOOL draw_sprite(void)
         !w || !h || w > INT_MAX || h > INT_MAX)
         return FALSE;
     if (use_atlas) {
-        int sheet, poses = POSES_PER_SHEET;
+        int sheet, poses = POSES_PER_SHEET, idle_area = 0;
+        size_t count;
         size = clamp(px(164), 64, 512);
-        if (!make_canvas(&sprite, size, size)) return FALSE;
+        // Leave room for dangling poses below the normal square layout.
+        if (!make_canvas(&sprite, size, size + size / 5)) return FALSE;
+        count = (size_t)size * sprite.size.cy;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet)
             if (extra_images[sheet]) poses = (sheet + 2) * POSES_PER_SHEET;
-        pose_pixels = (DWORD *)malloc((size_t)poses * size * size * sizeof(DWORD));
-        blend_source = (DWORD *)malloc((size_t)size * size * sizeof(DWORD));
-        if (!pose_pixels || !blend_source || !draw_atlas(image, w, h, 0)) return FALSE;
+        pose_pixels = (DWORD *)malloc((size_t)poses * count * sizeof(DWORD));
+        blend_source = (DWORD *)malloc(count * sizeof(DWORD));
+        if (!pose_pixels || !blend_source || !draw_atlas(image, w, h, 0, &idle_area)) return FALSE;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet) {
             GpImage *extra = extra_images[sheet];
             extra_ready[sheet] = extra && GdipGetImageWidth(extra, &w) == Ok &&
-                GdipGetImageHeight(extra, &h) == Ok && draw_atlas(extra, w, h, (sheet + 1) * POSES_PER_SHEET);
+                GdipGetImageHeight(extra, &h) == Ok && draw_atlas(extra, w, h, (sheet + 1) * POSES_PER_SHEET, &idle_area);
             if (extra && !extra_ready[sheet])
                 app_log(L"secretary: an extra animation sheet could not be drawn");
         }
@@ -489,7 +512,7 @@ static BOOL draw_sprite(void)
     }
     GdipFlush(sprite.graphics, FlushIntentionSync);
     clear_backdrop(&sprite, (RECT){0, 0, width, height});
-    return measure_sprite(&click_pixel, &sprite_bounds);
+    return measure_sprite(&click_pixel, &sprite_bounds) != 0;
 }
 
 static BOOL update_monitor(POINT point)
@@ -509,7 +532,7 @@ static void clamp_anchor(void)
 {
     int margin = px(10);
     anchor.x = clamp(anchor.x, work.left + margin, work.right - sprite.size.cx - margin);
-    anchor.y = clamp(anchor.y, work.top + margin, work.bottom - sprite.size.cy - margin);
+    anchor.y = clamp(anchor.y, work.top + margin, work.bottom - layout_height() - margin);
 }
 
 static void store_position(void)
@@ -576,7 +599,7 @@ static void draw_bubble(void)
     int shift = bubble_left ? 0 : 14;
     int x = 6 + shift, right = x + 226, bottom = bubble_height() - 8;
     int tip_x = bubble_left ? right + 11 : x - 11;
-    int tail_y = clamp(MulDiv(pet_at.y + sprite.size.cy / 2 - bubble_at.y,
+    int tail_y = clamp(MulDiv(pet_at.y + layout_height() / 2 - bubble_at.y,
                              96, dpi), 24, bottom - 18);
     int edge = bubble_left ? right - 2 : x + 2;
     GpPoint tail[3] = {{px(edge), px(tail_y - 8)}, {px(tip_x), px(tail_y)},
@@ -685,7 +708,7 @@ static void open_bubble(void)
                   pet_at.x > (work.left + work.right) / 2;
     bubble_at.x = bubble_left ? left - width + px(12) : right - px(12);
     bubble_at.x = clamp(bubble_at.x, work.left, work.right - width);
-    bubble_at.y = clamp(pet_at.y + sprite.size.cy / 2 - px(45), work.top, work.bottom - height);
+    bubble_at.y = clamp(pet_at.y + layout_height() / 2 - px(45), work.top, work.bottom - height);
     selected = -1;
     focus_item = 0;
     draw_bubble();
@@ -745,7 +768,7 @@ static BOOL next_screen(void)
     center = (POINT){(area.left + area.right) / 2, (area.top + area.bottom) / 2};
     if (!update_monitor(center)) return FALSE;
     anchor.x = area.right - sprite.size.cx - px(24);
-    anchor.y = area.bottom - sprite.size.cy - px(24);
+    anchor.y = area.bottom - layout_height() - px(24);
     clamp_anchor();
     home = anchor;
     moved = TRUE;
@@ -1030,12 +1053,13 @@ static void move_from_press(POINT pointer)
         secretary_dismiss();
     }
     if (dragging) {
+        int height = use_atlas && animate ? sprite.size.cy : layout_height();
         anchor.x = press_at.x + pointer.x - press.x;
         anchor.y = press_at.y + pointer.y - press.y;
         anchor.x = clamp(anchor.x, GetSystemMetrics(SM_XVIRTUALSCREEN),
                          GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN) - sprite.size.cx);
         anchor.y = clamp(anchor.y, GetSystemMetrics(SM_YVIRTUALSCREEN),
-                         GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN) - sprite.size.cy);
+                         GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN) - height);
     }
 }
 
@@ -1098,7 +1122,7 @@ static void start_walk(DWORD now)
     int margin = px(17), distance = px(105 + random_below(270));
     int left = work.left + margin, right = work.right - sprite.size.cx - margin;
     int top = work.top + (work.bottom - work.top) * 2 / 5;
-    int bottom = work.bottom - sprite.size.cy - margin;
+    int bottom = work.bottom - layout_height() - margin;
     int direction = random_below(2) ? 1 : -1;
     int x = clamp(anchor.x + direction * distance, left, right);
     BOOL stay_low = random_below(3) != 0;
@@ -1151,7 +1175,7 @@ static void advance_pet(DWORD now, POINT pointer)
 {
     double seconds = clamp((int)(now - pet_motion.last_frame), 0, 60) / 1000.0;
     DWORD elapsed = now - pet_motion.started;
-    RECT hover_zone = {pet_at.x, pet_at.y, pet_at.x + sprite.size.cx, pet_at.y + sprite.size.cy};
+    RECT hover_zone = {pet_at.x, pet_at.y, pet_at.x + sprite.size.cx, pet_at.y + layout_height()};
     BOOL hovered;
     unsigned choice;
 
@@ -1746,7 +1770,7 @@ void secretary_config_changed(void)
     if (!update_monitor(anchor)) goto fail;
     if (!positioned && !moved) {
         anchor.x = work.right - sprite.size.cx - px(27);
-        anchor.y = work.bottom - sprite.size.cy - px(25);
+        anchor.y = work.bottom - layout_height() - px(25);
     }
     clamp_anchor();
     if (!positioned) home = anchor;
