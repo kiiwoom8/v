@@ -205,7 +205,16 @@ static void test_parsing(void)
             CHECK(wcsstr(tpl, L"shutdown_at = none") != NULL);
             CHECK(wcsstr(tpl, L"[secretary]") != NULL);
             CHECK(wcsstr(tpl, L"sprite_sheet =\r\n") != NULL);
+            CHECK(wcsstr(tpl, L"reaction_sheet =\r\n") != NULL);
             free(tpl);
+        }
+        {
+            SecretaryShortcut slot = {L"Claude", L"claude"};
+            CHECK(secretary_shortcut_valid(&slot));
+            wcscpy(slot.target, L"https://example.org/wiki?a=b");
+            CHECK(secretary_shortcut_valid(&slot));
+            wcscpy(slot.target, L"https://example.org/\"another-argument");
+            CHECK(!secretary_shortcut_valid(&slot));
         }
     }
 }

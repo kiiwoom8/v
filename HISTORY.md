@@ -1446,6 +1446,13 @@ Invariants stated in `common.h` and enforced by history:
   sheet uses a common drawing origin for idle, bored, grabbed, and clicked
   frames. Dragging applies the grab cycle and releasing lands the character.
   While a click hint is visible, preserve the current frame and hit point.
+- The extra sprite sheets add locomotion, rest, and reactions. Travel uses
+  varied routes, speeds, and rest times. Planted poses keep a common floor
+  line, and the character stops moving near the cursor and during click hints.
+- The bubble edits a numbered shortcut, moves between monitors, pauses roaming,
+  or returns to the last manual drop point. Saving a slot keeps the other
+  assignments and settings. Vim command reactions go through a single
+  coalesced hook signal, with painting on the UI thread.
 
 ## 4. Complete commit log (non-merge, oldest first)
 

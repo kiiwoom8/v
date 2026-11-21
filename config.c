@@ -556,6 +556,8 @@ void config_set_defaults(Config *c)
         return;
     memset(c, 0, sizeof(*c));
     c->secretary_animate = -1;
+    c->secretary_roam = 1;
+    c->secretary_react = 1;
 
     parse_hotkey(L"Alt+F", &c->hint_hotkey);
     parse_hotkey(L"Ctrl+Alt+Q", &c->quit_hotkey);
@@ -828,10 +830,26 @@ static const WCHAR *section_name(int sec)
     }
 }
 
+BOOL secretary_shortcut_valid(const SecretaryShortcut *slot)
+{
+    const WCHAR *target = slot->target, *p;
+    if (!slot->label[0] && !target[0]) return TRUE;
+    if (!slot->label[0] || wcspbrk(slot->label, L"|\r\n")) return FALSE;
+    if (_wcsicmp(target, L"claude") == 0) return TRUE;
+    if (!((_wcsnicmp(target, L"https://", 8) == 0 && target[8]) ||
+          (_wcsnicmp(target, L"http://", 7) == 0 && target[7]))) return FALSE;
+    // The browser receives a single quoted URL argument.
+    for (p = target; *p; ++p)
+        if (*p <= L' ' || *p == L'"' || *p == L'\\') return FALSE;
+    return TRUE;
+}
+
 static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
 {
     SecretaryShortcut *slot;
+    SecretaryShortcut entry = {L"", L""};
     WCHAR *target;
+    WCHAR *path = NULL;
 
     if (_wcsicmp(key, L"enabled") == 0) {
         apply_bool(&c->secretary_enabled, line, key, val);
@@ -844,9 +862,20 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
             apply_bool(&c->secretary_animate, line, key, val);
         return;
     }
-    if (_wcsicmp(key, L"image") == 0 || _wcsicmp(key, L"sprite_sheet") == 0) {
-        WCHAR *path = _wcsicmp(key, L"image") == 0 ? c->secretary_image
-                                                   : c->secretary_sprite_sheet;
+    if (_wcsicmp(key, L"roam") == 0) {
+        apply_bool(&c->secretary_roam, line, key, val);
+        return;
+    }
+    if (_wcsicmp(key, L"react") == 0) {
+        apply_bool(&c->secretary_react, line, key, val);
+        return;
+    }
+    if (_wcsicmp(key, L"image") == 0) path = c->secretary_image;
+    else if (_wcsicmp(key, L"sprite_sheet") == 0) path = c->secretary_sprite_sheet;
+    else if (_wcsicmp(key, L"movement_sheet") == 0) path = c->secretary_extra[SECRETARY_MOVEMENT];
+    else if (_wcsicmp(key, L"rest_sheet") == 0) path = c->secretary_extra[SECRETARY_REST];
+    else if (_wcsicmp(key, L"reaction_sheet") == 0) path = c->secretary_extra[SECRETARY_REACTIONS];
+    if (path) {
         if (wcslen(val) >= MAX_PATH)
             warn_add(line, L"[secretary] %ls path is too long", key);
         else
@@ -867,17 +896,12 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
         *target++ = 0;
         trim(&val);
         trim(&target);
-        if (*val && wcslen(val) < sizeof(slot->label) / sizeof(WCHAR) &&
-            wcslen(target) < SECRETARY_TARGET_MAX &&
-            (_wcsicmp(target, L"claude") == 0 ||
-             ((_wcsnicmp(target, L"https://", 8) == 0 && target[8]) ||
-              (_wcsnicmp(target, L"http://", 7) == 0 && target[7])))) {
-            const WCHAR *p;
-            // The browser receives a single quoted URL argument.
-            for (p = target; *p && *p > L' ' && *p != L'"' && *p != L'\\'; ++p) {}
-            if (!*p) {
-                wcscpy(slot->label, val);
-                wcscpy(slot->target, target);
+        if (*val && wcslen(val) < sizeof(entry.label) / sizeof(WCHAR) &&
+            wcslen(target) < SECRETARY_TARGET_MAX) {
+            wcscpy(entry.label, val);
+            wcscpy(entry.target, target);
+            if (secretary_shortcut_valid(&entry)) {
+                *slot = entry;
                 return;
             }
         }
@@ -1673,6 +1697,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
             L"enabled = 0\r\nimage =\r\nanimate = system\r\n"
             L"; Optional transparent 4x4 PNG atlas. Rows: idle, bored, grabbed, clicked.\r\n"
             L"sprite_sheet =\r\n"
+            L"; Additional 4x4 PNG sheets for walking, resting, and reacting to Vim.\r\n"
+            L"movement_sheet =\r\nrest_sheet =\r\nreaction_sheet =\r\n"
+            L"roam = 1\r\nreact = 1\r\n"
             L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
             L"; 1 = Claude | claude\r\n"
             L"; 2 = Wiki | https://example.org/wiki\r\n");
@@ -2159,7 +2186,7 @@ static void wbuf_escaped(WBuf *b, const WCHAR *text)
     }
 }
 
-static BOOL is_shortcuts_header(const WCHAR *line, size_t n)
+static BOOL is_named_section(const WCHAR *line, size_t n, const WCHAR *section)
 {
     WCHAR name[32];
     size_t i = 0, k = 0;
@@ -2176,7 +2203,7 @@ static BOOL is_shortcuts_header(const WCHAR *line, size_t n)
         name[k++] = line[i];
     }
     name[k] = 0;
-    return _wcsicmp(name, L"shortcuts") == 0;
+    return i < n && _wcsicmp(name, section) == 0;
 }
 
 static BOOL is_comment_or_blank(const WCHAR *line, size_t n)
@@ -2197,12 +2224,26 @@ static BOOL is_section_header(const WCHAR *line, size_t n)
     return i < n && line[i] == L'[';
 }
 
+static BOOL replace_settings_file(const WCHAR *path, const WBuf *out)
+{
+    WCHAR tmp_path[APP_PATH_MAX];
+    BOOL ok;
+    int n;
+
+    if (out->failed || !out->s) return FALSE;
+    n = _snwprintf(tmp_path, APP_PATH_MAX, L"%ls.tmp", path);
+    if (n < 0 || n >= APP_PATH_MAX) return FALSE;
+    ok = write_text_file(tmp_path, out->s);
+    if (ok) ok = MoveFileExW(tmp_path, path, MOVEFILE_REPLACE_EXISTING);
+    if (!ok) DeleteFileW(tmp_path);
+    return ok;
+}
+
 BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
                     int count)
 {
     static WCHAR defaults[DEFAULT_INI_CAPACITY];
     const WCHAR *path = config_path();
-    WCHAR tmp_path[APP_PATH_MAX];
     WCHAR *text = NULL;
     const WCHAR *p;
     const WCHAR *trailer = NULL;
@@ -2247,7 +2288,7 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
             if (skipping && trailer)
                 wbuf_add(&out, trailer, (size_t)(p - trailer));
             trailer = NULL;
-            skipping = is_shortcuts_header(p, n);
+            skipping = is_named_section(p, n, L"shortcuts");
             seen = FALSE;
             if (skipping) {
                 p = e;
@@ -2280,22 +2321,67 @@ BOOL shortcuts_save(const WCHAR *const *abbrs, const WCHAR *const *texts,
         wbuf_escaped(&out, texts[i] ? texts[i] : L"");
         wbuf_str(&out, L"\r\n");
     }
-    if (out.failed) {
-        free(out.s);
-        return FALSE;
-    }
-
-    // Write a temporary file and move it over, so a failed write never
-    // leaves a half-written vim.ini.
-    _snwprintf(tmp_path, sizeof(tmp_path) / sizeof(tmp_path[0]), L"%ls.tmp",
-               path);
-    tmp_path[sizeof(tmp_path) / sizeof(tmp_path[0]) - 1] = 0;
-    ok = write_text_file(tmp_path, out.s);
+    ok = replace_settings_file(path, &out);
     free(out.s);
-    if (ok)
-        ok = MoveFileExW(tmp_path, path, MOVEFILE_REPLACE_EXISTING);
-    if (!ok)
-        DeleteFileW(tmp_path);
+    return ok;
+}
+
+static BOOL assignment_is(const WCHAR *first, const WCHAR *end, const WCHAR *key)
+{
+    const WCHAR *equals;
+    while (first < end && is_space(*first)) ++first;
+    for (equals = first; equals < end && *equals != L'='; ++equals) {}
+    if (equals == end) return FALSE;
+    while (equals > first && is_space(equals[-1])) --equals;
+    return (size_t)(equals - first) == wcslen(key) &&
+           _wcsnicmp(first, key, (size_t)(equals - first)) == 0;
+}
+
+BOOL secretary_save_setting(int slot, const SecretaryShortcut *entry, int roam)
+{
+    WCHAR key[8] = L"roam";
+    const WCHAR *path = config_path(), *p;
+    WCHAR *text = NULL;
+    WBuf out = {0};
+    BOOL in_secretary = FALSE, seen = FALSE, ok;
+
+    if (slot >= 0) {
+        if (slot >= SECRETARY_SLOTS || !entry || !secretary_shortcut_valid(entry)) return FALSE;
+        key[0] = (WCHAR)(L'1' + slot);
+        key[1] = 0;
+    }
+    if (read_text_file(path, &text, FALSE) != READ_OK) return FALSE;
+    for (p = text; *p;) {
+        const WCHAR *end = p, *next;
+        while (*end && *end != L'\r' && *end != L'\n') ++end;
+        next = end;
+        if (*next == L'\r') ++next;
+        if (*next == L'\n') ++next;
+        if (is_section_header(p, (size_t)(end - p))) {
+            in_secretary = is_named_section(p, (size_t)(end - p), L"secretary");
+            // Write the setting once. Drop older copies in any later section.
+            wbuf_add(&out, p, (size_t)(next - p));
+            if (in_secretary && !seen) {
+                if (end == next) wbuf_str(&out, L"\r\n");
+                wbuf_str(&out, key);
+                wbuf_str(&out, L" = ");
+                if (slot < 0) wbuf_str(&out, roam ? L"1" : L"0");
+                else if (entry->target[0]) {
+                    wbuf_str(&out, entry->label);
+                    wbuf_str(&out, L" | ");
+                    wbuf_str(&out, entry->target);
+                }
+                wbuf_str(&out, L"\r\n");
+                seen = TRUE;
+            }
+        } else if (!in_secretary || !assignment_is(p, end, key)) {
+            wbuf_add(&out, p, (size_t)(next - p));
+        }
+        p = next;
+    }
+    free(text);
+    ok = seen && replace_settings_file(path, &out);
+    free(out.s);
     return ok;
 }
 

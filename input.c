@@ -587,6 +587,7 @@ static void send_absolute_move(int x, int y, int vx, int vy, int vw, int vh)
 // close or move something on the page.
 static void focus_clicked_at(const POINT *at)
 {
+    secretary_command(SECRETARY_CLICK);
     page_acted_at(PAGE_CLICK, at);
     if (g_cfg.bare_keys)
         uia_focus_changed(FOCUS_CLICK_DELAY_MS);
@@ -2131,6 +2132,7 @@ static BOOL alt_should_withhold(void)
     // and the overlay still needs Alt hidden so its keys arrive intact.
     if (flag_get(&s_capture))
         return TRUE;
+    if (secretary_editor_has_focus()) return FALSE;
     return !flag_get(&s_paused) && popup_open(FALSE, NULL);
 }
 
@@ -2274,6 +2276,10 @@ static BOOL handle_down(UINT vk)
     if (handle_hotkeys(vk, mods, TRUE)) {
         s_owner[vk] = OWN_SWALLOW;
         return TRUE;
+    }
+    if (!flag_get(&s_capture) && secretary_editor_has_focus()) {
+        s_owner[vk] = OWN_PASS;
+        return FALSE;
     }
     if (mods == 0 && (vk == VK_ESCAPE || (vk >= '1' && vk <= '9') ||
                       (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9)) &&
@@ -2712,6 +2718,26 @@ static BOOL handle_key(UINT vk, BOOL down, DWORD flags, UINT scan)
     return handle_up(vk);
 }
 
+static void react_to_command(UINT vk, BOOL captured)
+{
+    int act = s_action[vk];
+    int command = SECRETARY_ACTION;
+
+    if (captured || flag_get(&s_capture) || act == ACT_HINTS)
+        command = SECRETARY_HINT;
+    else if (act >= ACT_MOVE_LEFT && act <= ACT_MOVE_RIGHT)
+        command = SECRETARY_MOVE;
+    else if ((act >= ACT_SCROLL_UP && act <= ACT_FAST_DOWN) || act == ACT_SCROLL_END ||
+             act == ACT_ZOOM_IN || act == ACT_ZOOM_OUT ||
+             (act == ACT_NONE && alt_key_action(vk) == ACT_SCROLL_END))
+        command = SECRETARY_SCROLL;
+    else if (act >= ACT_LEFT && act <= ACT_TOGGLE)
+        command = SECRETARY_CLICK;
+    else if (vk == g_cfg.mouse_mode_key || act == ACT_EXIT)
+        command = SECRETARY_MODE;
+    secretary_command(command);
+}
+
 static LRESULT CALLBACK kb_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION) {
@@ -2719,8 +2745,15 @@ static LRESULT CALLBACK kb_proc(int nCode, WPARAM wParam, LPARAM lParam)
 
         InterlockedIncrement(&s_kb_calls);
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            if (handle_key(k->vkCode, TRUE, k->flags, k->scanCode))
+            UINT vk = k->vkCode;
+            BOOL fresh = vk <= 255 && !s_down[vk];
+            BOOL captured = flag_get(&s_capture);
+            BOOL locked = flag_get(&s_locked);
+            if (handle_key(vk, TRUE, k->flags, k->scanCode)) {
+                if (fresh && !is_modifier(vk) && (!locked || !flag_get(&s_locked)))
+                    react_to_command(vk, captured);
                 return 1;
+            }
         } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
             if (handle_key(k->vkCode, FALSE, k->flags, k->scanCode))
                 return 1;

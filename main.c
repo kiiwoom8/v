@@ -796,6 +796,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     switch (msg) {
     case WM_APP_HINT_OPEN:
         secretary_dismiss();
+        secretary_hint_reaction();
         hint_open();
         return 0;
     case WM_APP_HINT_PREPARE:
@@ -823,6 +824,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         help_toggle();
         return 0;
     case WM_APP_STATE_CHANGED:
+        secretary_command(SECRETARY_MODE);
         if (input_is_locked())
             secretary_dismiss();
         tray_update();
@@ -836,8 +838,15 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
         return 0;
     case WM_APP_QUIT:
         app_log(L"main: quitting (the quit hotkey)");
-        app_quit();
+        if (!secretary_farewell()) app_quit();
         return 0;
+    case WM_TIMER:
+        if (wp == SECRETARY_FAREWELL_TIMER) {
+            KillTimer(hwnd, SECRETARY_FAREWELL_TIMER);
+            app_quit();
+            return 0;
+        }
+        break;
     case WM_APP_TRAY:
         tray_on_message(wp, lp);
         return 0;
@@ -884,6 +893,7 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_DESTROY:
         stop_watch_thread();
         snippet_editor_close();
+        secretary_editor_close();
         shutdown_stop();
         hint_shutdown();
         // Stop input first: its movement thread calls into UIA until joined.
@@ -1025,6 +1035,7 @@ int main(void)
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         if (snippet_editor_dialog_message(&msg) ||
+            secretary_editor_message(&msg) ||
             shutdown_dialog_message(&msg))
             continue;
         TranslateMessage(&msg);

@@ -74,6 +74,7 @@
 #define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
 #define WM_APP_TOUCHPAD_TOGGLE  (WM_APP + 18) // touchpad_hotkey pressed; -> touchpad_toggle
 #define WM_APP_SECRETARY_MENU   (WM_APP + 19) // mascot right-click; -> tray_show_menu
+#define SECRETARY_FAREWELL_TIMER  201 // on g_main_wnd, for user-requested quit
 
 // ---------------------------------------------------------------------------
 // Keys
@@ -98,6 +99,7 @@ enum { SCAN_MONITOR = 0, SCAN_WINDOW = 1 };
 
 #define SECRETARY_SLOTS 9
 #define SECRETARY_TARGET_MAX 2048
+enum { SECRETARY_MOVEMENT, SECRETARY_REST, SECRETARY_REACTIONS, SECRETARY_EXTRA_SHEETS };
 typedef struct {
     WCHAR label[80];
     WCHAR target[SECRETARY_TARGET_MAX];
@@ -149,8 +151,11 @@ typedef struct {
     // [secretary] opt-in desktop image and numbered full-screen shortcuts.
     int secretary_enabled;
     int secretary_animate;    // -1 = follow Windows animation effects, 0 = off, 1 = on
+    int secretary_roam;       // walk between resting places when idle
+    int secretary_react;      // play reactions when Vim runs a command
     WCHAR secretary_image[MAX_PATH];
     WCHAR secretary_sprite_sheet[MAX_PATH]; // optional 4x4 transparent animation atlas
+    WCHAR secretary_extra[SECRETARY_EXTRA_SHEETS][MAX_PATH];
     SecretaryShortcut secretary_shortcuts[SECRETARY_SLOTS];
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
@@ -451,6 +456,18 @@ void secretary_config_changed(void);
 void secretary_dismiss(void);
 BOOL secretary_has_focus(void);
 BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target);
+enum { SECRETARY_MOVE = 1, SECRETARY_SCROLL, SECRETARY_HINT, SECRETARY_CLICK,
+       SECRETARY_ACTION, SECRETARY_MODE };
+void secretary_command(int command);    // asynchronous, safe on the low-level hook
+void secretary_hint_reaction(void);     // UI thread, immediately before opening hints
+BOOL secretary_farewell(void);          // play a wave before a normal user quit
+BOOL secretary_shortcut_valid(const SecretaryShortcut *slot);
+BOOL secretary_save_setting(int slot, const SecretaryShortcut *entry, int roam);
+void secretary_editor_open(void);
+void secretary_editor_close(void);
+BOOL secretary_editor_message(MSG *message);
+BOOL secretary_editor_visible(void);
+BOOL secretary_editor_has_focus(void);
 
 typedef struct ClickList {
     UINT scan_id;   // the id passed to uia_scan

@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
 #ifndef SPI_GETCLIENTAREAANIMATION
@@ -19,7 +20,11 @@
 #define FRAME_MS 33
 #define BUBBLE_MS 165
 #define POSES_PER_ROW 4
-#define POSE_COUNT (POSES_PER_ROW * POSES_PER_ROW)
+#define POSES_PER_SHEET (POSES_PER_ROW * POSES_PER_ROW)
+#define POSE_COUNT ((1 + SECRETARY_EXTRA_SHEETS) * POSES_PER_SHEET)
+#define WALK_FIRST (POSES_PER_SHEET * (1 + SECRETARY_MOVEMENT))
+#define REST_FIRST (POSES_PER_SHEET * (1 + SECRETARY_REST))
+#define COMMAND_FIRST (POSES_PER_SHEET * (1 + SECRETARY_REACTIONS))
 
 typedef struct {
     HDC dc;
@@ -37,6 +42,8 @@ typedef struct {
 } PoseStep;
 
 enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
+enum { PET_WAIT, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH };
+enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME };
 
 static const PoseStep idle[] = {
     {0, 1150}, {1, 260}, {0, 450}, {2, 100}, {0, 675}, {3, 310}, {0, 820}
@@ -52,11 +59,32 @@ static const PoseStep clicked[] = {
 };
 static const PoseStep menu_reaction[] = {{12, 440}, {15, 210}};
 static const PoseStep landed[] = {{11, 85}, {15, 260}};
+static const PoseStep settling[] = {
+    {WALK_FIRST + 12, 95}, {WALK_FIRST + 13, 175},
+    {WALK_FIRST + 14, 145}, {WALK_FIRST + 15, 130}
+};
+static const PoseStep falling_asleep[] = {
+    {REST_FIRST, 280}, {REST_FIRST + 1, 450}, {REST_FIRST + 2, 410}, {REST_FIRST + 3, 300}
+};
+static const PoseStep sleeping[] = {
+    {REST_FIRST + 4, 520}, {REST_FIRST + 5, 460},
+    {REST_FIRST + 6, 580}, {REST_FIRST + 7, 290}, {REST_FIRST + 6, 470}
+};
+static const PoseStep stretching[] = {
+    {REST_FIRST + 8, 240}, {REST_FIRST + 9, 235}, {REST_FIRST + 10, 430}, {REST_FIRST + 11, 300}
+};
+static const PoseStep grooming[] = {
+    {REST_FIRST + 12, 210}, {REST_FIRST + 13, 260},
+    {REST_FIRST + 14, 295}, {REST_FIRST + 13, 210}, {REST_FIRST + 15, 240}
+};
 
 static HWND pet, bubble;
 static ULONG_PTR gdiplus;
 static Canvas sprite, speech;
 static GpImage *image;
+static GpImage *extra_images[SECRETARY_EXTRA_SHEETS];
+static BOOL extra_ready[SECRETARY_EXTRA_SHEETS];
+static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
 static DWORD *pose_pixels;
 static POINT pose_clicks[POSE_COUNT];
 static RECT pose_bounds[POSE_COUNT], sprite_bounds;
@@ -64,7 +92,7 @@ static int painted_pose = -1, reaction;
 static BOOL use_atlas;
 static BYTE painted_opacity;
 static WCHAR image_path[APP_PATH_MAX];
-static POINT anchor, pet_at, press, press_at, click_pixel, bubble_at;
+static POINT anchor, home, pet_at, press, press_at, click_pixel, bubble_at;
 static RECT work;
 static UINT dpi;
 static DWORD born, pulse, bubble_tick, last_hint, last_activity, press_started;
@@ -72,6 +100,18 @@ static BOOL positioned, pressed, dragging, moved, opened, animate;
 static BOOL bubble_left;
 static int rows[SECRETARY_SLOTS], row_count, armed_key, selected = -1;
 static int pending_slot = -1;
+static volatile LONG pending_command;
+static int command_pose;
+static DWORD command_started;
+static BOOL saying_goodbye;
+static struct {
+    double speed, cruise, distance, traveled, gait;
+    POINT origin, goal;
+    int curve;
+    DWORD started, next, last_frame, duration, seed;
+    int state;
+    BOOL left, fast;
+} pet_motion;
 static BOOL (WINAPI *process_path)(HANDLE, DWORD, LPWSTR, PDWORD);
 
 // A new browser window keeps the user's current tabs, profile, and sign-in.
@@ -210,20 +250,6 @@ static BOOL measure_sprite(POINT *click, RECT *bounds)
     return nearest != INT_MAX;
 }
 
-static BOOL has_alpha_haze(UINT width, UINT height)
-{
-    unsigned i;
-    GpPoint corners[4] = {{0, 0}, {(int)width - 1, 0},
-                         {0, (int)height - 1}, {(int)width - 1, (int)height - 1}};
-    for (i = 0; i < 4; ++i) {
-        ARGB pixel;
-        if (GdipBitmapGetPixel((GpBitmap *)image, corners[i].X, corners[i].Y, &pixel) != Ok ||
-            !(pixel >> 24) || pixel >> 24 > 48)
-            return FALSE;
-    }
-    return TRUE;
-}
-
 // Some generated atlases leave low-opacity pixels across otherwise empty
 // cells. Clear the haze in the rendered window and retain soft ink edges.
 static void remove_alpha_haze(size_t count)
@@ -244,30 +270,48 @@ static void remove_alpha_haze(size_t count)
     }
 }
 
-static BOOL draw_atlas(UINT width, UINT height)
+static void align_floor(RECT *bounds, POINT *click, int floor)
 {
-    int pose, size = clamp(px(164), 64, 640);
-    size_t count = (size_t)size * size;
-    BOOL haze = has_alpha_haze(width, height);
+    int size = sprite.size.cx;
+    int dy = clamp(floor - bounds->bottom, -bounds->top, size - bounds->bottom);
+    size_t stride = (size_t)size * sizeof(DWORD);
+    BYTE *pixels = (BYTE *)sprite.pixels;
+    if (dy > 0) {
+        MoveMemory(pixels + dy * stride, pixels, (size_t)(size - dy) * stride);
+        ZeroMemory(pixels, dy * stride);
+    } else if (dy < 0) {
+        MoveMemory(pixels, pixels + (size_t)(-dy) * stride, (size_t)(size + dy) * stride);
+        ZeroMemory(pixels + (size + dy) * stride, -dy * stride);
+    }
+    OffsetRect(bounds, 0, dy);
+    click->y += dy;
+}
 
-    if (width < 4 * 16 || height < 4 * 16 || width > 8192 || height > 8192 ||
-        !make_canvas(&sprite, size, size)) return FALSE;
-    pose_pixels = (DWORD *)malloc(POSE_COUNT * count * sizeof(DWORD));
-    if (!pose_pixels) return FALSE;
-    for (pose = 0; pose < POSE_COUNT; ++pose) {
+static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first)
+{
+    int pose, size = sprite.size.cx;
+    size_t count = (size_t)size * size;
+    if (width < 4 * 16 || height < 4 * 16 || width > 8192 || height > 8192) return FALSE;
+    for (pose = 0; pose < POSES_PER_SHEET; ++pose) {
         int col = pose % POSES_PER_ROW, row = pose / POSES_PER_ROW;
         int left = col * width / POSES_PER_ROW, top = row * height / POSES_PER_ROW;
         int right = (col + 1) * width / POSES_PER_ROW;
         int bottom = (row + 1) * height / POSES_PER_ROW;
+        int index = first + pose;
         GdipGraphicsClear(sprite.graphics, 0);
-        if (GdipDrawImageRectRectI(sprite.graphics, image, 0, 0, size, size,
+        if (GdipDrawImageRectRectI(sprite.graphics, sheet, 0, 0, size, size,
                                   left, top, right - left, bottom - top,
                                   UnitPixel, NULL, NULL, NULL) != Ok)
             return FALSE;
         GdipFlush(sprite.graphics, FlushIntentionSync);
-        if (haze) remove_alpha_haze(count);
-        if (!measure_sprite(&pose_clicks[pose], &pose_bounds[pose])) return FALSE;
-        CopyMemory(pose_pixels + pose * count, sprite.pixels, count * sizeof(DWORD));
+        remove_alpha_haze(count);
+        if (!measure_sprite(&pose_clicks[index], &pose_bounds[index])) return FALSE;
+        if (first != 0 || row != 2) {
+            int floor = MulDiv(size, 88, 100);
+            if (first == WALK_FIRST && row == 2 && (col & 1)) floor -= px(6);
+            align_floor(&pose_bounds[index], &pose_clicks[index], floor);
+        }
+        CopyMemory(pose_pixels + index * count, sprite.pixels, count * sizeof(DWORD));
     }
     return TRUE;
 }
@@ -284,7 +328,23 @@ static BOOL draw_sprite(void)
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
         !w || !h || w > INT_MAX || h > INT_MAX)
         return FALSE;
-    if (use_atlas) return draw_atlas(w, h);
+    if (use_atlas) {
+        int sheet, poses = POSES_PER_SHEET;
+        size = clamp(px(164), 64, 512);
+        if (!make_canvas(&sprite, size, size)) return FALSE;
+        for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet)
+            if (extra_images[sheet]) poses = (sheet + 2) * POSES_PER_SHEET;
+        pose_pixels = (DWORD *)malloc((size_t)poses * size * size * sizeof(DWORD));
+        if (!pose_pixels || !draw_atlas(image, w, h, 0)) return FALSE;
+        for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet) {
+            GpImage *extra = extra_images[sheet];
+            extra_ready[sheet] = extra && GdipGetImageWidth(extra, &w) == Ok &&
+                GdipGetImageHeight(extra, &h) == Ok && draw_atlas(extra, w, h, (sheet + 1) * POSES_PER_SHEET);
+            if (extra && !extra_ready[sheet])
+                app_log(L"secretary: an extra animation sheet could not be drawn");
+        }
+        return TRUE;
+    }
     width = w >= h ? size : clamp(MulDiv(size, (int)w, (int)h), 1, size);
     height = h >= w ? size : clamp(MulDiv(size, (int)h, (int)w), 1, size);
     if (!make_canvas(&sprite, width, height)) return FALSE;
@@ -356,7 +416,8 @@ static void write_text(GpSolidFill *brush, GpFont *font, GpStringFormat *format,
     GdipDrawString(speech.graphics, text, -1, font, &rect, format, (GpBrush *)brush);
 }
 
-static int footer_y(void) { return 49 + 37 * (row_count ? row_count : 1); }
+static int actions_y(void) { return 49 + 37 * (row_count ? row_count : 1); }
+static int footer_y(void) { return actions_y() + 74; }
 static int bubble_height(void) { return footer_y() + 33; }
 
 static void draw_bubble(void)
@@ -407,6 +468,17 @@ static void draw_bubble(void)
     if (!row_count)
         write_text(brush, regular, format, L"\xc124\xc815\xc5d0\xc11c \xbc14\xb85c\xac00\xae30\xb97c \xcd94\xac00\xd558\xc138\xc694",
                    x + 13, 50, 200, 24, 0xff554765);
+    for (i = 0; i < 4; ++i) {
+        const WCHAR *labels[] = {
+            L"바로가기 편집", GetSystemMetrics(SM_CMONITORS) > 1 ? L"다음 화면" : L"Vim 힌트",
+            g_cfg.secretary_roam ? L"이동 멈춤" : L"자유 이동", L"제자리로"
+        };
+        int bx = x + 10 + (i % 2) * 106;
+        int by = actions_y() + (i / 2) * 34;
+        rounded(g, brush, (RECT){px(bx), px(by), px(bx + 100), px(by + 29)},
+                px(7), 0xffece1f6);
+        write_text(brush, footer_font, format, labels[i], bx + 7, by + 6, 93, 20, 0xff47305c);
+    }
     write_text(brush, footer_font, format, L"Esc   \xb2eb\xae30", x + 13, footer_y(), 195, 18, 0xff685678);
 done:
     if (format) GdipDeleteStringFormat(format);
@@ -475,6 +547,76 @@ static void react(int action)
 {
     reaction = action;
     last_activity = pulse = GetTickCount();
+    pet_motion.state = PET_WAIT;
+    pet_motion.next = pulse + 3000;
+}
+
+typedef struct { HMONITOR handle; RECT area; } PetMonitor;
+typedef struct { PetMonitor items[16]; int count; } PetMonitors;
+
+static BOOL CALLBACK collect_monitors(HMONITOR monitor, HDC dc, LPRECT bounds, LPARAM param)
+{
+    PetMonitors *list = (PetMonitors *)param;
+    MONITORINFO info = {sizeof(info), {0}, {0}, 0};
+    (void)dc;
+    (void)bounds;
+    if (GetMonitorInfoW(monitor, &info))
+        list->items[list->count++] = (PetMonitor){monitor, info.rcWork};
+    return list->count < (int)(sizeof(list->items) / sizeof(list->items[0]));
+}
+
+static int monitor_order(const void *a, const void *b)
+{
+    const PetMonitor *ma = (const PetMonitor *)a, *mb = (const PetMonitor *)b;
+    if (ma->area.left != mb->area.left) return ma->area.left < mb->area.left ? -1 : 1;
+    return (ma->area.top > mb->area.top) - (ma->area.top < mb->area.top);
+}
+
+static BOOL next_screen(void)
+{
+    PetMonitors list = {0};
+    HMONITOR current = MonitorFromWindow(pet, MONITOR_DEFAULTTONEAREST);
+    RECT area;
+    POINT center;
+    int i;
+    EnumDisplayMonitors(NULL, NULL, collect_monitors, (LPARAM)&list);
+    if (list.count < 2) return FALSE;
+    qsort(list.items, (size_t)list.count, sizeof(list.items[0]), monitor_order);
+    for (i = 0; i < list.count; ++i)
+        if (list.items[i].handle == current) break;
+    area = list.items[(i + 1) % list.count].area;
+    center = (POINT){(area.left + area.right) / 2, (area.top + area.bottom) / 2};
+    if (!update_monitor(center)) return FALSE;
+    anchor.x = area.right - sprite.size.cx - px(24);
+    anchor.y = area.bottom - sprite.size.cy - px(24);
+    clamp_anchor();
+    home = anchor;
+    moved = TRUE;
+    store_position();
+    return TRUE;
+}
+
+static void run_bubble_action(int action)
+{
+    secretary_dismiss();
+    react(REACT_CLICK);
+    switch (action) {
+    case BUBBLE_EDIT:
+        secretary_editor_open();
+        break;
+    case BUBBLE_SCREEN:
+        if (!next_screen()) PostMessageW(g_main_wnd, WM_APP_HINT_OPEN, 0, 0);
+        break;
+    case BUBBLE_ROAM:
+        if (secretary_save_setting(-1, NULL, !g_cfg.secretary_roam)) app_config_written();
+        else tray_balloon(L"Desktop secretary", L"Could not save the roaming setting.");
+        break;
+    case BUBBLE_HOME:
+        anchor = home;
+        update_monitor(anchor);
+        clamp_anchor();
+        break;
+    }
 }
 
 static void select_slot(int slot)
@@ -664,6 +806,7 @@ static void release_pet(POINT pointer)
         update_monitor(pointer);
         clamp_anchor();
         moved = TRUE;
+        home = anchor;
         store_position();
         react(REACT_LAND);
     } else {
@@ -690,6 +833,166 @@ static int step_at(const PoseStep *steps, size_t count, DWORD elapsed, BOOL loop
 
 #define CLIP(steps) (steps), (sizeof(steps) / sizeof((steps)[0]))
 
+static unsigned random_below(unsigned limit)
+{
+    DWORD n = pet_motion.seed;
+    n ^= n << 13;
+    n ^= n >> 17;
+    n ^= n << 5;
+    pet_motion.seed = n;
+    return n % limit;
+}
+
+static void wait_to_roam(DWORD now, DWORD delay)
+{
+    pet_motion.state = PET_WAIT;
+    pet_motion.next = now + delay;
+}
+
+static void start_walk(DWORD now)
+{
+    int margin = px(17), distance = px(105 + random_below(270));
+    int left = work.left + margin, right = work.right - sprite.size.cx - margin;
+    int top = work.top + (work.bottom - work.top) * 2 / 5;
+    int bottom = work.bottom - sprite.size.cy - margin;
+    int direction = random_below(2) ? 1 : -1;
+    int x = clamp(anchor.x + direction * distance, left, right);
+    BOOL stay_low = random_below(3) != 0;
+    int y_drift = (int)random_below(stay_low ? 111 : 271) - (stay_low ? 55 : 135);
+
+    if (abs(x - anchor.x) < px(55)) x = clamp(anchor.x - direction * distance, left, right);
+    pet_motion.goal = (POINT){x, clamp(anchor.y + px(y_drift), top, bottom)};
+    pet_motion.origin = anchor;
+    pet_motion.distance = hypot(pet_motion.goal.x - anchor.x, pet_motion.goal.y - anchor.y);
+    pet_motion.curve = px((int)random_below(79) - 39);
+    pet_motion.left = x < anchor.x;
+    pet_motion.fast = abs(x - anchor.x) > px(185) && random_below(4) == 0;
+    pet_motion.cruise = px(pet_motion.fast ? 123 + random_below(31) : 56 + random_below(35));
+    pet_motion.speed = pet_motion.gait = pet_motion.traveled = 0.0;
+    pet_motion.state = PET_WALK;
+    pet_motion.started = now;
+}
+
+static void advance_walk(DWORD now, double seconds)
+{
+    double remaining = pet_motion.distance - pet_motion.traveled;
+    double acceleration = px(pet_motion.fast ? 290 : 180);
+    double goal_speed = fmin(pet_motion.cruise, sqrt(2.0 * acceleration * remaining));
+    double step, progress;
+
+    if (pet_motion.speed < goal_speed)
+        pet_motion.speed = fmin(goal_speed, pet_motion.speed + acceleration * seconds);
+    else
+        pet_motion.speed = fmax(goal_speed, pet_motion.speed - acceleration * seconds);
+    step = pet_motion.speed * seconds;
+    if (remaining <= 1.0 || step >= remaining) {
+        anchor = pet_motion.goal;
+        pet_motion.state = PET_SETTLE;
+        pet_motion.started = now;
+        return;
+    }
+    pet_motion.traveled += step;
+    pet_motion.gait += step / px(pet_motion.fast ? 13 : 9);
+    progress = pet_motion.traveled / pet_motion.distance;
+    anchor.x = pet_motion.origin.x + (LONG)lround((pet_motion.goal.x - pet_motion.origin.x) * progress);
+    anchor.y = pet_motion.origin.y + (LONG)lround((pet_motion.goal.y - pet_motion.origin.y) * progress +
+                                                 pet_motion.curve * sin(progress * 3.14159265));
+    clamp_anchor();
+}
+
+static void advance_pet(DWORD now, POINT pointer)
+{
+    double seconds = clamp((int)(now - pet_motion.last_frame), 0, 60) / 1000.0;
+    DWORD elapsed = now - pet_motion.started;
+    RECT hover_zone = {pet_at.x, pet_at.y, pet_at.x + sprite.size.cx, pet_at.y + sprite.size.cy};
+    unsigned choice;
+
+    pet_motion.last_frame = now;
+    if (!animate || !use_atlas || input_is_locked()) {
+        wait_to_roam(now, 3000);
+        return;
+    }
+    InflateRect(&hover_zone, px(25), px(19));
+    if (pressed || opened || secretary_editor_visible() ||
+        reaction != REACT_NONE || PtInRect(&hover_zone, pointer)) {
+        if (pet_motion.state == PET_WALK || pet_motion.state == PET_SETTLE)
+            wait_to_roam(now, 2200);
+        else if ((LONG)(now - pet_motion.next) >= 0)
+            pet_motion.next = now + 1500;
+        return;
+    }
+    switch (pet_motion.state) {
+    case PET_WALK:
+        if (g_cfg.secretary_roam) advance_walk(now, seconds);
+        else wait_to_roam(now, 2800);
+        return;
+    case PET_SETTLE:
+        if (elapsed >= 545) wait_to_roam(now, 1900 + random_below(5350));
+        return;
+    case PET_NAP:
+        if (elapsed >= pet_motion.duration) {
+            pet_motion.started = now;
+            pet_motion.state = PET_STRETCH;
+        }
+        return;
+    case PET_STRETCH:
+        if (elapsed >= 1205) wait_to_roam(now, 3800 + random_below(3200));
+        return;
+    case PET_GROOM:
+        if (elapsed >= 1215) wait_to_roam(now, 4300 + random_below(5500));
+        return;
+    }
+    if ((LONG)(now - pet_motion.next) < 0) return;
+    choice = random_below(100);
+    if (g_cfg.secretary_roam && extra_ready[SECRETARY_MOVEMENT] && (choice < 68 || now - born < 6000)) {
+        start_walk(now);
+    } else if (extra_ready[SECRETARY_REST]) {
+        pet_motion.started = now;
+        if (choice < 83) pet_motion.state = PET_GROOM;
+        else {
+            pet_motion.state = PET_NAP;
+            pet_motion.duration = 5600 + random_below(8200);
+        }
+    } else {
+        wait_to_roam(now, 2700 + random_below(3000));
+    }
+}
+
+void secretary_command(int command)
+{
+    // Hooks and worker threads leave a single event. Nothing here touches a window.
+    if (g_cfg.secretary_enabled && g_cfg.secretary_react)
+        InterlockedExchange(&pending_command, command);
+}
+
+static void receive_command(DWORD now)
+{
+    int command = (int)InterlockedExchange(&pending_command, 0);
+    if (!command || !g_cfg.secretary_react || pressed) return;
+    if (command == command_pose && now - command_started < 600) return;
+    command_pose = command;
+    command_started = now;
+    last_activity = now;
+    wait_to_roam(now, 2400);
+}
+
+static int command_frame(DWORD now)
+{
+    DWORD elapsed = now - command_started;
+    int row, col;
+    if (!command_pose || !g_cfg.secretary_react || elapsed >= 600) return -1;
+    if (!extra_ready[SECRETARY_REACTIONS]) return 12 + (int)(elapsed / 150);
+    switch (command_pose) {
+    case SECRETARY_MOVE:
+    case SECRETARY_HINT: row = 0; break;
+    case SECRETARY_SCROLL: row = 1; break;
+    case SECRETARY_CLICK: row = 2; break;
+    default: row = 3; break;
+    }
+    col = (int)(elapsed / 150);
+    return COMMAND_FIRST + row * POSES_PER_ROW + col;
+}
+
 static int animated_pose(DWORD now)
 {
     DWORD asleep = now - last_activity, elapsed = now - pulse;
@@ -705,6 +1008,27 @@ static int animated_pose(DWORD now)
     }
     if (pose >= 0) return pose;
     reaction = REACT_NONE;
+    pose = command_frame(now);
+    if (pose >= 0) return pose;
+    elapsed = now - pet_motion.started;
+    switch (pet_motion.state) {
+    case PET_WALK:
+        return WALK_FIRST + (pet_motion.fast ? 8 + (int)pet_motion.gait % 4 : (int)pet_motion.gait % 8);
+    case PET_SETTLE:
+        pose = step_at(CLIP(settling), elapsed, FALSE);
+        break;
+    case PET_NAP:
+        pose = step_at(CLIP(falling_asleep), elapsed, FALSE);
+        if (pose < 0) pose = step_at(CLIP(sleeping), elapsed - 1440, TRUE);
+        break;
+    case PET_STRETCH:
+        pose = step_at(CLIP(stretching), elapsed, FALSE);
+        break;
+    case PET_GROOM:
+        pose = step_at(CLIP(grooming), elapsed, FALSE);
+        break;
+    }
+    if (pose >= 0) return pose;
     if (!opened && asleep >= 14000) {
         pose = step_at(CLIP(bored), (asleep - 14000) % 27000, FALSE);
         if (pose >= 0) return pose;
@@ -715,10 +1039,11 @@ static int animated_pose(DWORD now)
 static void frame(void)
 {
     DWORD now = GetTickCount();
-    POINT pointer, at;
+    POINT pointer = {INT_MIN / 2, INT_MIN / 2}, at;
     BYTE opacity = 255;
     BOOL hints = hint_is_open();
-    int pose = 0;
+    int pose = 0, pose_key;
+    BOOL flip;
 
     if (GetCursorPos(&pointer) && pressed) {
         if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) move_from_press(pointer);
@@ -734,7 +1059,14 @@ static void frame(void)
     render_bubble(now);
     if (hints) last_hint = now;
     if (!dragging && now - last_hint < 400 &&
-        (hints || now - pulse > now - last_hint)) return;
+        (hints || now - pulse > now - last_hint)) {
+        pet_motion.last_frame = now;
+        return;
+    }
+    if (!saying_goodbye) {
+        receive_command(now);
+        advance_pet(now, pointer);
+    }
     at = pressed && !dragging ? press_at : anchor;
     if (use_atlas) {
         if (!pose_pixels) return;
@@ -747,18 +1079,63 @@ static void frame(void)
         if (now - pulse < 290) at.y -= (int)(px(10) * sin((now - pulse) * 3.14159 / 290.0));
     }
     if (dragging && !use_atlas) opacity = 218;
-    if (painted_pose == pose && painted_opacity == opacity &&
+    flip = use_atlas && pet_motion.left && pose >= WALK_FIRST && pose < REST_FIRST;
+    pose_key = pose + (flip ? POSE_COUNT : 0);
+    if (painted_pose == pose_key && painted_opacity == opacity &&
         pet_at.x == at.x && pet_at.y == at.y) return;
-    if (use_atlas && painted_pose != pose) {
+    if (use_atlas && painted_pose != pose_key) {
         size_t count = (size_t)sprite.size.cx * sprite.size.cy;
-        CopyMemory(sprite.pixels, pose_pixels + count * pose, count * sizeof(DWORD));
+        const DWORD *source = pose_pixels + count * pose;
         click_pixel = pose_clicks[pose];
         sprite_bounds = pose_bounds[pose];
+        if (flip) {
+            int x, y, w = sprite.size.cx;
+            for (y = 0; y < sprite.size.cy; ++y)
+                for (x = 0; x < w; ++x)
+                    sprite.pixels[y * w + x] = source[y * w + w - 1 - x];
+            click_pixel.x = w - 1 - click_pixel.x;
+            sprite_bounds.left = w - pose_bounds[pose].right;
+            sprite_bounds.right = w - pose_bounds[pose].left;
+        } else CopyMemory(sprite.pixels, source, count * sizeof(DWORD));
     }
-    painted_pose = pose;
+    painted_pose = pose_key;
     painted_opacity = opacity;
     pet_at = at;
     present(pet, &sprite, pet_at, opacity);
+}
+
+void secretary_hint_reaction(void)
+{
+    DWORD now = GetTickCount();
+    secretary_command(SECRETARY_HINT);
+    if (pet && !hint_is_open()) {
+        receive_command(now);
+        if (command_pose == SECRETARY_HINT) command_started = now - 150;
+        last_hint = now - 400;
+        frame();
+    }
+}
+
+BOOL secretary_farewell(void)
+{
+    DWORD now = GetTickCount();
+    if (!pet || !animate || !use_atlas || !g_cfg.secretary_react || input_is_locked())
+        return FALSE;
+    if (saying_goodbye) return TRUE;
+    if (!SetTimer(g_main_wnd, SECRETARY_FAREWELL_TIMER, 590, NULL)) return FALSE;
+    saying_goodbye = TRUE;
+    hint_close();
+    secretary_dismiss();
+    pressed = dragging = FALSE;
+    if (GetCapture() == pet) ReleaseCapture();
+    pending_slot = -1;
+    launch.exe = NULL;
+    reaction = REACT_NONE;
+    command_pose = SECRETARY_ACTION;
+    command_started = now;
+    last_hint = now - 400;
+    frame();
+    return TRUE;
 }
 
 static void update_animation(void)
@@ -790,8 +1167,13 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
         case WM_LBUTTONUP: {
             int row = GET_Y_LPARAM(lp) - px(42);
             int x = GET_X_LPARAM(lp), left = px(bubble_left ? 16 : 30);
+            int action_y = GET_Y_LPARAM(lp) - px(actions_y());
             int index = row / px(37);
-            if (row >= 0 && index < row_count && x >= left && x < left + px(206))
+            if (opened && action_y >= 0 && action_y < px(68) && x >= left && x < left + px(206)) {
+                int col = x - left >= px(106), button_row = action_y >= px(34);
+                if (x - left - col * px(106) < px(100) && action_y - button_row * px(34) < px(29))
+                    run_bubble_action(button_row * 2 + col);
+            } else if (row >= 0 && index < row_count && x >= left && x < left + px(206))
                 select_slot(rows[index]);
             return 0;
         }
@@ -856,6 +1238,7 @@ BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target)
 
 void secretary_shutdown(void)
 {
+    int extra;
     opened = pressed = dragging = FALSE;
     pending_slot = -1;
     launch.exe = NULL;
@@ -868,8 +1251,23 @@ void secretary_shutdown(void)
     pose_pixels = NULL;
     if (image) GdipDisposeImage(image);
     image = NULL;
+    for (extra = 0; extra < SECRETARY_EXTRA_SHEETS; ++extra) {
+        if (extra_images[extra]) GdipDisposeImage(extra_images[extra]);
+        extra_images[extra] = NULL;
+        extra_ready[extra] = FALSE;
+    }
     if (gdiplus) GdiplusShutdown(gdiplus);
     gdiplus = 0;
+}
+
+static void resolve_art_path(WCHAR *path, const WCHAR *art)
+{
+    const WCHAR *ini = config_path(), *slash = wcsrchr(ini, L'\\');
+    if ((art[0] && art[1] == L':') || art[0] == L'\\' || !slash)
+        lstrcpynW(path, art, APP_PATH_MAX);
+    else
+        _snwprintf(path, APP_PATH_MAX, L"%.*ls%ls", (int)(slash - ini + 1), ini, art);
+    path[APP_PATH_MAX - 1] = 0;
 }
 
 void secretary_config_changed(void)
@@ -879,25 +1277,30 @@ void secretary_config_changed(void)
     WCHAR path[APP_PATH_MAX];
     GdiplusStartupInput input = {1, NULL, FALSE, TRUE};
     DWORD styles = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
-    const WCHAR *ini = config_path(), *slash = wcsrchr(ini, L'\\');
+    int extra;
 
     if (!g_cfg.secretary_enabled || !*art) {
         secretary_shutdown();
         return;
     }
-    if ((art[0] && art[1] == L':') || art[0] == L'\\' || !slash)
-        lstrcpynW(path, art, APP_PATH_MAX);
-    else
-        _snwprintf(path, APP_PATH_MAX, L"%.*ls%ls", (int)(slash - ini + 1), ini, art);
-    path[APP_PATH_MAX - 1] = 0;
+    resolve_art_path(path, art);
     pending_slot = -1;
     secretary_dismiss();
     update_animation();
-    if (pet && use_atlas == atlas && _wcsicmp(image_path, path) == 0) return;
+    if (pet && use_atlas == atlas && _wcsicmp(image_path, path) == 0 &&
+        memcmp(extra_settings, g_cfg.secretary_extra, sizeof(extra_settings)) == 0) return;
     secretary_shutdown();
     use_atlas = atlas;
     if (GdiplusStartup(&gdiplus, &input, NULL) != Ok) goto fail;
     if (GdipLoadImageFromFile(path, &image) != Ok) goto fail;
+    lstrcpynW(image_path, path, APP_PATH_MAX);
+    CopyMemory(extra_settings, g_cfg.secretary_extra, sizeof(extra_settings));
+    for (extra = 0; atlas && extra < SECRETARY_EXTRA_SHEETS; ++extra) {
+        if (!extra_settings[extra][0]) continue;
+        resolve_art_path(path, extra_settings[extra]);
+        if (GdipLoadImageFromFile(path, &extra_images[extra]) != Ok)
+            app_log(L"secretary: could not read animation sheet %ls", path);
+    }
     if (!positioned) {
         DWORD bytes = sizeof(anchor);
         moved = read_registry(HKEY_CURRENT_USER, POSITION_KEY, L"Position", REG_BINARY,
@@ -909,17 +1312,21 @@ void secretary_config_changed(void)
         anchor.x = work.right - sprite.size.cx - px(27);
         anchor.y = work.bottom - sprite.size.cy - px(25);
     }
-    positioned = TRUE;
     clamp_anchor();
+    if (!positioned) home = anchor;
+    positioned = TRUE;
     pet = CreateWindowExW(styles | WS_EX_NOACTIVATE, PET_CLASS, L"Desktop secretary", WS_POPUP,
                           0, 0, 0, 0, NULL, NULL, g_hinst, NULL);
     bubble = CreateWindowExW(styles, BUBBLE_CLASS, L"Secretary shortcuts", WS_POPUP,
                              0, 0, 0, 0, NULL, NULL, g_hinst, NULL);
     if (!pet || !bubble) goto fail;
-    lstrcpynW(image_path, path, APP_PATH_MAX);
     born = GetTickCount();
     last_activity = born;
     reaction = REACT_NONE;
+    command_pose = 0;
+    pet_motion.seed = (born ^ GetCurrentProcessId() ^ GetCurrentThreadId()) | 1;
+    pet_motion.last_frame = born;
+    wait_to_roam(born, 2500);
     pulse = born - 300;
     last_hint = born - 400;
     frame();

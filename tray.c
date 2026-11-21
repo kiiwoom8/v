@@ -719,9 +719,11 @@ void tray_show_menu(POINT pt)
 
 BOOL tray_on_command(WORD id)
 {
+    if (id >= IDM_HINTS && id <= IDM_SD_CANCEL) secretary_command(SECRETARY_ACTION);
     switch (id) {
     case IDM_HINTS:
         secretary_dismiss();
+        secretary_hint_reaction();
         hint_open();
         return TRUE;
     case IDM_MOUSE:
@@ -776,7 +778,7 @@ BOOL tray_on_command(WORD id)
         shutdown_cancel();
         return TRUE;
     case IDM_QUIT:
-        app_quit();
+        if (!secretary_farewell()) app_quit();
         return TRUE;
     default:
         return FALSE;

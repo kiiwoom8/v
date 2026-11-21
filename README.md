@@ -483,12 +483,20 @@ may ask to save it, which holds the shutdown up until someone answers. Set
 
 ## Desktop secretary
 
-The secretary sits over the desktop and remembers where you drop it. Click
+The secretary remembers where you drop it. With a movement sheet, it wanders
+between resting spots at different speeds and settles when you reach for it. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). Click hints (`Alt+F` by default) also
 label the picture. Use `1`–`9` or click a row to launch it, and `Esc` to close
 the bubble. `F11` leaves full screen in the launched app.
+
+The bubble can edit a numbered shortcut, pause or resume roaming, or bring
+the secretary back to the last place you dropped it. **Next screen** moves
+it to the next monitor. On a single monitor that button opens Vim's click
+hints. The character reacts to Vim commands such as scrolling, clicks,
+hints, and mode changes. Held keys share a single reaction across repeats.
+It waves briefly when you quit Vim from the tray or the quit hotkey.
 
 Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
 Use a local image path or a path relative to the INI. PNG transparency works
@@ -502,11 +510,24 @@ row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When
 `sprite_sheet` is set, Vim uses it as the artwork. You can also use `image`
 by itself for a single picture.
 
+Three optional sheets add more poses with the same transparent 4×4 layout.
+
+| Setting | Four rows, in order |
+|---|---|
+| `movement_sheet` | walk, walk variation, trot, settle. Draw the character facing right. |
+| `rest_sheet` | doze, curl up asleep, wake and stretch, groom |
+| `reaction_sheet` | focus, follow a scroll, startle, wave |
+
 ```ini
 [secretary]
 enabled = 1
 animate = system
 sprite_sheet = secretary-poses.png
+movement_sheet = secretary-movement.png
+rest_sheet = secretary-rest.png
+reaction_sheet = secretary-reactions.png
+roam = 1
+react = 1
 1 = Claude | claude
 2 = Wiki | https://example.org/wiki
 ```
@@ -516,6 +537,7 @@ Claude app or an HTTP(S) URL, which opens in a fresh Chrome window using your
 current browser profile. Edge is the fallback when Chrome is unavailable.
 Set `enabled = 0` to hide the secretary. `animate = system` follows Windows'
 animation setting. `animate = 0` or `1` overrides it for the secretary.
+Set `roam = 0` to keep it in place, or `react = 0` to turn off Vim command reactions.
 
 ## Settings
 
