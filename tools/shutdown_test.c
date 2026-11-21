@@ -9,9 +9,9 @@
 // ends in the US; with the time zone set to one of those (TZ=America/New_York
 // under Wine) the two 23:30s around it are 25 hours apart.
 
-#include <stdio.h>
-
 #include "common.h"
+
+#include <stdio.h>
 
 static ULONGLONG g_fake_now;
 static int       g_exits;

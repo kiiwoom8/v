@@ -107,7 +107,8 @@ permission prompts) do not count as an open menu, while Chrome's menus do. vim
 mouse asks UI Automation where the focus is after every focus change; while it
 is not sure (right after a click, in a game or a remote desktop, with a menu
 open) the letters type as usual. A shortcut that reaches the app (`Ctrl+Shift+M`
-opening a search box) or a key typed outside a text field makes it ask again
+opening a search box, or an Alt shortcut replayed over a popup) or a key
+typed outside a text field makes it ask again
 once the keys pause for 0.4 s, and the letters type until then, so typing fast
 into a box a shortcut has just opened never scrolls. A key pressed while it is still asking waits
 up to 0.1 s for the answer instead of typing at once. A `g` that typed while

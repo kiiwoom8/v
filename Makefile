@@ -15,6 +15,7 @@ $(TARGET): $(OBJS) $(RESOBJ)
 %.o: %.c common.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+hint.o: labelbox.h
 tray.o update.o: version.h
 
 vim.res.o: vim.rc vim.manifest vim.ico version.h
@@ -74,7 +75,7 @@ tools/vim_post.exe: tools/vim_post.c common.h
 # Console tool that compares Chrome's DOM with what the scan finds (hint_check.mjs)
 check: tools/hint_check.exe
 
-tools/hint_check.exe: tools/hint_check.c uia.c common.h
+tools/hint_check.exe: tools/hint_check.c uia.c common.h labelbox.h
 	$(CC) $(CFLAGS) -I. -o $@ tools/hint_check.c -lgdi32 -luser32 -lole32 -loleaut32 -luuid -lcomdlg32
 
 # Console check of the scheduled shutdown's timing with a fake clock; it never

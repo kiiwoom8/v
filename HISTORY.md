@@ -1418,6 +1418,16 @@ Invariants stated in `common.h` and enforced by history:
   5, "Unknown means type the letter"). Built with `-Werror` (MinGW.org
   6.3); not yet tried in Zendesk.
 
+### Phase 33: typing after an Alt shortcut in a popup (2026-11-21)
+
+- An Alt shortcut replayed over a popup bypassed the ordinary focus check.
+  A hook test with a cached non-text answer reproduced a missing 400 ms
+  refresh for Alt+E and a missing 100 ms refresh for Alt+Tab. The replay
+  path now calls the same focus check as a physical shortcut.
+- Changing `labelbox.h` now rebuilds both the hint overlay and its layout
+  checker. The shutdown test includes `common.h` first so MinGW.org sees
+  the same Unicode and Windows API declarations as the application.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -1654,7 +1664,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
   forward, `g g`) act from `alt_resolve` with Alt still hidden
   (`alt_action_down`, `f539e1f`): replaying Alt in front of the first key
   sent Chrome Alt+J while its download, extension or notification bubble
-  was open, so only the second press scrolled.
+  was open, so only the second press scrolled. Replayed shortcuts need
+  the same focus invalidation as physical ones because the hook ignores
+  injected input.
 - **"A popup is open" must exclude tooltips and click-through windows.**
   `5ea3a61`: Chrome's link status bubble and Win32 tooltips are owned
   popups, so `popup_open` thought a menu was open and turned bare keys off.

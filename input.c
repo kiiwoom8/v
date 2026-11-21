@@ -2237,6 +2237,9 @@ static BOOL alt_resolve(UINT vk, UINT scan, DWORD flags)
         }
     }
     send_alt_replay(vk, scan, flags);
+    // The hook ignores injected keys, so account for the replay here.
+    if (!flag_get(&s_paused) && !is_modifier(vk))
+        focus_key_passed(vk, mods);
     ahead_key_passed();
     s_owner[vk] = OWN_PASS;
     s_owner[VK_LMENU] = OWN_PASS;
