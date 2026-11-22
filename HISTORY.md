@@ -1472,6 +1472,11 @@ Invariants stated in `common.h` and enforced by history:
   click poses. The drawing timer also updates positions in shorter intervals.
 - Kim reported that Tailmon looked smaller when grabbed. Match the grab clip
   to the default pose's visible area and leave room for its longer silhouette.
+- Kim reported sluggish `d/u/h/j/k/l` over Tailmon and requested a higher
+  frame rate. Use an arrow over the character so pointer movement does not
+  trigger the link magnet. Resolve the wheel's search window once per press.
+  Sample animation every 8 ms on supported Windows and align nearby artwork
+  inside a clip before generating intermediate frames.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2367,6 +2372,13 @@ last ten are all `worktree-agent-*` into `element-hints`.
   than it does nothing, so a tap must still move past it.
 
 ### Settings, files, Windows integration
+
+- **Keep hover input responsive over Tailmon.** Reserve the system hand for
+  genuine link pauses and the speech bubble. A scroll press should resolve
+  the underlying window once while UI Automation gathers the cache.
+- **Generate motion between Tailmon's cels.** Align nearby features before
+  blending and keep unrelated clips separate to avoid doubled outlines. A
+  steady high-resolution clock keeps intermediate frames even.
 
 - **Keep Tailmon at its idle size when grabbed.** The longest edge makes
   dangling poses shrink because they are taller and narrower. Scale the

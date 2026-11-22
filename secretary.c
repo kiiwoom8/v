@@ -16,7 +16,12 @@
 
 #define BUBBLE_CLASS L"VimMouseSecretaryBubble"
 #define POSITION_KEY L"Software\\vim mouse\\Secretary"
-#define FRAME_MS 16
+#define FRAME_MS 8
+#define FALLBACK_FRAME_MS 16
+#define WM_SECRETARY_FRAME (WM_APP + 1)
+#define MOTION_GRID 7
+#define MAX_ATLAS_SIZE 512
+#define PIXEL_UNIT 256
 #define BUBBLE_MS 165
 #define POSES_PER_ROW 4
 #define POSES_PER_SHEET (POSES_PER_ROW * POSES_PER_ROW)
@@ -112,17 +117,21 @@ static const PoseStep grooming[] = {
 };
 
 static HWND pet, bubble;
+static HANDLE frame_timer, frame_wait;
+static LARGE_INTEGER animation_frequency;
+static volatile LONG frame_posted;
 static ULONG_PTR gdiplus;
 static Canvas sprite, speech;
 static GpImage *image;
 static GpImage *extra_images[SECRETARY_EXTRA_SHEETS];
 static BOOL extra_ready[SECRETARY_EXTRA_SHEETS];
 static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
-static DWORD *pose_pixels, *blend_source;
+static DWORD *pose_pixels;
 static POINT pose_clicks[POSE_COUNT];
 static RECT pose_bounds[POSE_COUNT], sprite_bounds;
 static int painted_pose = -1, reaction, queued_reaction;
-static int blend_from_group;
+static int blend_from_pose;
+static POINT motion[MOTION_GRID][MOTION_GRID];
 static DWORD blend_started, blend_ms, last_yawn;
 static BOOL use_atlas;
 static BYTE painted_opacity;
@@ -169,6 +178,52 @@ static struct {
 static UINT next_browser_request;
 
 static int px(int n) { return MulDiv(n, dpi, 96); }
+
+static DWORD animation_now(void)
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return (DWORD)(now.QuadPart * 1000 / animation_frequency.QuadPart);
+}
+
+static VOID CALLBACK request_frame(PVOID context, BOOLEAN timed_out)
+{
+    (void)timed_out;
+    // The timer can run ahead of painting. Keep at most one frame queued.
+    if (InterlockedExchange(&frame_posted, 1) == 0 &&
+        !PostMessageW((HWND)context, WM_SECRETARY_FRAME, 0, 0))
+        InterlockedExchange(&frame_posted, 0);
+}
+
+static void stop_frame_timer(void)
+{
+    MSG msg;
+    if (frame_wait) UnregisterWaitEx(frame_wait, INVALID_HANDLE_VALUE);
+    if (frame_timer) CloseHandle(frame_timer);
+    frame_wait = frame_timer = NULL;
+    if (pet) {
+        KillTimer(pet, 1);
+        while (PeekMessageW(&msg, pet, WM_SECRETARY_FRAME, WM_SECRETARY_FRAME, PM_REMOVE)) {}
+    }
+    InterlockedExchange(&frame_posted, 0);
+}
+
+static void start_frame_timer(void)
+{
+    LARGE_INTEGER due;
+    stop_frame_timer();
+    if (animate) {
+        due.QuadPart = -FRAME_MS * 10000;
+        frame_timer = create_high_res_timer();
+        if (frame_timer &&
+            SetWaitableTimer(frame_timer, &due, FRAME_MS, NULL, NULL, FALSE) &&
+            RegisterWaitForSingleObject(&frame_wait, frame_timer, request_frame, pet,
+                                        INFINITE, WT_EXECUTEDEFAULT))
+            return;
+        stop_frame_timer();
+    }
+    SetTimer(pet, 1, FALLBACK_FRAME_MS, NULL);
+}
 
 static int layout_height(void) { return use_atlas ? sprite.size.cx : sprite.size.cy; }
 
@@ -466,9 +521,7 @@ static BOOL draw_sprite(void)
     int size = px(144);
 
     free(pose_pixels);
-    free(blend_source);
     pose_pixels = NULL;
-    blend_source = NULL;
     blend_ms = 0;
     painted_pose = -1;
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
@@ -477,15 +530,14 @@ static BOOL draw_sprite(void)
     if (use_atlas) {
         int sheet, poses = POSES_PER_SHEET, idle_area = 0;
         size_t count;
-        size = clamp(px(164), 64, 512);
+        size = clamp(px(164), 64, MAX_ATLAS_SIZE);
         // Leave room for dangling poses below the normal square layout.
         if (!make_canvas(&sprite, size, size + size / 5)) return FALSE;
         count = (size_t)size * sprite.size.cy;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet)
             if (extra_images[sheet]) poses = (sheet + 2) * POSES_PER_SHEET;
         pose_pixels = (DWORD *)malloc((size_t)poses * count * sizeof(DWORD));
-        blend_source = (DWORD *)malloc(count * sizeof(DWORD));
-        if (!pose_pixels || !blend_source || !draw_atlas(image, w, h, 0, &idle_area)) return FALSE;
+        if (!pose_pixels || !draw_atlas(image, w, h, 0, &idle_area)) return FALSE;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet) {
             GpImage *extra = extra_images[sheet];
             extra_ready[sheet] = extra && GdipGetImageWidth(extra, &w) == Ok &&
@@ -689,7 +741,7 @@ void secretary_dismiss(void)
     if (!opened) return;
     opened = FALSE;
     armed_key = 0;
-    bubble_tick = GetTickCount();
+    bubble_tick = animation_now();
     if (!animate) ShowWindow(bubble, SW_HIDE);
 }
 
@@ -713,7 +765,7 @@ static void open_bubble(void)
     focus_item = 0;
     draw_bubble();
     opened = TRUE;
-    bubble_tick = GetTickCount();
+    bubble_tick = animation_now();
     present(bubble, &speech, bubble_at, animate ? 75 : 255);
     // It owns the keyboard only as long as it has normal window focus.
     ShowWindow(bubble, SW_SHOW);
@@ -723,7 +775,7 @@ static void open_bubble(void)
 static void react(int action)
 {
     queued_reaction = action;
-    last_activity = pulse = GetTickCount();
+    last_activity = pulse = animation_now();
     pet_motion.next = pulse + 3000;
     if (pet_motion.state == PET_NAP) {
         pet_motion.state = PET_STRETCH;
@@ -970,11 +1022,11 @@ static void start_shortcut(int slot, DWORD now)
     start_target(g_cfg.secretary_shortcuts[slot].target, now);
 }
 
-void secretary_open_claude(void) { start_target(L"claude", GetTickCount()); }
+void secretary_open_claude(void) { start_target(L"claude", animation_now()); }
 
 void secretary_browser_result(UINT request, HWND browser)
 {
-    DWORD now = GetTickCount();
+    DWORD now = animation_now();
     if (launch.lookup != 2 || request != launch.request) return;
     if (!app_window(browser, launch.exe)) {
         open_browser_url(now);
@@ -1395,54 +1447,131 @@ static int hint_pose(DWORD now)
     return ATTENTION_FIRST + (int)((now - attention_started) / 108 % 16);
 }
 
-static void paint_atlas_pose(int pose, BOOL flip, int key, DWORD now)
+// Match the silhouette and shading around a small grid of points. Moving
+// the outlines before blending keeps a flicking ear or paw from appearing twice.
+static void match_motion(const DWORD *from, const DWORD *to, int w, int h)
+{
+    int reach = clamp(w / 24, 3, 14), patch = max(2, reach / 2);
+    int gx, gy;
+    for (gy = 0; gy < MOTION_GRID; ++gy) {
+        for (gx = 0; gx < MOTION_GRID; ++gx) {
+            POINT best = {0, 0};
+            int x = gx * (w - 1) / (MOTION_GRID - 1);
+            int y = gy * (h - 1) / (MOTION_GRID - 1);
+            int best_error = INT_MAX, dx, dy;
+            if (x < reach + patch || x >= w - reach - patch ||
+                y < reach + patch || y >= h - reach - patch) {
+                motion[gy][gx] = best;
+                continue;
+            }
+            for (dy = -reach; dy <= reach; ++dy) {
+                for (dx = -reach; dx <= reach; ++dx) {
+                    int error = 12 * (abs(dx) + abs(dy)), row, col;
+                    for (row = -patch; row <= patch; row += patch) {
+                        for (col = -patch; col <= patch; col += patch) {
+                            DWORD a = from[(y + row) * w + x + col];
+                            DWORD b = to[(y + row + dy) * w + x + col + dx];
+                            error += 2 * abs((int)(a >> 24) - (int)(b >> 24)) +
+                                     abs((int)((a >> 8) & 255) - (int)((b >> 8) & 255));
+                        }
+                    }
+                    if (error < best_error) {
+                        best = (POINT){dx, dy};
+                        best_error = error;
+                    }
+                }
+            }
+            motion[gy][gx] = best;
+        }
+    }
+}
+
+static DWORD mix_pixels(DWORD a, DWORD b, DWORD weight)
+{
+    const DWORD mask = 0x00ff00ff;
+    DWORD remaining = PIXEL_UNIT - weight;
+    DWORD rb = ((a & mask) * remaining + (b & mask) * weight) >> 8;
+    DWORD ag = (((a >> 8) & mask) * remaining + ((b >> 8) & mask) * weight);
+    return (rb & mask) | (ag & ~mask);
+}
+
+static DWORD sample_pose(const DWORD *pixels, int w, int h, int x, int y)
+{
+    int col, row, next_col, next_row;
+    x = clamp(x, 0, (w - 1) * PIXEL_UNIT);
+    y = clamp(y, 0, (h - 1) * PIXEL_UNIT);
+    col = x / PIXEL_UNIT;
+    row = y / PIXEL_UNIT;
+    next_col = min(col + 1, w - 1);
+    next_row = min(row + 1, h - 1);
+    return mix_pixels(mix_pixels(pixels[row * w + col], pixels[row * w + next_col], x % PIXEL_UNIT),
+                      mix_pixels(pixels[next_row * w + col], pixels[next_row * w + next_col], x % PIXEL_UNIT),
+                      y % PIXEL_UNIT);
+}
+
+static void morph_pose(const DWORD *from, const DWORD *to, int w, int h, BOOL flip, int weight)
+{
+    int x, y, grid_x[MAX_ATLAS_SIZE];
+    for (x = 0; x < w; ++x)
+        grid_x[x] = x * (MOTION_GRID - 1) * PIXEL_UNIT / (w - 1);
+    for (y = 0; y < h; ++y) {
+        int gy = y * (MOTION_GRID - 1) * PIXEL_UNIT / (h - 1);
+        int row = min(gy / PIXEL_UNIT, MOTION_GRID - 2);
+        int fy = gy - row * PIXEL_UNIT, col;
+        int dx[MOTION_GRID], dy[MOTION_GRID];
+        for (col = 0; col < MOTION_GRID; ++col) {
+            POINT a = motion[row][col], b = motion[row + 1][col];
+            dx[col] = a.x * (PIXEL_UNIT - fy) + b.x * fy;
+            dy[col] = a.y * (PIXEL_UNIT - fy) + b.y * fy;
+        }
+        for (x = 0; x < w; ++x) {
+            int gx = grid_x[x];
+            int fx, mx, my;
+            DWORD a, b;
+            col = min(gx / PIXEL_UNIT, MOTION_GRID - 2);
+            fx = gx - col * PIXEL_UNIT;
+            mx = (dx[col] * (PIXEL_UNIT - fx) + dx[col + 1] * fx) / PIXEL_UNIT;
+            my = (dy[col] * (PIXEL_UNIT - fx) + dy[col + 1] * fx) / PIXEL_UNIT;
+            a = sample_pose(from, w, h, x * PIXEL_UNIT - mx * weight / PIXEL_UNIT,
+                             y * PIXEL_UNIT - my * weight / PIXEL_UNIT);
+            b = sample_pose(to, w, h, x * PIXEL_UNIT + mx * (PIXEL_UNIT - weight) / PIXEL_UNIT,
+                             y * PIXEL_UNIT + my * (PIXEL_UNIT - weight) / PIXEL_UNIT);
+            sprite.pixels[y * w + (flip ? w - 1 - x : x)] = mix_pixels(a, b, (DWORD)weight);
+        }
+    }
+}
+
+static void paint_atlas_pose(int pose, BOOL flip, int key, DWORD now, BOOL pinned)
 {
     int x, y, w = sprite.size.cx, h = sprite.size.cy;
     size_t count = (size_t)w * h;
     const DWORD *target = pose_pixels + count * pose;
-    DWORD weight = 256;
     if (painted_pose != key) {
-        int previous = painted_pose < 0 ? -1 : pose_group(painted_pose % POSE_COUNT) +
-                                               (painted_pose >= POSE_COUNT ? POSE_COUNT : 0);
-        int group = pose_group(pose) + (flip ? POSE_COUNT : 0);
-        if (previous < 0 || !animate) blend_ms = 0;
-        else if (previous != group || !blend_ms || now - blend_started >= blend_ms ||
-                 blend_from_group == group) {
-            // Retarget an in-flight bridge within its destination clip. A
-            // quick walk cycle would otherwise restart the bridge every cel.
-            CopyMemory(blend_source, sprite.pixels, count * sizeof(DWORD));
+        int previous = painted_pose % POSE_COUNT;
+        int group = pose_group(pose);
+        blend_ms = 0;
+        if (painted_pose >= 0 && animate && previous != pose &&
+            (painted_pose >= POSE_COUNT) == flip && pose_group(previous) == group) {
             blend_started = now;
-            blend_from_group = previous;
-            if (group != previous) blend_ms = 170;
-            else if ((pose >= WALK_FIRST && pose < WALK_FIRST + 12) ||
-                     (pose >= WALK_DETAIL_FIRST && pose < ATTENTION_FIRST)) blend_ms = 55;
-            else if (group == IDLE_DETAIL_FIRST || group == 0) blend_ms = 165;
-            else blend_ms = 100;
+            blend_from_pose = previous;
+            blend_ms = (group == WALK_FIRST || group == WALK_DETAIL_FIRST) ? 40 : 64;
+            match_motion(pose_pixels + count * previous, target, w, h);
         }
     }
     if (blend_ms && animate && now - blend_started < blend_ms) {
-        double ratio = (double)(now - blend_started) / blend_ms;
-        weight = (DWORD)(256 * ratio * ratio * (3.0 - 2.0 * ratio));
-    } else {
-        blend_ms = 0;
+        int weight = (int)((now - blend_started) * PIXEL_UNIT / blend_ms);
+        morph_pose(pose_pixels + count * blend_from_pose, target, w, h, flip, weight);
+        if ((!pinned || sprite.pixels[hint_hit.y * w + hint_hit.x] >> 24 >= 128) &&
+            measure_sprite(&click_pixel, &sprite_bounds)) return;
     }
-    if (weight == 256 && !flip) {
+    blend_ms = 0;
+    if (!flip) {
         CopyMemory(sprite.pixels, target, count * sizeof(DWORD));
     } else {
-        const DWORD mask = 0x00ff00ff;
-        DWORD remaining = 256 - weight;
-        for (y = 0; y < h; ++y) {
-            for (x = 0; x < w; ++x) {
-                int i = y * w + x;
-                DWORD b = target[y * w + (flip ? w - 1 - x : x)];
-                DWORD a = remaining ? blend_source[i] : 0;
-                DWORD rb = ((a & mask) * remaining + (b & mask) * weight) >> 8;
-                DWORD ag = (((a >> 8) & mask) * remaining + ((b >> 8) & mask) * weight);
-                sprite.pixels[i] = (rb & mask) | (ag & ~mask);
-            }
-        }
+        for (y = 0; y < h; ++y)
+            for (x = 0; x < w; ++x)
+                sprite.pixels[y * w + x] = target[y * w + w - 1 - x];
     }
-    if (blend_ms && measure_sprite(&click_pixel, &sprite_bounds)) return;
     click_pixel = pose_clicks[pose];
     sprite_bounds = pose_bounds[pose];
     if (flip) {
@@ -1454,7 +1583,7 @@ static void paint_atlas_pose(int pose, BOOL flip, int key, DWORD now)
 
 static void frame(void)
 {
-    DWORD now = GetTickCount();
+    DWORD now = animation_now();
     POINT pointer = {INT_MIN / 2, INT_MIN / 2}, at;
     BYTE opacity = 255;
     BOOL hints = hint_is_open();
@@ -1503,7 +1632,7 @@ static void frame(void)
     if (!blend_ms && painted_pose == pose_key && painted_opacity == opacity &&
         pet_at.x == at.x && pet_at.y == at.y) return;
     if (use_atlas && (painted_pose != pose_key || blend_ms))
-        paint_atlas_pose(pose, flip, pose_key, now);
+        paint_atlas_pose(pose, flip, pose_key, now, pinned);
     painted_pose = pose_key;
     painted_opacity = opacity;
     pet_at = at;
@@ -1512,7 +1641,7 @@ static void frame(void)
 
 void secretary_hint_reaction(void)
 {
-    DWORD now = GetTickCount();
+    DWORD now = animation_now();
     int leading[POSES_PER_SHEET * 2], count = 0;
     if (!pet || hint_is_open()) return;
     hint_sleeping = pet_motion.state == PET_NAP;
@@ -1549,7 +1678,7 @@ void secretary_hint_reaction(void)
 
 BOOL secretary_farewell(void)
 {
-    DWORD now = GetTickCount();
+    DWORD now = animation_now();
     if (!pet || !animate || !use_atlas || !g_cfg.secretary_react || input_is_locked() || pet_motion.state == PET_NAP)
         return FALSE;
     if (saying_goodbye) return TRUE;
@@ -1573,9 +1702,11 @@ BOOL secretary_farewell(void)
 
 static void update_animation(void)
 {
+    BOOL previous = animate;
     animate = g_cfg.secretary_animate != 0;
     if (g_cfg.secretary_animate < 0)
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animate, 0);
+    if (pet && animate != previous) start_frame_timer();
 }
 
 static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -1594,7 +1725,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
                 focus_item = (focus_item + count + offset) % count;
                 armed_key = 0;
                 draw_bubble();
-                render_bubble(GetTickCount());
+                render_bubble(animation_now());
                 return 0;
             }
             if (!(lp & (1L << 30)) && !secretary_modifiers_down()) armed_key = (int)wp;
@@ -1642,7 +1773,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             message_pos = GetMessagePos();
             press = (POINT){GET_X_LPARAM(message_pos), GET_Y_LPARAM(message_pos)};
             pressed = TRUE;
-            last_activity = press_started = GetTickCount();
+            last_activity = press_started = animation_now();
             press_at = pet_at;
             SetCapture(pet);
             return 0;
@@ -1657,6 +1788,10 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             message_pos = GetMessagePos();
             PostMessageW(g_main_wnd, WM_APP_SECRETARY_MENU,
                          GET_X_LPARAM(message_pos), GET_Y_LPARAM(message_pos));
+            return 0;
+        case WM_SECRETARY_FRAME:
+            InterlockedExchange(&frame_posted, 0);
+            frame();
             return 0;
         case WM_TIMER:
             frame();
@@ -1700,15 +1835,14 @@ void secretary_shutdown(void)
     pending_slot = -1;
     launch.exe = NULL;
     uia_cancel_browser_tab();
+    stop_frame_timer();
     if (pet) DestroyWindow(pet);
     if (bubble) DestroyWindow(bubble);
     pet = bubble = NULL;
     free_canvas(&speech);
     free_canvas(&sprite);
     free(pose_pixels);
-    free(blend_source);
     pose_pixels = NULL;
-    blend_source = NULL;
     if (image) GdipDisposeImage(image);
     image = NULL;
     for (extra = 0; extra < SECRETARY_EXTRA_SHEETS; ++extra) {
@@ -1780,7 +1914,7 @@ void secretary_config_changed(void)
     bubble = CreateWindowExW(styles, BUBBLE_CLASS, L"Secretary shortcuts", WS_POPUP,
                              0, 0, 0, 0, NULL, NULL, g_hinst, NULL);
     if (!pet || !bubble) goto fail;
-    born = GetTickCount();
+    born = animation_now();
     last_activity = born;
     reaction = queued_reaction = REACT_NONE;
     command_pose = queued_command = 0;
@@ -1792,7 +1926,7 @@ void secretary_config_changed(void)
     last_hint = born - 400;
     frame();
     ShowWindow(pet, SW_SHOWNOACTIVATE);
-    SetTimer(pet, 1, FRAME_MS, NULL);
+    start_frame_timer();
     return;
 fail:
     secretary_shutdown();
@@ -1806,9 +1940,12 @@ void secretary_init(void)
     CopyMemory(&process_path, &fn, sizeof(process_path));
     cls.hInstance = g_hinst;
     cls.lpfnWndProc = secretary_proc;
-    cls.hCursor = LoadCursorW(NULL, IDC_HAND);
+    QueryPerformanceFrequency(&animation_frequency);
+    // The system hand cursor is Vim's signal to pause on links.
+    cls.hCursor = LoadCursorW(NULL, IDC_ARROW);
     cls.lpszClassName = SECRETARY_PET_CLASS;
     if (!RegisterClassW(&cls)) return;
+    cls.hCursor = LoadCursorW(NULL, IDC_HAND);
     cls.lpszClassName = BUBBLE_CLASS;
     if (!RegisterClassW(&cls)) return;
     secretary_config_changed();

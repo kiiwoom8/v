@@ -500,8 +500,9 @@ it to the next monitor. On a single monitor that button opens Vim's click
 hints. The character reacts to Vim commands such as scrolling, clicks,
 hints, and mode changes. The latest command can follow a playing reaction.
 Held keys repeat the relevant cycle at its end. Hints hold the character's
-position while its pose keeps moving. Scrolling goes to the window behind the
-character when the pointer is over it. The character follows upward and
+position while its pose keeps moving. Vim's pointer movement passes over the
+character without the link magnet pausing. Scrolling goes to the window behind
+the character when the pointer is over it. The character follows upward and
 downward scrolls with different movements and sleeps through Vim activity.
 It waves briefly when you quit Vim from the tray or the quit hotkey.
 
@@ -516,7 +517,8 @@ directly. A JPEG can use a flat white background.
 `sprite_sheet` loads an animated character from a transparent PNG with four
 equal columns and four equal rows. Draw each pose at the same scale and origin
 within its cell. Vim scales each clip to a common footprint, aligns grounded
-poses, and blends the drawings as the pose changes. Put idle poses (neutral,
+poses, and generates intermediate frames by aligning nearby artwork within a
+clip. On supported Windows versions, animation can update every 8 ms. Put idle poses (neutral,
 breathe, blink, tail flick) in row 1,
 bored poses (droop, start yawn, yawn, recover) in row 2, dangling grab poses in
 row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When

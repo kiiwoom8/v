@@ -628,9 +628,14 @@ static void click_button(int button)
 static void post_wheel_to(HWND hwnd, POINT pt, UINT message, WPARAM keys_and_delta)
 {
     typedef BOOL (WINAPI *ToLogicalFn)(HWND, LPPOINT);
-    ToLogicalFn to_logical = (ToLogicalFn)(void *)GetProcAddress(
-        GetModuleHandleW(L"user32.dll"), "PhysicalToLogicalPointForPerMonitorDPI");
-
+    // One lookup per dispatch thread, including on older Windows without the API.
+    static __thread BOOL resolved;
+    static __thread ToLogicalFn to_logical;
+    if (!resolved) {
+        to_logical = (ToLogicalFn)(void *)GetProcAddress(
+            GetModuleHandleW(L"user32.dll"), "PhysicalToLogicalPointForPerMonitorDPI");
+        resolved = TRUE;
+    }
     if (to_logical) to_logical(hwnd, &pt);
     PostMessageW(hwnd, message, keys_and_delta, MAKELPARAM((WORD)(SHORT)pt.x, (WORD)(SHORT)pt.y));
 }
@@ -3319,7 +3324,7 @@ static double scroll_speed_for(double elapsed_ms, double base, double maximum,
 typedef HANDLE (WINAPI *CreateWaitableTimerExWFn)(LPSECURITY_ATTRIBUTES,
                                                   LPCWSTR, DWORD, DWORD);
 
-static HANDLE create_move_timer(void)
+HANDLE create_high_res_timer(void)
 {
     CreateWaitableTimerExWFn create;
 
@@ -3605,6 +3610,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
     // sent to the pointer while asking.
     BOOL aim_asking = FALSE;
     POINT aim_pt = { 0, 0 };
+    HWND aim_root = NULL;
     BOOL aim_vertical = TRUE;
     DWORD aim_start_us = 0;
     double scrOwed[6] = { 0 };
@@ -3638,7 +3644,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
     // Sleep(1) takes ~6 ms even with timeBeginPeriod(1). Keep the old timer
     // resolution trick only as a fallback, and only while the movement loop
     // is actually running so the system-wide 1 ms tick is not held while idle.
-    timer = create_move_timer();
+    timer = create_high_res_timer();
 
     for (;;) {
         if (flag_get(&s_move_exit))
@@ -3708,7 +3714,8 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
                 seen_gen = gen;
                 target_ok = FALSE;
-                aim_asking = GetCursorPos(&aim_pt) != 0;
+                aim_root = GetCursorPos(&aim_pt) ? uia_scroll_root(aim_pt) : NULL;
+                aim_asking = aim_root != NULL;
                 aim_vertical = !(bits & (SCR_LEFT | SCR_RIGHT));
                 QueryPerformanceCounter(&now);
                 aim_start_us = qpc_us_from(now, freq);
@@ -3723,7 +3730,7 @@ static DWORD WINAPI movement_thread(LPVOID param)
 
                 QueryPerformanceCounter(&now);
                 since_ms = (DWORD)(qpc_us_from(now, freq) - aim_start_us) / 1000;
-                answer = uia_scroll_aim(aim_pt, aim_vertical, since_ms, &target);
+                answer = uia_scroll_aim(aim_root, aim_pt, aim_vertical, since_ms, &target);
                 if (answer == SCROLL_AIM_ASKING &&
                     since_ms >= AUTO_TARGET_TIMEOUT_MS)
                     answer = SCROLL_AIM_POINTER;

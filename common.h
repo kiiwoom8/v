@@ -392,6 +392,7 @@ void           shortcut_entries_free(ShortcutEntry *entries, int count);
 
 BOOL input_start(void);                 // FALSE if the keyboard hook could not be installed
 void input_stop(void);
+HANDLE create_high_res_timer(void);     // NULL on versions of Windows without it
 void input_set_paused(BOOL paused);     // paused: every key passes through except quit/pause hotkeys
 BOOL input_is_paused(void);
 // Keyboard lock: every key is swallowed except the lock hotkey, which unlocks.
@@ -528,7 +529,8 @@ void uia_forget_slow(void);
 // thread). uia_stop stops it too.
 enum { SCROLL_AIM_POINTER = 0, SCROLL_AIM_TARGET = 1, SCROLL_AIM_ASKING = -1 };
 HWND uia_scroll_window(POINT pt, BOOL *over_pet);
-int  uia_scroll_aim(POINT pt, BOOL vertical, DWORD since_ms, POINT *target);
+HWND uia_scroll_root(POINT pt);        // resolve the window once at the press
+int  uia_scroll_aim(HWND root, POINT pt, BOOL vertical, DWORD since_ms, POINT *target);
 void uia_scroll_prefetch(POINT pt);     // start caching that window, never waits
 void uia_scroll_stop(void);
 // g g (top) and Shift + g (bottom) through UI Automation: scrolls the area at

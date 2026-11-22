@@ -5772,7 +5772,6 @@ static BOOL scroll_engine_init(IUIAutomation **automation,
     return FALSE;
 }
 
-static HWND scroll_root_for(POINT pt);
 
 static DWORD WINAPI scroll_worker(void *arg)
 {
@@ -5820,9 +5819,9 @@ static DWORD WINAPI scroll_worker(void *arg)
                 break;
             if (!GetCursorPos(&pt))
                 continue;
-            // scroll_root_for makes no UI Automation calls, so it is fine on
+            // uia_scroll_root makes no UI Automation calls, so it is fine on
             // this thread, but everything shared stays under the lock.
-            warm_root = scroll_root_for(pt);
+            warm_root = uia_scroll_root(pt);
             if (!warm_root)
                 continue;
             now = GetTickCount();
@@ -5994,7 +5993,7 @@ HWND uia_scroll_window(POINT pt, BOOL *over_pet)
 
 // The window to search: the one under the pointer, or the foreground window
 // when the pointer is over the desktop, the taskbar or one of ours.
-static HWND scroll_root_for(POINT pt)
+HWND uia_scroll_root(POINT pt)
 {
     HWND hwnd = uia_scroll_window(pt, NULL);
     HWND root = hwnd ? GetAncestor(hwnd, GA_ROOT) : NULL;
@@ -6023,15 +6022,13 @@ static HWND scroll_root_for(POINT pt)
 // felt late, and h/j/k/l held at the same time stopped. Now it never waits.
 // The stream scrolls under the pointer meanwhile and asks again every tick;
 // the caller gives up on a search after its own time limit.
-int uia_scroll_aim(POINT pt, BOOL vertical, DWORD since_ms, POINT *target)
+int uia_scroll_aim(HWND root, POINT pt, BOOL vertical, DWORD since_ms, POINT *target)
 {
-    HWND root;
     ScrollCache *e;
     DWORD now;
     int answer;
 
-    root = scroll_root_for(pt);
-    if (!root)
+    if (!IsWindow(root))
         return SCROLL_AIM_POINTER;
     if (!scroll_worker_start_nonblocking()) {
         // Still starting: ask again. Failed for good: no list, ever.
@@ -6089,7 +6086,7 @@ void uia_scroll_prefetch(POINT pt)
     ScrollCache *e;
     DWORD now;
 
-    root = scroll_root_for(pt);
+    root = uia_scroll_root(pt);
     if (!root)
         return;
     if (!scroll_worker_start_nonblocking())
