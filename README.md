@@ -483,6 +483,12 @@ may ask to save it, which holds the shutdown up until someone answers. Set
 
 ## Desktop secretary
 
+`vim.exe` includes Tailmon's eight animation sheets. A fresh settings file
+enables Tailmon and its animation and assigns Claude to slot 1. For an existing settings file,
+set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and
+any extra sheet paths blank to use all the bundled poses. Add personal links
+to numbered slots in your own settings file.
+
 The secretary remembers where you drop it. With a movement sheet, it wanders
 between resting spots at different speeds and settles when you reach for it. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
@@ -511,8 +517,8 @@ explanation, translation, or editing. It copies the result and opens Claude.
 Paste and send the prompt in Claude whenever you are ready.
 
 Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
-Use a local image path or a path relative to the INI. PNG transparency works
-directly. A JPEG can use a flat white background.
+To supply custom art, use an absolute path or a path relative to the INI.
+PNG transparency works directly. A JPEG can use a flat white background.
 
 `sprite_sheet` loads an animated character from a transparent PNG with four
 equal columns and four equal rows. Draw each pose at the same scale and origin

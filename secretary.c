@@ -2,6 +2,7 @@
 #include "common.h"
 #include <objbase.h> // COM property types for the MinGW-w64 GDI+ headers
 #include <gdiplus.h>
+#include <ole2.h>
 #include <shellapi.h>
 #include <windowsx.h>
 #include <limits.h>
@@ -141,6 +142,18 @@ static ULONG_PTR gdiplus;
 static Canvas sprite, speech;
 static GpImage *image;
 static GpImage *extra_images[SECRETARY_EXTRA_SHEETS];
+// GDI+ can read from the stream until its image is disposed.
+static IStream *image_stream;
+static IStream *extra_streams[SECRETARY_EXTRA_SHEETS];
+static const WCHAR *const tailmon_sheets[SECRETARY_EXTRA_SHEETS] = {
+    [SECRETARY_MOVEMENT] = L"TAILMON_MOVEMENT",
+    [SECRETARY_REST] = L"TAILMON_REST",
+    [SECRETARY_REACTIONS] = L"TAILMON_REACTIONS",
+    [SECRETARY_WALK_DETAIL] = L"TAILMON_WALK",
+    [SECRETARY_ATTENTION] = L"TAILMON_ATTENTION",
+    [SECRETARY_IDLE_DETAIL] = L"TAILMON_IDLE",
+    [SECRETARY_INTERACTION_DETAIL] = L"TAILMON_INTERACTION"
+};
 static BOOL extra_ready[SECRETARY_EXTRA_SHEETS];
 static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
 static DWORD *pose_pixels;
@@ -1985,9 +1998,13 @@ void secretary_shutdown(void)
     pose_pixels = NULL;
     if (image) GdipDisposeImage(image);
     image = NULL;
+    if (image_stream) image_stream->lpVtbl->Release(image_stream);
+    image_stream = NULL;
     for (extra = 0; extra < SECRETARY_EXTRA_SHEETS; ++extra) {
         if (extra_images[extra]) GdipDisposeImage(extra_images[extra]);
         extra_images[extra] = NULL;
+        if (extra_streams[extra]) extra_streams[extra]->lpVtbl->Release(extra_streams[extra]);
+        extra_streams[extra] = NULL;
         extra_ready[extra] = FALSE;
     }
     if (gdiplus) GdiplusShutdown(gdiplus);
@@ -2004,20 +2021,43 @@ static void resolve_art_path(WCHAR *path, const WCHAR *art)
     path[APP_PATH_MAX - 1] = 0;
 }
 
+static BOOL load_tailmon_sheet(const WCHAR *name, GpImage **sheet, IStream **backing)
+{
+    HRSRC resource = FindResourceW(g_hinst, name, RT_RCDATA);
+    const void *bytes = resource ? LockResource(LoadResource(g_hinst, resource)) : NULL;
+    IStream *stream;
+    LARGE_INTEGER start = {0};
+    DWORD size;
+    ULONG written;
+
+    if (!bytes) return FALSE;
+    size = SizeofResource(g_hinst, resource);
+    if (FAILED(CreateStreamOnHGlobal(NULL, TRUE, &stream))) return FALSE;
+    if (FAILED(stream->lpVtbl->Write(stream, bytes, size, &written)) || written != size ||
+        FAILED(stream->lpVtbl->Seek(stream, start, STREAM_SEEK_SET, NULL)) ||
+        GdipLoadImageFromStream(stream, sheet) != Ok) {
+        stream->lpVtbl->Release(stream);
+        return FALSE;
+    }
+    *backing = stream;
+    return TRUE;
+}
+
 void secretary_config_changed(void)
 {
-    BOOL atlas = g_cfg.secretary_sprite_sheet[0] != 0;
-    const WCHAR *art = atlas ? g_cfg.secretary_sprite_sheet : g_cfg.secretary_image;
-    WCHAR path[APP_PATH_MAX];
+    const WCHAR *art = g_cfg.secretary_sprite_sheet[0] ? g_cfg.secretary_sprite_sheet : g_cfg.secretary_image;
+    BOOL tailmon = !*art;
+    BOOL atlas = tailmon || g_cfg.secretary_sprite_sheet[0] != 0;
+    WCHAR path[APP_PATH_MAX] = L"";
     GdiplusStartupInput input = {1, NULL, FALSE, TRUE};
     DWORD styles = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
     int extra;
 
-    if (!g_cfg.secretary_enabled || !*art) {
+    if (!g_cfg.secretary_enabled) {
         secretary_shutdown();
         return;
     }
-    resolve_art_path(path, art);
+    if (!tailmon) resolve_art_path(path, art);
     pending_slot = -1;
     secretary_dismiss();
     update_animation();
@@ -2026,14 +2066,22 @@ void secretary_config_changed(void)
     secretary_shutdown();
     use_atlas = atlas;
     if (GdiplusStartup(&gdiplus, &input, NULL) != Ok) goto fail;
-    if (GdipLoadImageFromFile(path, &image) != Ok) goto fail;
+    if (tailmon) {
+        if (!load_tailmon_sheet(L"TAILMON_POSES", &image, &image_stream)) goto fail;
+    } else if (GdipLoadImageFromFile(path, &image) != Ok) {
+        goto fail;
+    }
     lstrcpynW(image_path, path, APP_PATH_MAX);
     CopyMemory(extra_settings, g_cfg.secretary_extra, sizeof(extra_settings));
     for (extra = 0; atlas && extra < SECRETARY_EXTRA_SHEETS; ++extra) {
-        if (!extra_settings[extra][0]) continue;
-        resolve_art_path(path, extra_settings[extra]);
-        if (GdipLoadImageFromFile(path, &extra_images[extra]) != Ok)
-            app_log(L"secretary: could not read animation sheet %ls", path);
+        if (extra_settings[extra][0]) {
+            resolve_art_path(path, extra_settings[extra]);
+            if (GdipLoadImageFromFile(path, &extra_images[extra]) != Ok)
+                app_log(L"secretary: could not read animation sheet %ls", path);
+        } else if (tailmon && tailmon_sheets[extra]) {
+            if (!load_tailmon_sheet(tailmon_sheets[extra], &extra_images[extra], &extra_streams[extra]))
+                app_log(L"secretary: could not read bundled animation sheet %ls", tailmon_sheets[extra]);
+        }
     }
     if (!positioned) {
         DWORD bytes = sizeof(anchor);

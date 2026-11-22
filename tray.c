@@ -1038,6 +1038,7 @@ static void build_help_rows(void)
         help_add_row(L"1-9 / Esc", L"Open a full-screen shortcut / close the bubble");
         help_add_row(L"Tab / Shift+Tab", L"Move between bubble actions and use Enter to select");
         help_add_row(L"Right-click", L"Open this same Vim tray menu");
+        help_add_row(L"[secretary] enabled", L"Set to 0 in the settings file to hide the secretary");
     }
 
     // The grid opens with hint_mode = grid or the grid key.

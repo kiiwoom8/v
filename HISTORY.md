@@ -1483,6 +1483,10 @@ Invariants stated in `common.h` and enforced by history:
   transparent to Win32 hit testing while the mouse hook is available.
   Route button presses against the displayed alpha mask and keep the
   matching release with the press, including a hint click with cursor return.
+- Ship the Galaxy Book's eight active Tailmon sheets as executable resources
+  so the rolling release and in-app update carry the animation. Fresh settings
+  enable Tailmon with the portable Claude shortcut. Existing settings retain
+  their enable flag and artwork paths. Restore personal shortcuts separately.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2378,6 +2382,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   than it does nothing, so a tap must still move past it.
 
 ### Settings, files, Windows integration
+
+- **Verify the released executable from a fresh settings file.** Tailmon's
+  pose sheets previously lived only beside the Galaxy Book's local settings.
+  Keep distributable artwork in the build and check it with the published
+  executable. Test private shortcuts separately from public defaults.
 
 - **Keep hover input responsive over Tailmon.** Reserve the system hand for
   genuine link pauses and the speech bubble. A scroll press should resolve

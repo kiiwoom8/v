@@ -155,13 +155,13 @@ typedef struct {
     int    shutdown_force;     // 1 = a scheduled shutdown closes apps even with unsaved work;
                                // default 0 (only hung apps; others may hold it up)
 
-    // [secretary] opt-in desktop image and numbered full-screen shortcuts.
+    // [secretary] desktop secretary and numbered shortcuts. On in new INIs.
     int secretary_enabled;
     int secretary_animate;    // -1 = follow Windows animation effects, 0 = off, 1 = on
     int secretary_roam;       // walk between resting places when idle
     int secretary_react;      // play reactions when Vim runs a command
     WCHAR secretary_image[MAX_PATH];
-    WCHAR secretary_sprite_sheet[MAX_PATH]; // optional 4x4 transparent animation atlas
+    WCHAR secretary_sprite_sheet[MAX_PATH]; // custom 4x4 atlas, empty with image for bundled Tailmon
     WCHAR secretary_extra[SECRETARY_EXTRA_SHEETS][MAX_PATH];
     SecretaryShortcut secretary_shortcuts[SECRETARY_SLOTS];
 

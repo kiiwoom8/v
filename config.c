@@ -1697,9 +1697,10 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"shutdown_force = %d\r\n", d.shutdown_force ? 1 : 0);
 
     appendf(buf, cch, L"\r\n[secretary]\r\n"
-            L"; Set enabled to 1 and choose a local PNG or JPEG to show a desktop secretary.\r\n"
+            L"; Set enabled to 0 to hide the desktop secretary.\r\n"
+            L"; Leave image and sprite_sheet blank to use the bundled Tailmon animation.\r\n"
             L"; Relative image paths are read from the settings file's folder.\r\n"
-            L"enabled = 0\r\nimage =\r\nanimate = system\r\n"
+            L"enabled = 1\r\nimage =\r\nanimate = 1\r\n"
             L"; Optional transparent 4x4 PNG atlas. Rows: idle, bored, grabbed, clicked.\r\n"
             L"sprite_sheet =\r\n"
             L"; Additional 4x4 PNG sheets for walking, resting, and reacting to Vim.\r\n"
@@ -1708,7 +1709,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
             L"idle_detail_sheet =\r\ninteraction_detail_sheet =\r\n"
             L"roam = 1\r\nreact = 1\r\n"
             L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
-            L"; 1 = Claude | claude\r\n"
+            L"1 = Claude | claude\r\n"
             L"; 2 = Wiki | https://example.org/wiki\r\n");
     appendf(buf, cch, L"\r\n[mouse]\r\n");
     appendf(buf, cch, L"; Movement speeds in pixels per second. speed is where movement starts\r\n");
@@ -2442,6 +2443,10 @@ BOOL config_load(Config *c, BOOL *created)
     case READ_NOT_FOUND:
         if (created != NULL)
             *created = TRUE;
+        c->secretary_enabled = 1;
+        c->secretary_animate = 1;
+        wcscpy(c->secretary_shortcuts[0].label, L"Claude");
+        wcscpy(c->secretary_shortcuts[0].target, L"claude");
         write_default_file(path);
         sc_commit();
         return TRUE;

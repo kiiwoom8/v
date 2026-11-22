@@ -57,7 +57,7 @@ jobs:
           body: |
             Built from ${{ github.sha }}.
 
-            Download [vim.exe](https://github.com/${{ github.repository }}/releases/latest/download/vim.exe) and run it, or get `vim-mouse.zip` (exe, `build.bat`, README).
+            Download [vim.exe](https://github.com/${{ github.repository }}/releases/latest/download/vim.exe) and run it, or get `vim-mouse.zip` (exe, `build.bat`, README). The executable contains Tailmon's animation sheets.
           prerelease: false
           make_latest: true
           files: |

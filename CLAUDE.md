@@ -31,3 +31,5 @@ Rules that past bugs keep coming back to:
 Always push finished work to `master` (the default branch; there is no
 `main`). Every push to `master` rebuilds `vim.exe` and republishes the
 rolling `latest` release (`release.yml`), so build-check before pushing.
+After changes to bundled secretary assets or defaults, verify the released
+executable with a fresh settings file and no external artwork.

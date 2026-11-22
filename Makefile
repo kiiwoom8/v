@@ -5,6 +5,8 @@ LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lo
 SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c touchpad.c zoom.c secretary.c secretary_editor.c secretary_prompt.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
+TAILMON_SHEETS = $(addprefix assets/tailmon/,poses.png movement.png rest.png reactions.png \
+	walk.png attention.png idle.png interaction.png)
 TARGET = vim.exe
 
 all: $(TARGET)
@@ -18,7 +20,7 @@ $(TARGET): $(OBJS) $(RESOBJ)
 hint.o: labelbox.h
 tray.o update.o: version.h
 
-vim.res.o: vim.rc vim.manifest vim.ico version.h
+vim.res.o: vim.rc vim.manifest vim.ico version.h $(TAILMON_SHEETS)
 	$(WINDRES) -I. -O coff -i vim.rc -o $@
 
 # The UIAccess build: the same program with uiAccess="true" in its manifest,
@@ -31,7 +33,7 @@ uiaccess: vim-uiaccess.exe
 vim-uiaccess.exe: $(OBJS) vim.res.uiaccess.o
 	$(CC) $(CFLAGS) -o $@ $(OBJS) vim.res.uiaccess.o $(LDFLAGS)
 
-vim.res.uiaccess.o: vim.rc vim.uiaccess.manifest vim.ico version.h
+vim.res.uiaccess.o: vim.rc vim.uiaccess.manifest vim.ico version.h $(TAILMON_SHEETS)
 	$(WINDRES) -I. -DUIACCESS -O coff -i vim.rc -o $@
 
 # Regenerates the committed vim.ico. CI builds on Linux and uses the file as is.
