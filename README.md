@@ -522,9 +522,10 @@ PNG transparency works directly. A JPEG can use a flat white background.
 
 `sprite_sheet` loads an animated character from a transparent PNG with four
 equal columns and four equal rows. Draw each pose at the same scale and origin
-within its cell. Vim scales each clip to a common footprint, aligns grounded
-poses, and generates intermediate frames by aligning nearby artwork within a
-clip. On supported Windows versions, animation can update every 8 ms. Put idle poses (neutral,
+within its cell. Vim gives grounded poses a common floor and interpolates within
+and between clips. Tailmon turns into and out of its walk and keeps its body
+scale as it curls up, wakes, or gets picked up. On supported Windows versions,
+the animation timer runs every 8 ms. Put idle poses (neutral,
 breathe, blink, tail flick) in row 1,
 bored poses (droop, start yawn, yawn, recover) in row 2, dangling grab poses in
 row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When

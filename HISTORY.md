@@ -1487,6 +1487,12 @@ Invariants stated in `common.h` and enforced by history:
   so the rolling release and in-app update carry the animation. Fresh settings
   enable Tailmon with the portable Claude shortcut. Existing settings retain
   their enable flag and artwork paths. Restore personal shortcuts separately.
+- Kim reported jumps between animations and mismatched size, especially when
+  sleeping. Use the currently displayed frame for interrupted transitions. Match
+  motion in both directions with face anchors for the original Tailmon sheets.
+  Turn into the walk, settle back from either direction, and give the wake and
+  landing their own recovery poses. Align the body to the floor and preserve its
+  scale through the crouch, curl, and stretch.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2391,9 +2397,14 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Keep hover input responsive over Tailmon.** Reserve the system hand for
   genuine link pauses and the speech bubble. A scroll press should resolve
   the underlying window once while UI Automation gathers the cache.
-- **Generate motion between Tailmon's cels.** Align nearby features before
-  blending and keep unrelated clips separate to avoid doubled outlines. A
-  steady high-resolution clock keeps intermediate frames even.
+- **Check Tailmon in motion across clips.** Replaying clips alone missed
+  visible cuts from idle to walking, sleep to stretch, and grab to landing.
+  Check both walking directions, interruptions, and click hints through the
+  handoffs. Follow the visible pose when an animation is interrupted.
+
+- **Match body scale across poses.** Compare the grounded body and floor in
+  standing, crouching and sleeping cels. Scaling every clip to the longest
+  silhouette edge made the curled cat grow as soon as it reached the sleep loop.
 
 - **Keep Tailmon at its idle size when grabbed.** The longest edge makes
   dangling poses shrink because they are taller and narrower. Scale the
