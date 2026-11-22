@@ -2,11 +2,11 @@ CC = gcc
 WINDRES ?= windres
 CFLAGS = -Wall -Wextra -O2 -std=gnu11
 LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lole32 -loleaut32 -luuid -lcomdlg32 -lwininet -lgdiplus
-SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c touchpad.c zoom.c secretary.c secretary_editor.c secretary_prompt.c
+SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c touchpad.c zoom.c secretary.c secretary_motion.c secretary_editor.c secretary_prompt.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
-TAILMON_SHEETS = $(addprefix assets/tailmon/,poses.png movement.png rest.png reactions.png \
-	walk.png attention.png idle.png interaction.png)
+TAILMON_ASSETS = $(addprefix assets/tailmon/,poses.png movement.png rest.png reactions.png \
+	walk.png attention.png idle.png interaction.png motion.bin)
 TARGET = vim.exe
 
 all: $(TARGET)
@@ -19,8 +19,9 @@ $(TARGET): $(OBJS) $(RESOBJ)
 
 hint.o: labelbox.h
 tray.o update.o: version.h
+secretary.o secretary_motion.o: secretary_motion.h
 
-vim.res.o: vim.rc vim.manifest vim.ico version.h $(TAILMON_SHEETS)
+vim.res.o: vim.rc vim.manifest vim.ico version.h $(TAILMON_ASSETS)
 	$(WINDRES) -I. -O coff -i vim.rc -o $@
 
 # The UIAccess build: the same program with uiAccess="true" in its manifest,
@@ -33,7 +34,7 @@ uiaccess: vim-uiaccess.exe
 vim-uiaccess.exe: $(OBJS) vim.res.uiaccess.o
 	$(CC) $(CFLAGS) -o $@ $(OBJS) vim.res.uiaccess.o $(LDFLAGS)
 
-vim.res.uiaccess.o: vim.rc vim.uiaccess.manifest vim.ico version.h $(TAILMON_SHEETS)
+vim.res.uiaccess.o: vim.rc vim.uiaccess.manifest vim.ico version.h $(TAILMON_ASSETS)
 	$(WINDRES) -I. -DUIACCESS -O coff -i vim.rc -o $@
 
 # Regenerates the committed vim.ico. CI builds on Linux and uses the file as is.
@@ -100,6 +101,15 @@ keyprobe: tools/key_probe.exe
 tools/key_probe.exe: tools/key_probe.c
 	$(CC) $(CFLAGS) -o $@ tools/key_probe.c -luser32
 
+# Export the normalized Tailmon cels for tools/bake_tailmon_motion.py.
+tailmon-export: tools/tailmon_pose_export.exe
+
+tools/tailmon_export_main.o: main.c common.h
+	$(CC) $(CFLAGS) -Dmain=vim_main -c -o $@ $<
+
+tools/tailmon_pose_export.exe: tools/tailmon_pose_export.c secretary.c secretary_motion.h tools/tailmon_export_main.o $(filter-out main.o secretary.o,$(OBJS)) $(RESOBJ)
+	$(CC) $(CFLAGS) -o $@ $(filter-out secretary.c secretary_motion.h,$^) $(LDFLAGS) -mconsole
+
 clean:
 	-@del /Q $(TARGET) 2>nul || true
 	-@del /Q *.o 2>nul || true
@@ -114,5 +124,6 @@ clean:
 	-@del /Q tools\shutdown_test.exe 2>nul || true
 	-@del /Q tools\zoom_probe.exe 2>nul || true
 	-@del /Q tools\key_probe.exe 2>nul || true
+	-@del /Q tools\tailmon_pose_export.exe tools\tailmon_export_main.o 2>nul || true
 
-.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe lateprobe zoomprobe keyprobe uiaccess
+.PHONY: all clean probe check icon shutdown-test flushprobe loadprobe lateprobe zoomprobe keyprobe uiaccess tailmon-export

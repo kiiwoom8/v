@@ -483,7 +483,8 @@ may ask to save it, which holds the shutdown up until someone answers. Set
 
 ## Desktop secretary
 
-`vim.exe` includes Tailmon's eight animation sheets. A fresh settings file
+`vim.exe` includes Tailmon's eight animation sheets and its prepared in-between
+frames. A fresh settings file
 enables Tailmon and its animation and assigns Claude to slot 1. For an existing settings file,
 set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and
 any extra sheet paths blank to use all the bundled poses. Add personal links
@@ -522,10 +523,10 @@ PNG transparency works directly. A JPEG can use a flat white background.
 
 `sprite_sheet` loads an animated character from a transparent PNG with four
 equal columns and four equal rows. Draw each pose at the same scale and origin
-within its cell. Vim gives grounded poses a common floor and interpolates within
-and between clips. Tailmon turns into and out of its walk and keeps its body
-scale as it curls up, wakes, or gets picked up. On supported Windows versions,
-the animation timer runs every 8 ms. Put idle poses (neutral,
+within its cell. Vim gives grounded poses a common floor. Tailmon plays prepared
+drawings during and between clips, on the same canvas as its key poses. Custom
+artwork uses a short blend at pose changes. On supported Windows versions the
+animation timer runs every 8 ms. Put idle poses (neutral,
 breathe, blink, tail flick) in row 1,
 bored poses (droop, start yawn, yawn, recover) in row 2, dangling grab poses in
 row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When

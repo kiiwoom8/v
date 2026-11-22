@@ -37,6 +37,11 @@ jobs:
         run: |
           make CC=i686-w64-mingw32-gcc WINDRES=i686-w64-mingw32-windres
           test -f vim.exe
+          # Installed builds cap tray updates at 32 MiB.
+          if (( $(stat -c %s vim.exe) > 32 * 1024 * 1024 )); then
+            echo "vim.exe exceeds the installed updater's 32 MiB limit" >&2
+            exit 1
+          fi
 
       - name: Package
         run: zip vim-mouse.zip vim.exe build.bat README.md

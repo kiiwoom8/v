@@ -12,6 +12,7 @@ TAILMON_WALK RCDATA "assets/tailmon/walk.png"
 TAILMON_ATTENTION RCDATA "assets/tailmon/attention.png"
 TAILMON_IDLE RCDATA "assets/tailmon/idle.png"
 TAILMON_INTERACTION RCDATA "assets/tailmon/interaction.png"
+TAILMON_MOTION RCDATA "assets/tailmon/motion.bin"
 
 // Embedded process manifest. 24 is RT_MANIFEST. The UIAccess build
 // (make uiaccess, windres -DUIACCESS) embeds vim.uiaccess.manifest instead.

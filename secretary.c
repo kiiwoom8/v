@@ -1,5 +1,6 @@
 // A layered desktop secretary that passes wheel input to the window underneath.
 #include "common.h"
+#include "secretary_motion.h"
 #include <objbase.h> // COM property types for the MinGW-w64 GDI+ headers
 #include <gdiplus.h>
 #include <ole2.h>
@@ -21,8 +22,6 @@
 #define FALLBACK_FRAME_MS 16
 #define WM_SECRETARY_FRAME (WM_APP + 1)
 #define WM_SECRETARY_BUTTON (WM_APP + 2)
-#define MOTION_GRID 11
-#define MOTION_CACHE 48
 #define MAX_ATLAS_SIZE 512
 #define PIXEL_UNIT 256
 #define BUBBLE_MS 165
@@ -56,10 +55,6 @@ typedef struct {
 typedef struct {
     int pose, duration;
 } PoseCue;
-
-typedef struct {
-    POINT forward[MOTION_GRID][MOTION_GRID], backward[MOTION_GRID][MOTION_GRID];
-} PoseMotion;
 
 static const PoseCue no_cue = {-1, 0};
 
@@ -169,41 +164,16 @@ static const WCHAR *const tailmon_sheets[SECRETARY_EXTRA_SHEETS] = {
     [SECRETARY_IDLE_DETAIL] = L"TAILMON_IDLE",
     [SECRETARY_INTERACTION_DETAIL] = L"TAILMON_INTERACTION"
 };
-// Face anchors in the bundled artwork, measured in 118 x 118 cell space.
-// These guide large changes of stance where nearby pixel matches are ambiguous.
-static const short tailmon_faces[1 + SECRETARY_EXTRA_SHEETS][POSES_PER_SHEET * 2] = {
-    {49,53, 50,48, 50,51, 49,53, 49,53, 50,45, 50,37, 48,49,
-     55,38, 52,40, 59,37, 55,39, 48,53, 48,51, 48,48, 48,54},
-    [1 + SECRETARY_MOVEMENT] = {71,53, 69,51, 73,53, 73,52, 76,52, 74,49, 75,51, 76,50,
-                               73,52, 74,50, 74,56, 74,51, 73,53, 71,52, 66,52, 61,53},
-    [1 + SECRETARY_REST] = {54,57, 50,59, 52,69, 49,76, 51,76, 52,74, 50,76, 48,76,
-                           47,61, 44,66, 39,73, 50,50, 50,50, 54,50, 52,50, 49,52},
-    [1 + SECRETARY_REACTIONS] = {46,55, 46,61, 42,52, 44,54, 48,56, 47,58, 44,65, 46,52,
-                                46,55, 45,50, 51,53, 46,55, 47,56, 46,53, 44,52, 46,55},
-    [1 + SECRETARY_WALK_DETAIL] = {86,52, 86,53, 83,52, 83,52, 83,52, 85,52, 85,53, 85,53,
-                                   86,53, 83,52, 88,51, 86,52, 86,54, 85,53, 86,52, 86,53},
-    [1 + SECRETARY_ATTENTION] = {46,55, 43,56, 43,54, 49,53, 44,53, 50,55, 48,51, 48,53,
-                                43,56, 43,56, 43,56, 44,56, 45,56, 46,57, 46,57, 46,57},
-    [1 + SECRETARY_IDLE_DETAIL] = {48,54, 49,49, 49,48, 49,53, 51,54, 49,54, 48,53, 49,53,
-                                  49,53, 49,52, 49,49, 49,47, 52,42, 53,46, 49,52, 49,53},
-    [1 + SECRETARY_INTERACTION_DETAIL] = {49,48, 51,46, 51,47, 52,45, 52,45, 51,46, 50,47, 50,47,
-                                         47,50, 47,48, 50,45, 48,46, 50,46, 50,47, 50,47, 48,50}
-};
 static BOOL extra_ready[SECRETARY_EXTRA_SHEETS];
 static BOOL tailmon_art[1 + SECRETARY_EXTRA_SHEETS];
 static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
-static DWORD *pose_pixels, *blend_from, *blend_to;
-static POINT pose_clicks[POSE_COUNT], pose_faces[POSE_COUNT], shown_face, from_face, to_face;
-static RECT pose_bounds[POSE_COUNT], sprite_bounds, blend_bounds;
+static DWORD *pose_pixels, *blend_from, *blend_to, *blend_entry;
+static POINT pose_clicks[POSE_COUNT];
+static RECT pose_bounds[POSE_COUNT], sprite_bounds;
 static int painted_pose = -1, reaction, queued_reaction;
-static PoseMotion interrupted_motion;
-static const PoseMotion *blend_motion;
-static struct {
-    int from, to;
-    PoseMotion field;
-} motion_cache[MOTION_CACHE];
-static unsigned next_motion;
-static DWORD blend_started, blend_ms, last_yawn;
+static DWORD blend_started, blend_ms, bridge_ms, last_yawn, idle_started;
+static SecretaryMotion prepared_motion;
+static int blend_sample;
 static BOOL use_atlas, blend_linear, grab_playing;
 static BYTE painted_opacity;
 static WCHAR image_path[APP_PATH_MAX];
@@ -632,14 +602,6 @@ static BOOL draw_atlas(GpImage *sheet, UINT width, UINT height, int first, int *
             area = render_cel(sheet, width, height, index, x, y, scaled, clip_height);
             if (!area) return FALSE;
             if (index == 0) *idle_area = area;
-            pose_faces[index] = (POINT){-1, 0};
-            if (tailmon_art[first / POSES_PER_SHEET]) {
-                const short *face = &tailmon_faces[first / POSES_PER_SHEET][2 * (index - first)];
-                pose_faces[index] = (POINT){x + MulDiv(face[0], scaled, 118), y + MulDiv(face[1], scaled, 118)};
-                if (!carried)
-                    pose_faces[index].y += clamp(baseline - pose_bounds[index].bottom,
-                                                 -pose_bounds[index].top, size - pose_bounds[index].bottom);
-            }
             if (!carried) align_floor(&pose_bounds[index], &pose_clicks[index], baseline);
             CopyMemory(pose_pixels + index * count, sprite.pixels, count * sizeof(DWORD));
         }
@@ -691,8 +653,7 @@ static BOOL draw_sprite(void)
 
     free(pose_pixels);
     pose_pixels = NULL;
-    ZeroMemory(motion_cache, sizeof(motion_cache));
-    next_motion = 0;
+    secretary_motion_close();
     blend_ms = 0;
     painted_pose = -1;
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
@@ -707,7 +668,7 @@ static BOOL draw_sprite(void)
         count = (size_t)size * sprite.size.cy;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet)
             if (extra_images[sheet]) poses = (sheet + 2) * POSES_PER_SHEET;
-        pose_pixels = (DWORD *)malloc((size_t)(poses + 2) * count * sizeof(DWORD));
+        pose_pixels = (DWORD *)malloc((size_t)(poses + 3) * count * sizeof(DWORD));
         if (!pose_pixels) return FALSE;
         if (!draw_atlas(image, w, h, 0, &idle_area)) {
             free(pose_pixels);
@@ -716,12 +677,25 @@ static BOOL draw_sprite(void)
         }
         blend_from = pose_pixels + poses * count;
         blend_to = blend_from + count;
+        blend_entry = blend_to + count;
         for (sheet = 0; sheet < SECRETARY_EXTRA_SHEETS; ++sheet) {
             GpImage *extra = extra_images[sheet];
             extra_ready[sheet] = extra && GdipGetImageWidth(extra, &w) == Ok &&
                 GdipGetImageHeight(extra, &h) == Ok && draw_atlas(extra, w, h, (sheet + 1) * POSES_PER_SHEET, &idle_area);
             if (extra && !extra_ready[sheet])
                 app_log(L"secretary: an extra animation sheet could not be drawn");
+        }
+        if (tailmon_art[0]) {
+            int index;
+            secretary_motion_open(g_hinst, sprite.size.cx, sprite.size.cy);
+            // The endpoints and the intermediate frames share the same canvas.
+            // A monitor scale change therefore resamples the whole sequence alike.
+            for (index = 0; index < poses; ++index) {
+                SecretaryMotion endpoint = {(unsigned)index, 1, FALSE, FALSE};
+                if (tailmon_art[index / POSES_PER_SHEET] && secretary_motion_paint(endpoint, 0, sprite.pixels) &&
+                    measure_sprite(&pose_clicks[index], &pose_bounds[index]))
+                    CopyMemory(pose_pixels + index * count, sprite.pixels, count * sizeof(DWORD));
+            }
         }
         return TRUE;
     }
@@ -963,7 +937,12 @@ static void react(int action)
     queued_reaction = action;
     last_activity = pulse = animation_now();
     pet_motion.next = pulse + 3000;
-    if (pet_motion.state == PET_NAP) {
+    if (action == REACT_LAND) {
+        pet_motion.state = PET_WAIT;
+        reaction = REACT_LAND;
+        reaction_started = pulse;
+        queued_reaction = REACT_NONE;
+    } else if (pet_motion.state == PET_NAP) {
         pet_motion.state = PET_STRETCH;
         pet_motion.started = pulse;
     }
@@ -1648,7 +1627,14 @@ static PoseCue animated_pose(DWORD now)
         command_started = now;
         return command_frame(now);
     }
-    elapsed = now - born;
+    // Each action returns through the same neutral resting drawing.
+    if (detailed_idle && tailmon_art[1 + SECRETARY_IDLE_DETAIL]) {
+        int previous = painted_pose < 0 ? -1 : painted_pose % POSE_COUNT;
+        if (previous < IDLE_DETAIL_FIRST || previous >= IDLE_DETAIL_FIRST + 8) idle_started = now;
+        elapsed = now - idle_started;
+    } else {
+        elapsed = now - born;
+    }
     return detailed_idle ? step_at(CLIP(breathing_detail), elapsed, TRUE)
                          : step_at(CLIP(idle), elapsed, TRUE);
 }
@@ -1675,102 +1661,6 @@ static int pose_key_for(int pose)
     return pose + (animate && flip ? POSE_COUNT : 0);
 }
 
-static int patch_error(const DWORD *from, const DWORD *to, int w, int pitch)
-{
-    int row, col, error = 0;
-    for (row = -pitch; row <= pitch; row += pitch) {
-        for (col = -pitch; col <= pitch; col += pitch) {
-            DWORD a = from[row * w + col], b = to[row * w + col];
-            error += 2 * abs((int)(a >> 24) - (int)(b >> 24)) +
-                     abs((int)((a >> 16) & 255) - (int)((b >> 16) & 255)) +
-                     abs((int)((a >> 8) & 255) - (int)((b >> 8) & 255)) +
-                     abs((int)(a & 255) - (int)(b & 255));
-        }
-    }
-    return error;
-}
-
-// Match each side independently so an uncovered part of a new pose can move
-// in from the right place without dragging the outgoing silhouette along.
-static POINT face_shift(POINT from, POINT to, int x, int y, int w)
-{
-    if (from.x >= 0 && to.x >= 0) {
-        int distance = max(abs(x - from.x), abs(y - from.y));
-        int strength = clamp((w / 3 - distance) * PIXEL_UNIT / (w / 5), 0, PIXEL_UNIT);
-        return (POINT){(to.x - from.x) * strength / PIXEL_UNIT, (to.y - from.y) * strength / PIXEL_UNIT};
-    }
-    return (POINT){0, 0};
-}
-
-static void match_field(const DWORD *from, const DWORD *to, POINT face_from, POINT face_to,
-                        POINT field[MOTION_GRID][MOTION_GRID])
-{
-    int w = sprite.size.cx, h = sprite.size.cy;
-    int reach = clamp(w / 8, 7, 36), stride = max(2, reach / 6), patch = max(2, w / 38);
-    POINT raw[MOTION_GRID][MOTION_GRID] = {{{0, 0}}};
-    int gx, gy;
-    for (gy = 1; gy < MOTION_GRID - 1; ++gy) {
-        for (gx = 1; gx < MOTION_GRID - 1; ++gx) {
-            int x = gx * (w - 1) / (MOTION_GRID - 1);
-            int y = gy * (h - 1) / (MOTION_GRID - 1);
-            int dx, dy, pass;
-            POINT guide = face_shift(face_from, face_to, x, y, w), best;
-            int best_error;
-            guide.x = clamp(guide.x, patch - x, w - 1 - patch - x);
-            guide.y = clamp(guide.y, patch - y, h - 1 - patch - y);
-            best = guide;
-            best_error = patch_error(from + y * w + x, to + (y + best.y) * w + x + best.x, w, patch);
-            for (pass = 0; pass < 2; ++pass) {
-                int start = pass ? -stride : -(reach / stride) * stride;
-                int step = pass ? 1 : stride;
-                POINT prior = best;
-                if (best_error < 12) break;
-                for (dy = start; dy <= -start; dy += step) {
-                    int shift_y = prior.y + dy;
-                    if (y + shift_y < patch || y + shift_y >= h - patch) continue;
-                    for (dx = start; dx <= -start; dx += step) {
-                        int shift_x = prior.x + dx, error;
-                        if (x + shift_x < patch || x + shift_x >= w - patch) continue;
-                        error = patch_error(from + y * w + x, to + (y + shift_y) * w + x + shift_x, w, patch) +
-                                20 * (abs(shift_x - guide.x) + abs(shift_y - guide.y));
-                        if (error < best_error) {
-                            best = (POINT){shift_x, shift_y};
-                            best_error = error;
-                        }
-                    }
-                }
-            }
-            raw[gy][gx] = best;
-        }
-    }
-    ZeroMemory(field, MOTION_GRID * sizeof(raw[0]));
-    for (gy = 1; gy < MOTION_GRID - 1; ++gy) {
-        for (gx = 1; gx < MOTION_GRID - 1; ++gx) {
-            POINT a = raw[gy][gx], b = raw[gy - 1][gx], c = raw[gy + 1][gx];
-            POINT d = raw[gy][gx - 1], e = raw[gy][gx + 1];
-            field[gy][gx].x = (8 * a.x + b.x + c.x + d.x + e.x) * PIXEL_UNIT / 12;
-            field[gy][gx].y = (8 * a.y + b.y + c.y + d.y + e.y) * PIXEL_UNIT / 12;
-        }
-    }
-}
-
-static const PoseMotion *match_motion(int from, int to)
-{
-    PoseMotion *field = &interrupted_motion;
-    unsigned i;
-    if (from >= 0) {
-        for (i = 0; i < MOTION_CACHE; ++i)
-            if (motion_cache[i].from == from && motion_cache[i].to == to) return &motion_cache[i].field;
-        i = next_motion++ % MOTION_CACHE;
-        motion_cache[i].from = from;
-        motion_cache[i].to = to;
-        field = &motion_cache[i].field;
-    }
-    match_field(blend_from, blend_to, from_face, to_face, field->forward);
-    match_field(blend_to, blend_from, to_face, from_face, field->backward);
-    return field;
-}
-
 static DWORD mix_pixels(DWORD a, DWORD b, DWORD weight)
 {
     const DWORD mask = 0x00ff00ff;
@@ -1780,108 +1670,13 @@ static DWORD mix_pixels(DWORD a, DWORD b, DWORD weight)
     return (rb & mask) | (ag & ~mask);
 }
 
-static DWORD sample_pose(const DWORD *pixels, int w, int h, int x, int y)
+static void dissolve(const DWORD *target, DWORD weight, size_t count)
 {
-    int col, row, next_col, next_row;
-    x = clamp(x, 0, (w - 1) * PIXEL_UNIT);
-    y = clamp(y, 0, (h - 1) * PIXEL_UNIT);
-    col = x / PIXEL_UNIT;
-    row = y / PIXEL_UNIT;
-    next_col = min(col + 1, w - 1);
-    next_row = min(row + 1, h - 1);
-    return mix_pixels(mix_pixels(pixels[row * w + col], pixels[row * w + next_col], x % PIXEL_UNIT),
-                      mix_pixels(pixels[next_row * w + col], pixels[next_row * w + next_col], x % PIXEL_UNIT),
-                      y % PIXEL_UNIT);
+    size_t i;
+    for (i = 0; i < count; ++i) sprite.pixels[i] = mix_pixels(blend_from[i], target[i], weight);
 }
 
-static POINT interpolate_motion(POINT a, POINT b, int t)
-{
-    return (POINT){a.x + (b.x - a.x) * t / PIXEL_UNIT, a.y + (b.y - a.y) * t / PIXEL_UNIT};
-}
-
-static void invert_motion(const POINT field[MOTION_GRID][MOTION_GRID], int w, int h, int t,
-                          POINT inverse[MOTION_GRID][MOTION_GRID])
-{
-    int x, y;
-    for (y = 0; y < MOTION_GRID; ++y) {
-        for (x = 0; x < MOTION_GRID; ++x) {
-            POINT base = {x * (w - 1) * PIXEL_UNIT / (MOTION_GRID - 1),
-                          y * (h - 1) * PIXEL_UNIT / (MOTION_GRID - 1)};
-            POINT shift = field[y][x];
-            int i;
-            for (i = 0; i < 2; ++i) {
-                int gx = clamp((base.x - shift.x * t / PIXEL_UNIT) * (MOTION_GRID - 1) / (w - 1),
-                               0, (MOTION_GRID - 1) * PIXEL_UNIT);
-                int gy = clamp((base.y - shift.y * t / PIXEL_UNIT) * (MOTION_GRID - 1) / (h - 1),
-                               0, (MOTION_GRID - 1) * PIXEL_UNIT);
-                int col = min(gx / PIXEL_UNIT, MOTION_GRID - 2), row = min(gy / PIXEL_UNIT, MOTION_GRID - 2);
-                int fx = gx - col * PIXEL_UNIT, fy = gy - row * PIXEL_UNIT;
-                POINT a = interpolate_motion(field[row][col], field[row][col + 1], fx);
-                POINT b = interpolate_motion(field[row + 1][col], field[row + 1][col + 1], fx);
-                shift = interpolate_motion(a, b, fy);
-            }
-            inverse[y][x] = (POINT){shift.x * t / PIXEL_UNIT, shift.y * t / PIXEL_UNIT};
-        }
-    }
-}
-
-static DWORD blend_ink(DWORD a, DWORD b, int weight, int overlap)
-{
-    DWORD pixel = mix_pixels(a, b, (DWORD)weight);
-    int difference = abs((int)(a >> 24) - (int)(b >> 24));
-    if (difference > 96) {
-        DWORD alpha = pixel >> 24;
-        DWORD ink = max(0, (int)alpha - (difference - 96) * overlap / (4 * PIXEL_UNIT));
-        if (!ink) return 0;
-        return (ink << 24) | (((pixel >> 16) & 255) * ink / alpha << 16) |
-               (((pixel >> 8) & 255) * ink / alpha << 8) | ((pixel & 255) * ink / alpha);
-    }
-    return pixel;
-}
-
-static void morph_pose(int weight, BOOL pinned)
-{
-    int w = sprite.size.cx, h = sprite.size.cy;
-    int x, y, grid_x[MAX_ATLAS_SIZE], overlap = 4 * weight * (PIXEL_UNIT - weight) / PIXEL_UNIT;
-    POINT source[MOTION_GRID][MOTION_GRID], target[MOTION_GRID][MOTION_GRID];
-    invert_motion(blend_motion->forward, w, h, weight, source);
-    invert_motion(blend_motion->backward, w, h, PIXEL_UNIT - weight, target);
-    ZeroMemory(sprite.pixels, (size_t)w * h * sizeof(DWORD));
-    for (x = blend_bounds.left; x < blend_bounds.right; ++x)
-        grid_x[x] = x * (MOTION_GRID - 1) * PIXEL_UNIT / (w - 1);
-    for (y = blend_bounds.top; y < blend_bounds.bottom; ++y) {
-        int gy = y * (MOTION_GRID - 1) * PIXEL_UNIT / (h - 1);
-        int row = min(gy / PIXEL_UNIT, MOTION_GRID - 2);
-        int fy = gy - row * PIXEL_UNIT, col;
-        POINT forward[MOTION_GRID], backward[MOTION_GRID];
-        for (col = 0; col < MOTION_GRID; ++col) {
-            forward[col] = interpolate_motion(source[row][col], source[row + 1][col], fy);
-            backward[col] = interpolate_motion(target[row][col], target[row + 1][col], fy);
-        }
-        for (x = blend_bounds.left; x < blend_bounds.right; ++x) {
-            int gx = grid_x[x];
-            int fx;
-            DWORD a, b;
-            POINT f, r;
-            col = min(gx / PIXEL_UNIT, MOTION_GRID - 2);
-            fx = gx - col * PIXEL_UNIT;
-            f = interpolate_motion(forward[col], forward[col + 1], fx);
-            r = interpolate_motion(backward[col], backward[col + 1], fx);
-            a = sample_pose(blend_from, w, h, x * PIXEL_UNIT - f.x, y * PIXEL_UNIT - f.y);
-            b = sample_pose(blend_to, w, h, x * PIXEL_UNIT - r.x, y * PIXEL_UNIT - r.y);
-            sprite.pixels[y * w + x] = blend_ink(a, b, weight, overlap);
-        }
-    }
-    // Both endpoints cover the pinned hint. Preserve that pixel if the local
-    // warp moved an outline across it between the two drawings.
-    if (pinned) {
-        size_t pixel = hint_hit.y * w + hint_hit.x;
-        if (sprite.pixels[pixel] >> 24 < 128)
-            sprite.pixels[pixel] = mix_pixels(blend_from[pixel], blend_to[pixel], (DWORD)weight);
-    }
-}
-
-static void paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
+static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
 {
     int x, y, w = sprite.size.cx, h = sprite.size.cy;
     size_t count = (size_t)w * h;
@@ -1894,11 +1689,20 @@ static void paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
         bounds.right = w - pose_bounds[pose].left;
     }
     if (painted_pose != key) {
-        int from = blend_ms ? -1 : painted_pose;
         BOOL can_blend = painted_pose >= 0 && animate;
+        BOOL interrupted = blend_ms && now - blend_started + FRAME_MS < blend_ms;
         blend_ms = 0;
-        to_face = pose_faces[pose];
-        if (flip && to_face.x >= 0) to_face.x = w - 1 - to_face.x;
+        blend_sample = 0;
+        bridge_ms = 0;
+        prepared_motion = (SecretaryMotion){0};
+        if (can_blend && tailmon_art[pose / POSES_PER_SHEET] &&
+            tailmon_art[(painted_pose % POSE_COUNT) / POSES_PER_SHEET])
+            prepared_motion = secretary_motion_find(painted_pose, key, POSE_COUNT);
+        if (interrupted && prepared_motion.count) {
+            bridge_ms = 16;
+            blend_sample = -1;
+            CopyMemory(blend_entry, blend_to, count * sizeof(DWORD));
+        }
         if (!flip) {
             CopyMemory(blend_to, target, count * sizeof(DWORD));
         } else {
@@ -1910,33 +1714,47 @@ static void paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
             int group = pose_group(pose), previous = pose_group(painted_pose % POSE_COUNT);
             BOOL same_clip = group == previous && flip == (painted_pose >= POSE_COUNT);
             int limit = same_clip ? (group == REST_FIRST && pose >= REST_FIRST + 4 && pose <= REST_FIRST + 7 ? 410 : 260) : 215;
-            RECT canvas = {0, 0, w, h};
             blend_linear = same_clip && pet_motion.state == PET_WALK;
-            blend_ms = (DWORD)clamp(cue.duration - (blend_linear ? 0 : 8), 32, limit);
+            blend_ms = prepared_motion.count ? (DWORD)clamp(cue.duration - 16, 24, limit) : 40;
             blend_started = now;
-            from_face = shown_face;
             CopyMemory(blend_from, sprite.pixels, count * sizeof(DWORD));
-            UnionRect(&blend_bounds, &sprite_bounds, &bounds);
-            InflateRect(&blend_bounds, w / 7, w / 7);
-            IntersectRect(&blend_bounds, &blend_bounds, &canvas);
-            blend_motion = match_motion(from, key);
         }
     }
     if (blend_ms && animate && now - blend_started < blend_ms) {
-        int weight = (int)((now - blend_started) * PIXEL_UNIT / blend_ms);
-        if (!weight) return;
-        if (!blend_linear)
-            weight = weight * weight * (3 * PIXEL_UNIT - 2 * weight) / (PIXEL_UNIT * PIXEL_UNIT);
-        shown_face = from_face.x >= 0 && to_face.x >= 0 ? interpolate_motion(from_face, to_face, weight) : (POINT){-1, 0};
-        morph_pose(weight, pinned);
-        if (measure_sprite(&click_pixel, &sprite_bounds)) return;
+        DWORD elapsed = now - blend_started;
+        if (!elapsed) return FALSE;
+        if (elapsed < bridge_ms) {
+            dissolve(blend_entry, elapsed * PIXEL_UNIT / bridge_ms, count);
+        } else if (prepared_motion.count) {
+            DWORD weight = (elapsed - bridge_ms) * PIXEL_UNIT / (blend_ms - bridge_ms);
+            int step;
+            if (!blend_linear) {
+                DWORD eased = weight * weight * (3 * PIXEL_UNIT - 2 * weight) / (PIXEL_UNIT * PIXEL_UNIT);
+                weight = (weight + eased) / 2;
+            }
+            step = (int)((weight * (prepared_motion.count + 1) + PIXEL_UNIT / 2) / PIXEL_UNIT);
+            if (step == blend_sample) return FALSE;
+            if (step > (int)prepared_motion.count) goto finished;
+            blend_sample = step;
+            if (!step) CopyMemory(sprite.pixels, bridge_ms ? blend_entry : blend_from, count * sizeof(DWORD));
+            else if (!secretary_motion_paint(prepared_motion, (unsigned)step - 1, sprite.pixels))
+                dissolve(blend_to, weight, count);
+        } else {
+            dissolve(blend_to, elapsed * PIXEL_UNIT / blend_ms, count);
+        }
+        if (pinned) {
+            size_t pixel = hint_hit.y * w + hint_hit.x;
+            if (sprite.pixels[pixel] >> 24 < 128) sprite.pixels[pixel] = blend_to[pixel];
+        }
+        if (measure_sprite(&click_pixel, &sprite_bounds)) return TRUE;
     }
+finished:
     blend_ms = 0;
-    shown_face = to_face;
     CopyMemory(sprite.pixels, blend_to, count * sizeof(DWORD));
     click_pixel = pose_clicks[pose];
     if (flip) click_pixel.x = w - 1 - click_pixel.x;
     sprite_bounds = bounds;
+    return TRUE;
 }
 
 static void frame(void)
@@ -1948,7 +1766,7 @@ static void frame(void)
     BOOL pinned;
     PoseCue cue = {0, 0};
     int pose_key = 0;
-    BOOL can_route = input_mouse_hook_active();
+    BOOL can_route = input_mouse_hook_active(), changed = painted_pose != 0;
 
     if (GetCursorPos(&pointer) && pressed) {
         if (routed_press && can_route) {
@@ -2003,11 +1821,12 @@ static void frame(void)
         if (now - pulse < 290) at.y -= (int)(px(10) * sin((now - pulse) * 3.14159 / 290.0));
     }
     if (dragging && !use_atlas) opacity = 218;
-    if (!blend_ms && painted_pose == pose_key && painted_opacity == opacity &&
-        pet_at.x == at.x && pet_at.y == at.y) return;
     if (use_atlas && (painted_pose != pose_key || blend_ms))
-        paint_atlas_pose(cue, pose_key, now, pinned);
+        changed = paint_atlas_pose(cue, pose_key, now, pinned);
+    else if (use_atlas)
+        changed = FALSE;
     painted_pose = pose_key;
+    if (!changed && painted_opacity == opacity && pet_at.x == at.x && pet_at.y == at.y) return;
     painted_opacity = opacity;
     pet_at = at;
     if (present(pet, &sprite, pet_at, opacity) && route_mouse)
@@ -2225,6 +2044,7 @@ void secretary_shutdown(void)
     pet = bubble = NULL;
     free_canvas(&speech);
     free_canvas(&sprite);
+    secretary_motion_close();
     free(pose_pixels);
     pose_pixels = NULL;
     if (image) GdipDisposeImage(image);

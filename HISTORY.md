@@ -1493,6 +1493,10 @@ Invariants stated in `common.h` and enforced by history:
   Turn into the walk, settle back from either direction, and give the wake and
   landing their own recovery poses. Align the body to the floor and preserve its
   scale through the crouch, curl, and stretch.
+- Kim still saw lag and twisting between individual frames and asked for more
+  drawings. Bake in-betweens ahead of time for walking, resting, attention,
+  grabbing, landing, and handoffs. Play the packaged frames from the animation
+  clock. Use the same normalized artwork for the key poses at every monitor scale.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2402,6 +2406,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   Check both walking directions, interruptions, and click hints through the
   handoffs. Follow the visible pose when an animation is interrupted.
 
+- **Check each frame for distortion and rendering cost.** Tailmon's runtime
+  pixel warp smoothed changes in silhouette but bent features and ran on the UI
+  loop. Package reviewed intermediate drawings and replay them at the animation
+  clock. Keep the published executable below the installed updater's 32 MiB limit.
+
 - **Match body scale across poses.** Compare the grounded body and floor in
   standing, crouching and sleeping cels. Scaling every clip to the longest
   silhouette edge made the curled cat grow as soon as it reached the sleep loop.
@@ -3002,6 +3011,12 @@ refuses the unsigned release on that install. Keep both manifests in step
 when the manifest changes.
 
 ### Build and check
+
+- To refresh the Tailmon motion pack on Windows, build `tailmon-export` and
+  run `tools/tailmon_pose_export.exe poses.raw`. Run
+  `python tools/bake_tailmon_motion.py poses.raw <rife-exe> <rife-v4.6-directory> <scratch> assets/tailmon/motion.bin`
+  with Pillow, NumPy, and RIFE NCNN Vulkan 20221029. Compare the endpoints,
+  in-betweens and loop seams, then check the shipped executable size.
 
 - Local (Windows): `mingw32-make`, or double-click `build.bat` (finds MinGW in
   `C:\MinGW` or `C:\msys64\mingw32`). Tools: `mingw32-make probe check icon
