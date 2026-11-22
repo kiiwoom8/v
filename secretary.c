@@ -1,4 +1,4 @@
-// A layered, mouse-transparent-around-the-art desktop secretary.
+// A layered desktop secretary that passes wheel input to the window underneath.
 #include "common.h"
 #include <objbase.h> // COM property types for the MinGW-w64 GDI+ headers
 #include <gdiplus.h>
@@ -19,6 +19,7 @@
 #define FRAME_MS 8
 #define FALLBACK_FRAME_MS 16
 #define WM_SECRETARY_FRAME (WM_APP + 1)
+#define WM_SECRETARY_BUTTON (WM_APP + 2)
 #define MOTION_GRID 7
 #define MAX_ATLAS_SIZE 512
 #define PIXEL_UNIT 256
@@ -116,7 +117,23 @@ static const PoseStep grooming[] = {
     {REST_FIRST + 14, 295}, {REST_FIRST + 13, 210}, {REST_FIRST + 15, 240}
 };
 
+typedef struct {
+    HWND window;
+    RECT bounds;
+    BYTE *mask;
+    size_t capacity;
+} PetHitMap;
+
 static HWND pet, bubble;
+// The UI fills the inactive bitmap before publishing it. The mouse hook
+// takes a nonblocking read lock only when a button goes down.
+static SRWLOCK hit_map_lock = {0};
+static PetHitMap hit_maps[2];
+static PetHitMap *active_hit_map;
+static PetHitMap *next_hit_map = &hit_maps[0];
+static HWND routed_left, routed_right; // input thread only
+static volatile LONG routed_left_down;
+static BOOL route_mouse, routed_press; // UI thread only
 static HANDLE frame_timer, frame_wait;
 static LARGE_INTEGER animation_frequency;
 static volatile LONG frame_posted;
@@ -141,7 +158,7 @@ static RECT work;
 static UINT dpi;
 static DWORD born, pulse, reaction_started, bubble_tick, last_hint, last_activity, press_started;
 static BOOL positioned, pressed, dragging, moved, opened, animate;
-static BOOL bubble_left;
+static BOOL bubble_left, activating_bubble;
 static BOOL bubble_dirty;
 static BYTE bubble_opacity;
 static POINT bubble_painted_at;
@@ -274,12 +291,87 @@ fail:
     return FALSE;
 }
 
-static void present(HWND wnd, const Canvas *c, POINT at, BYTE opacity)
+static BOOL present(HWND wnd, const Canvas *c, POINT at, BYTE opacity)
 {
     POINT source = {0, 0};
     SIZE size = c->size;
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, opacity, AC_SRC_ALPHA};
-    UpdateLayeredWindow(wnd, NULL, &at, &size, c->dc, &source, 0, &blend, ULW_ALPHA);
+    return UpdateLayeredWindow(wnd, NULL, &at, &size, c->dc, &source, 0, &blend, ULW_ALPHA);
+}
+
+static void publish_hit_map(void)
+{
+    PetHitMap *next = next_hit_map;
+    size_t i, count = (size_t)sprite.size.cx * sprite.size.cy;
+    size_t bytes = (count + 7) / 8;
+    if (bytes > next->capacity) {
+        BYTE *mask = (BYTE *)realloc(next->mask, bytes);
+        if (!mask) return;
+        next->mask = mask;
+        next->capacity = bytes;
+    }
+    ZeroMemory(next->mask, bytes);
+    for (i = 0; i < count; ++i)
+        if (sprite.pixels[i] >> 24)
+            next->mask[i / 8] |= (BYTE)(1u << (i % 8));
+    next->window = pet;
+    SetRect(&next->bounds, pet_at.x, pet_at.y,
+            pet_at.x + sprite.size.cx, pet_at.y + sprite.size.cy);
+    AcquireSRWLockExclusive(&hit_map_lock);
+    active_hit_map = next;
+    next_hit_map = next == &hit_maps[0] ? &hit_maps[1] : &hit_maps[0];
+    ReleaseSRWLockExclusive(&hit_map_lock);
+}
+
+static void clear_hit_map(void)
+{
+    AcquireSRWLockExclusive(&hit_map_lock);
+    active_hit_map = NULL;
+    ReleaseSRWLockExclusive(&hit_map_lock);
+}
+
+BOOL secretary_route_button(UINT message, POINT screen)
+{
+    HWND *routed, window;
+    BOOL down;
+    if (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP)
+        routed = &routed_left;
+    else if (message == WM_RBUTTONDOWN || message == WM_RBUTTONUP)
+        routed = &routed_right;
+    else
+        return FALSE;
+    down = message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN;
+    if (down) {
+        PetHitMap *map;
+        if (!TryAcquireSRWLockShared(&hit_map_lock)) return FALSE;
+        map = active_hit_map;
+        window = NULL;
+        if (map && PtInRect(&map->bounds, screen)) {
+            size_t i = (size_t)(screen.y - map->bounds.top) *
+                       (map->bounds.right - map->bounds.left) + screen.x - map->bounds.left;
+            if (map->mask[i / 8] & (1u << (i % 8))) window = map->window;
+        }
+        ReleaseSRWLockShared(&hit_map_lock);
+        if (!window || !PostMessageW(window, WM_SECRETARY_BUTTON, message,
+                                    MAKELPARAM((WORD)screen.x, (WORD)screen.y)))
+            return FALSE;
+        *routed = window;
+        if (message == WM_LBUTTONDOWN) InterlockedExchange(&routed_left_down, 1);
+    } else {
+        window = *routed;
+        if (!window) return FALSE;
+        *routed = NULL;
+        if (message == WM_LBUTTONUP) InterlockedExchange(&routed_left_down, 0);
+        PostMessageW(window, WM_SECRETARY_BUTTON, message,
+                     MAKELPARAM((WORD)screen.x, (WORD)screen.y));
+    }
+    return TRUE;
+}
+
+void secretary_reset_buttons(void)
+{
+    routed_left = routed_right = NULL;
+    InterlockedExchange(&routed_left_down, 0);
 }
 
 static BOOL white(DWORD pixel)
@@ -767,9 +859,19 @@ static void open_bubble(void)
     opened = TRUE;
     bubble_tick = animation_now();
     present(bubble, &speech, bubble_at, animate ? 75 : 255);
-    // It owns the keyboard only as long as it has normal window focus.
+    // A button handled by the mouse hook never reaches this thread as
+    // native input, so it may need to borrow the foreground input queue.
+    activating_bubble = TRUE;
     ShowWindow(bubble, SW_SHOW);
-    SetForegroundWindow(bubble);
+    if (!SetForegroundWindow(bubble)) {
+        DWORD current = GetCurrentThreadId();
+        DWORD foreground = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+        if (foreground && foreground != current && AttachThreadInput(current, foreground, TRUE)) {
+            SetForegroundWindow(bubble);
+            AttachThreadInput(current, foreground, FALSE);
+        }
+    }
+    activating_bubble = FALSE;
 }
 
 static void react(int action)
@@ -1115,11 +1217,21 @@ static void move_from_press(POINT pointer)
     }
 }
 
+static void press_pet(POINT point, BOOL routed)
+{
+    press = point;
+    pressed = TRUE;
+    routed_press = routed;
+    last_activity = press_started = animation_now();
+    press_at = pet_at;
+    if (!routed) SetCapture(pet);
+}
+
 static void release_pet(POINT pointer)
 {
     if (!pressed) return;
     move_from_press(pointer);
-    pressed = FALSE;
+    pressed = routed_press = FALSE;
     if (GetCapture() == pet) ReleaseCapture();
     if (dragging) {
         dragging = FALSE;
@@ -1589,11 +1701,29 @@ static void frame(void)
     BOOL hints = hint_is_open();
     BOOL pinned;
     int pose = 0, pose_key;
-    BOOL flip;
+    BOOL flip, can_route = input_mouse_hook_active();
 
     if (GetCursorPos(&pointer) && pressed) {
-        if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) move_from_press(pointer);
-        else release_pet(pointer);
+        if (routed_press && can_route) {
+            // A quick hint click can already have returned the real pointer.
+            // If the hook saw the release, wait for its queued coordinates.
+            if (InterlockedCompareExchange(&routed_left_down, 0, 0))
+                move_from_press(pointer);
+        } else if (!routed_press && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+            move_from_press(pointer);
+        else
+            release_pet(pointer);
+    }
+    if (can_route != route_mouse) {
+        LONG style = GetWindowLongW(pet, GWL_EXSTYLE);
+        route_mouse = can_route;
+        if (route_mouse) {
+            if (painted_pose >= 0) publish_hit_map();
+            SetWindowLongW(pet, GWL_EXSTYLE, style | WS_EX_TRANSPARENT);
+        } else {
+            SetWindowLongW(pet, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT);
+            clear_hit_map();
+        }
     }
     if (pending_slot >= 0 && (!animate || now - bubble_tick >= BUBBLE_MS)) {
         int slot = pending_slot;
@@ -1636,7 +1766,8 @@ static void frame(void)
     painted_pose = pose_key;
     painted_opacity = opacity;
     pet_at = at;
-    present(pet, &sprite, pet_at, opacity);
+    if (present(pet, &sprite, pet_at, opacity) && route_mouse)
+        publish_hit_map();
 }
 
 void secretary_hint_reaction(void)
@@ -1716,7 +1847,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
     if (wnd == bubble) {
         switch (msg) {
         case WM_ACTIVATE:
-            if (LOWORD(wp) == WA_INACTIVE) secretary_dismiss();
+            if (LOWORD(wp) == WA_INACTIVE && !activating_bubble) secretary_dismiss();
             break;
         case WM_KEYDOWN:
             if (wp == VK_TAB && !(lp & (1L << 30))) {
@@ -1768,14 +1899,19 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             point = (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             input_forward_wheel(point, msg, wp);
             return 0;
+        case WM_SECRETARY_BUTTON:
+            point = (POINT){GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (wp == WM_LBUTTONDOWN) press_pet(point, TRUE);
+            else if (wp == WM_LBUTTONUP) release_pet(point);
+            else if (wp == WM_RBUTTONUP && !pressed) {
+                secretary_dismiss();
+                react(REACT_MENU);
+                PostMessageW(g_main_wnd, WM_APP_SECRETARY_MENU, point.x, point.y);
+            }
+            return 0;
         case WM_LBUTTONDOWN:
-            // Vim's hint click may already have returned the real cursor.
             message_pos = GetMessagePos();
-            press = (POINT){GET_X_LPARAM(message_pos), GET_Y_LPARAM(message_pos)};
-            pressed = TRUE;
-            last_activity = press_started = animation_now();
-            press_at = pet_at;
-            SetCapture(pet);
+            press_pet((POINT){GET_X_LPARAM(message_pos), GET_Y_LPARAM(message_pos)}, FALSE);
             return 0;
         case WM_LBUTTONUP:
             message_pos = GetMessagePos();
@@ -1831,7 +1967,11 @@ BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target)
 void secretary_shutdown(void)
 {
     int extra;
-    opened = pressed = dragging = FALSE;
+    opened = pressed = dragging = routed_press = route_mouse = FALSE;
+    clear_hit_map();
+    free(hit_maps[0].mask);
+    free(hit_maps[1].mask);
+    ZeroMemory(hit_maps, sizeof(hit_maps));
     pending_slot = -1;
     launch.exe = NULL;
     uia_cancel_browser_tab();

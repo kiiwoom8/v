@@ -437,6 +437,7 @@ static BOOL  s_caps_shiftlock_logged = FALSE;
 // s_own_x / s_own_y is where our last SetCursorPos put the pointer: that
 // move is not flagged injected, but lands exactly there.
 static HHOOK  s_mouse_hook = NULL;
+static volatile LONG s_mouse_hook_active;
 static HANDLE s_ptr_thread = NULL;
 static HANDLE s_ptr_event = NULL;
 static volatile LONG s_ptr_want = 0;
@@ -3017,6 +3018,8 @@ static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
             if (flag_get(&s_ptr_want))
                 ptr_schedule();
         }
+        if (secretary_route_button((UINT)wParam, m->pt))
+            return 1;
     }
     return CallNextHookEx(NULL, nCode, wParam, lParam);
 }
@@ -3032,10 +3035,18 @@ static void ptr_hook_update(void)
                                          GetModuleHandleW(NULL), 0);
         if (!s_mouse_hook)
             app_log(L"input: mouse hook install failed");
+        InterlockedExchange(&s_mouse_hook_active, s_mouse_hook != NULL);
     } else if (!want && s_mouse_hook) {
+        InterlockedExchange(&s_mouse_hook_active, 0);
         UnhookWindowsHookEx(s_mouse_hook);
         s_mouse_hook = NULL;
+        secretary_reset_buttons();
     }
+}
+
+BOOL input_mouse_hook_active(void)
+{
+    return flag_get(&s_mouse_hook_active);
 }
 
 // Every system cursor becomes a blank one. SetSystemCursor takes the cursor
@@ -4887,8 +4898,10 @@ static void cleanup_input(void)
     leave_mouse_mode();
     uninstall_hook();
     if (s_mouse_hook) {
+        InterlockedExchange(&s_mouse_hook_active, 0);
         UnhookWindowsHookEx(s_mouse_hook);
         s_mouse_hook = NULL;
+        secretary_reset_buttons();
     }
     if (s_ptr_timer_on) {
         KillTimer(s_power_wnd, PTR_TIMER);

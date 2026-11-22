@@ -501,8 +501,8 @@ hints. The character reacts to Vim commands such as scrolling, clicks,
 hints, and mode changes. The latest command can follow a playing reaction.
 Held keys repeat the relevant cycle at its end. Hints hold the character's
 position while its pose keeps moving. Vim's pointer movement passes over the
-character without the link magnet pausing. Scrolling goes to the window behind
-the character when the pointer is over it. The character follows upward and
+character. Keyboard scrolling and the physical wheel reach the window behind
+the character at the pointer's location. The character follows upward and
 downward scrolls with different movements and sleeps through Vim activity.
 It waves briefly when you quit Vim from the tray or the quit hotkey.
 

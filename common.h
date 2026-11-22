@@ -403,6 +403,7 @@ BOOL input_is_locked(void);
 BOOL input_modifier_held(void);
 void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
+BOOL input_mouse_hook_active(void);       // atomic snapshot for the secretary window
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)
 int input_secretary_motion(void);       // current held move/scroll, or 0; atomic snapshot
 void input_forward_wheel(POINT point, UINT message, WPARAM keys_and_delta);
@@ -468,6 +469,8 @@ BOOL secretary_has_focus(void);
 #define SECRETARY_PET_CLASS L"VimMouseSecretary"
 BOOL secretary_modifiers_down(void);   // actual Windows key state, outside hooks
 BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target);
+BOOL secretary_route_button(UINT message, POINT screen); // mouse hook, no blocking
+void secretary_reset_buttons(void);    // input thread after the mouse hook is removed
 enum { SECRETARY_MOVE = 1, SECRETARY_SCROLL, SECRETARY_HINT, SECRETARY_CLICK,
        SECRETARY_ACTION, SECRETARY_MODE, SECRETARY_SCROLL_UP, SECRETARY_SCROLL_DOWN };
 void secretary_command(int command);    // asynchronous, safe on the low-level hook

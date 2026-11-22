@@ -1477,6 +1477,12 @@ Invariants stated in `common.h` and enforced by history:
   trigger the link magnet. Resolve the wheel's search window once per press.
   Sample animation every 8 ms on supported Windows and align nearby artwork
   inside a clip before generating intermediate frames.
+- Kim clarified that `u/d/j/k` still failed while hovering. Chromium checks
+  the window at the wheel coordinates and can discard a forwarded wheel
+  message when the mascot covers the page. Make the animation window
+  transparent to Win32 hit testing while the mouse hook is available.
+  Route button presses against the displayed alpha mask and keep the
+  matching release with the press, including a hint click with cursor return.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
