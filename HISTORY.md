@@ -1575,6 +1575,33 @@ Invariants stated in `common.h` and enforced by history:
 - No drawings were made: explore and scamper only re-order and re-time cels
   Tailmon already ships with.
 
+### Tailmon: both front paws step (2026-11-24)
+
+- After the forward-only walk (d047800) Kim reported the front legs moving
+  weirdly. Cause: walk.png's 16 cels are one stride, the far front paw swinging
+  forward in cels 1..5 and the near one in 8..11. The 13..5 loop dropped the
+  near paw's swing, so it never stepped. At the 5 -> 13 seam, which has no
+  prepared in-betweens, the two front paws swapped places in a 40 ms dissolve:
+  the near paw jumped about 50 px forward and the far one back, once per loop.
+- Loop 13,14,15,0..6,9,10 (`walk_detail_cycle[12]`), still forward only. The
+  near paw now steps 176 -> 198 -> 222 -> 232 px (cel 6, lifted 9, lifted 10,
+  13). Cels 7, 8 and 11, 12 stay out because their baked in-betweens smear the
+  hind legs (seen when rendering motion.bin's 7>8, 8>9 and 10>11 frames). The
+  two unprepared seams, 6 -> 9 and 10 -> 13, were smaller than 5 -> 13 in a
+  leg-silhouette XOR (front 959 and 805 px against 1291). They cross-fade
+  linearly over the whole step (`paint_atlas_pose`: a same-clip walk step
+  with no prepared motion blends for `cue.duration - 16` ms, minimum 40 ms,
+  instead of a fixed 40 ms).
+- `tools/bake_tailmon_motion.py` now lists both seams (70-73, 74-77, 7
+  frames), so the next RIFE bake prepares real in-betweens for them. motion.bin
+  is unchanged because RIFE is not installed on the desktop PC. Until the
+  next bake, the seams fade.
+- Verified by decoding motion.bin in Python and replaying both loops as the
+  engine plays them (prepared frames per baked pair, cross-fade otherwise):
+  the old seam shows the paws swapping in one blended frame, the new one a
+  forward step in three hops. Clean `-Werror` build; the rebuilt vim.exe ran
+  with the 164x196 Tailmon window visible.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2491,6 +2518,12 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Match body scale across poses.** Compare the grounded body and floor in
   standing, crouching and sleeping cels. Scaling every clip to the longest
   silhouette edge made the curled cat grow as soon as it reached the sleep loop.
+
+- **A curated gait loop must keep every limb's step.** Check each leg's
+  track (front and hind) across every cel and seam, not only the leg reported.
+  The 13..5 walk fixed the hind legs but dropped the near front paw's swing,
+  so the front paws swapped at the seam. Render the loop from motion.bin,
+  with its prepared frames, before shipping a re-ordered cycle.
 
 - **Every window Vim itself opens must stay reachable without the real
   mouse.** Click hints never scan our own process, so a new Vim window with

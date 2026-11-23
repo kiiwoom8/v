@@ -116,18 +116,17 @@ static const PoseStep settling[] = {
     {WALK_FIRST + 12, 95}, {WALK_FIRST + 13, 175},
     {WALK_FIRST + 14, 145}, {WALK_FIRST + 15, 130}
 };
-// Order the detailed walk so the hind legs stay stable. Of walk.png's 16 cels,
-// 6..12 draw the rear legs inconsistently (the ground-contact count jumps
-// 2->3->4->2), so cycling all 16 flickers the hind legs and bobs the body as the
-// motion pack morphs between mismatched frames. Cels 13,14,15,0,1,2,3,4,5 are one
-// contiguous run, in the sheet's own forward order, with a constant two-contact
-// topology and near-constant body height. Loop that run FORWARD only. (A first
-// attempt ping-ponged it, 13..5..13; the reverse half made the legs look like
-// they walked backwards, so forward only.) The one skipped step, cel 5 -> 13
-// where the inconsistent swing cels were dropped, blends as a short cross-fade
-// of adjacent key poses rather than a hard cut.
-static const BYTE walk_detail_cycle[9] = {
-    13, 14, 15, 0, 1, 2, 3, 4, 5
+// Order the detailed walk so both front paws step and the hind legs stay
+// stable. walk.png's 16 cels are one stride: the far front paw swings forward
+// in cels 1..5, the near one in 8..11. Cels 7, 8 and 11, 12 draw the hind legs
+// inconsistently and their baked in-betweens smear them (the flicker Kim saw),
+// so skip those, but keep 6, 9 and 10: without them (the earlier 13..5 loop)
+// the near paw never swings and the two front paws swap places in one jump at
+// the 5 -> 13 seam. Always FORWARD in the sheet's order; reversing gait cels
+// makes the legs walk backwards. The two seams with no prepared in-betweens,
+// 6 -> 9 and 10 -> 13, cross-fade over the whole step (paint_atlas_pose).
+static const BYTE walk_detail_cycle[12] = {
+    13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 9, 10
 };
 static const PoseStep falling_asleep[] = {
     {REST_FIRST, 280}, {REST_FIRST + 1, 450}, {REST_FIRST + 2, 410}, {REST_FIRST + 3, 300}
@@ -2041,7 +2040,10 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
             BOOL same_clip = group == previous && flip == (painted_pose >= POSE_COUNT);
             int limit = same_clip ? (group == REST_FIRST && pose >= REST_FIRST + 4 && pose <= REST_FIRST + 7 ? 410 : 260) : 215;
             blend_linear = same_clip && pet_motion.state == PET_WALK;
-            blend_ms = prepared_motion.count ? (DWORD)clamp(cue.duration - 16, 24, limit) : 40;
+            // A walk step with no prepared frames cross-fades over the step
+            // instead of cutting, so a skipped cel reads as motion.
+            blend_ms = prepared_motion.count ? (DWORD)clamp(cue.duration - 16, 24, limit) :
+                       blend_linear ? (DWORD)clamp(cue.duration - 16, 40, limit) : 40;
             blend_started = now;
             CopyMemory(blend_from, sprite.pixels, count * sizeof(DWORD));
         }

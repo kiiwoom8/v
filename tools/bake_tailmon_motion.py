@@ -47,6 +47,9 @@ def transition_edges():
 
     for first, length in ((16, 8), (24, 4), (64, 16), (80, 16)):
         run(list(range(first, first + length)), True, 7 if first in (64, 80) else 3)
+    # walk_detail_cycle (secretary.c) skips cels 7, 8 and 11, 12: bake its two seams.
+    edge(64 + 6, 64 + 9, 7)
+    edge(64 + 10, 64 + 13, 7)
     for first in (48, 52, 56, 60):
         run(list(range(first, first + 4)))
     run([52, 53, 54, 53, 55])
