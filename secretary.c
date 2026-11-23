@@ -115,6 +115,17 @@ static const PoseStep settling[] = {
     {WALK_FIRST + 12, 95}, {WALK_FIRST + 13, 175},
     {WALK_FIRST + 14, 145}, {WALK_FIRST + 15, 130}
 };
+// Order the detailed walk so the hind legs stay stable. Of walk.png's 16 cels,
+// 6..12 draw the rear legs inconsistently (the ground-contact count jumps 2->3
+// ->4->2), so cycling all 16 flickers the hind legs and bobs the body as the
+// motion pack morphs between mismatched frames. Cels 13,14,15,0,1,2,3,4,5 form
+// one contiguous run with constant leg topology (two contacts, the hind foot
+// sliding monotonically) and near-constant body height, so loop a ping-pong
+// across just that run. Every neighbouring pair here is an adjacent cel, so the
+// pack's prepared in-betweens (forward and reversed) still cover the whole walk.
+static const BYTE walk_detail_cycle[16] = {
+    13, 14, 15, 0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0, 15, 14
+};
 static const PoseStep falling_asleep[] = {
     {REST_FIRST, 280}, {REST_FIRST + 1, 450}, {REST_FIRST + 2, 410}, {REST_FIRST + 3, 300}
 };
@@ -1854,7 +1865,8 @@ static PoseCue animated_pose(DWORD now)
         break;
     case PET_WALK: {
         BOOL detail = extra_ready[SECRETARY_WALK_DETAIL];
-        int phase = (int)pet_motion.gait, pose = detail ? WALK_DETAIL_FIRST + phase % 16 :
+        int phase = (int)pet_motion.gait;
+        int pose = detail ? WALK_DETAIL_FIRST + walk_detail_cycle[phase % 16] :
                    WALK_FIRST + (pet_motion.fast ? 8 + phase % 4 : phase % 8);
         int stride = px(detail ? (pet_motion.fast ? 5 : 4) : 7);
         int duration = (int)(1000 * stride / fmax(pet_motion.speed, 1.0));

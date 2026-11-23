@@ -1523,6 +1523,27 @@ Invariants stated in `common.h` and enforced by history:
   pale, dark or missing). No subset of the 16 frames keeps them steady without
   doubling the front-paw jumps, so the flicker needs redrawn frames.
 
+### Tailmon: steady hind legs (2026-11-23)
+
+- Kim asked Tailmon to feel like a living cat and reported the hind legs
+  flickering while it walks. walk.png's sixteen cels are not one gait: a
+  silhouette scan of the cels found the ground-contact count jump 2 -> 3 -> 4
+  -> 2 across cels 6..12, the feet shifting non-monotonically, so cycling all
+  sixteen made the baked in-betweens morph between mismatched frames and the
+  rear legs flickered while the body bobbed (cel height varies there too).
+- Cels 13,14,15,0,1,2,3,4,5 are one contiguous run with a constant two-contact
+  topology, the hind foot sliding monotonically and near-constant body height.
+  Loop a ping-pong across just that run (`walk_detail_cycle`, indexed by the
+  gait phase) instead of all sixteen. Every neighbouring entry is an adjacent
+  cel, so the motion pack's prepared transitions (forward and reversed) still
+  carry the whole walk and no cel is redrawn. Engine-only: the embedded sheets
+  and motion.bin are untouched, so no re-bake and no RIFE.
+- Verified by the silhouette scan (the cycle emits only the nine consistent
+  cels, never 6..12), a clean `-Werror` build, and a run of the built exe that
+  loaded the bundled art and showed the 164x196 mascot window without crashing.
+  The engine measures each cel's floor and scale per group, so the curated run
+  keeps the floor line and body scale it already had.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2642,6 +2663,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | A touch that begins within `touch_top` (80) pixels of a monitor's top is blocked as mouse input and the pointer put back (`touch_message`, `touch_edge_back`), and the touchscreen's raw input puts back a pointer a touch moved to the top that made no mouse input (`touch_raw_check`, Chrome's tab strip); judged at the touch's start, no lift needed | phases 22, 31 | The pointer stayed at the top of the screen after the lid was closed; the phase 22 rule (down in 16 px, up in 48) still let it through |
 | `Alt+=` / `Alt+-` zoom around the pointer with a two-finger touch pinch while held, not the page zoom (`key_zoom_in = none`, `key_zoom_out = none` restore the app's own keys) | phase 19 | The keys reached the app (Excel: AutoSum) |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
+| The detailed walk loops a ping-pong over walk.png cels 13,14,15,0..5 (`walk_detail_cycle`), not all sixteen in order | 2026-11-23 | Cels 6..12 draw an inconsistent number of ground contacts (2/3/4), so cycling all sixteen flickered the hind legs and bobbed the body |
 
 ## 7. Open threads
 
