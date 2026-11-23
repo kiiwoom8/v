@@ -379,6 +379,96 @@ static void clear_hit_map(void)
     ReleaseSRWLockExclusive(&hit_map_lock);
 }
 
+static HWND volatile dialogs[SECRETARY_DIALOGS];
+static LONG volatile dialog_active[SECRETARY_DIALOGS];
+
+void secretary_dialog_state(int which, HWND dialog, BOOL active)
+{
+    if (which < 0 || which >= SECRETARY_DIALOGS) return;
+    dialogs[which] = dialog;
+    InterlockedExchange(&dialog_active[which], dialog && active);
+    // Above Tailmon while in use; back among normal windows once the user
+    // switches away, so an inactive dialog never covers other apps.
+    if (dialog)
+        SetWindowPos(dialog, active ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    input_pointer_refresh();
+}
+
+BOOL secretary_dialog_foreground(void)
+{
+    HWND fg = GetForegroundWindow();
+    int i;
+    for (i = 0; i < SECRETARY_DIALOGS; ++i)
+        if (fg && dialogs[i] == fg) return TRUE;
+    return FALSE;
+}
+
+// Mouse hook: a press inside an active dialog belongs to the dialog, never
+// to the pet drawn underneath it.
+static BOOL over_active_dialog(POINT screen)
+{
+    int i;
+    for (i = 0; i < SECRETARY_DIALOGS; ++i) {
+        HWND dialog = dialogs[i];
+        RECT r;
+        if (dialog && InterlockedCompareExchange(&dialog_active[i], 0, 0) &&
+            IsWindowVisible(dialog) && GetWindowRect(dialog, &r) && PtInRect(&r, screen))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+#ifndef BS_TYPEMASK
+#define BS_TYPEMASK 0x0000000FL
+#endif
+
+typedef struct {
+    const RECT *monitor;
+    ClickTarget *out;
+    int room, count;
+} DialogTargets;
+
+static BOOL CALLBACK add_dialog_control(HWND control, LPARAM lp)
+{
+    DialogTargets *targets = (DialogTargets *)lp;
+    WCHAR cls[32] = L"";
+    LONG style = GetWindowLongW(control, GWL_STYLE);
+    RECT r;
+    BOOL wanted;
+
+    if (targets->count >= targets->room) return FALSE;
+    if (!IsWindowVisible(control) || !IsWindowEnabled(control)) return TRUE;
+    GetClassNameW(control, cls, 32);
+    if (_wcsicmp(cls, L"Button") == 0)
+        wanted = (style & BS_TYPEMASK) != BS_GROUPBOX;
+    else
+        wanted = (style & WS_TABSTOP) || _wcsicmp(cls, L"ComboBox") == 0 ||
+                 _wcsicmp(cls, L"Edit") == 0 || _wcsicmp(cls, L"ListBox") == 0;
+    if (!wanted || !GetWindowRect(control, &r) || !IntersectRect(&r, &r, targets->monitor))
+        return TRUE;
+    targets->out[targets->count].rc = r;
+    targets->out[targets->count].click.x = (r.left + r.right) / 2;
+    targets->out[targets->count].click.y = (r.top + r.bottom) / 2;
+    ++targets->count;
+    return TRUE;
+}
+
+// Click hints skip Vim's own process (UI Automation must not query it), so the
+// dialogs publish their controls here. Generic: every control of every open
+// dialog, whether the pointer is hidden, keyboard-driven or the real mouse.
+int secretary_dialog_targets(const RECT *monitor, ClickTarget *out, int room)
+{
+    DialogTargets targets = {monitor, out, room, 0};
+    int i;
+    for (i = 0; i < SECRETARY_DIALOGS && targets.count < room; ++i) {
+        HWND dialog = dialogs[i];
+        if (dialog && IsWindowVisible(dialog) && !IsIconic(dialog))
+            EnumChildWindows(dialog, add_dialog_control, (LPARAM)&targets);
+    }
+    return targets.count;
+}
+
 BOOL secretary_route_button(UINT message, POINT screen)
 {
     HWND *routed, window;
@@ -392,6 +482,7 @@ BOOL secretary_route_button(UINT message, POINT screen)
     down = message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN;
     if (down) {
         PetHitMap *map;
+        if (over_active_dialog(screen)) return FALSE;
         if (!TryAcquireSRWLockShared(&hit_map_lock)) return FALSE;
         map = active_hit_map;
         window = NULL;

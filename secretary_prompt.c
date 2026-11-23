@@ -108,7 +108,11 @@ static LRESULT CALLBACK prompt_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM l
             return 0;
         }
         break;
+    case WM_ACTIVATE:
+        secretary_dialog_state(SECRETARY_DIALOG_PROMPT, hwnd, LOWORD(wp) != WA_INACTIVE);
+        break;
     case WM_DESTROY:
+        secretary_dialog_state(SECRETARY_DIALOG_PROMPT, NULL, FALSE);
         window = task_box = source_box = status = NULL;
         if (font) DeleteObject(font);
         font = NULL;

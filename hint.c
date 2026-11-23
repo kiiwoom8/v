@@ -3624,11 +3624,35 @@ static BOOL scan_ready(const ClickList *list)
            list->count > 0 && g_cfg.scan_refresh > 0;
 }
 
+// Vim's own dialogs: UI Automation skips our process, so their controls come
+// from the dialogs themselves (UI thread, like the dialogs).
+static ClickList *include_dialogs(ClickList *list)
+{
+    ClickTarget found[64];
+    ClickList *expanded;
+    int n, room;
+
+    if (!list) return list;
+    room = MAX_TARGETS - list->count;
+    if (room > (int)(sizeof(found) / sizeof(found[0])))
+        room = (int)(sizeof(found) / sizeof(found[0]));
+    if (room <= 0) return list;
+    n = secretary_dialog_targets(&g_mon_rect, found, room);
+    if (n <= 0) return list;
+    expanded = (ClickList *)realloc(list, sizeof(*list) +
+                                  (size_t)(list->count + n) * sizeof(found[0]));
+    if (!expanded) return list;
+    memcpy(expanded->items + expanded->count, found, (size_t)n * sizeof(found[0]));
+    expanded->count += n;
+    return expanded;
+}
+
 static ClickList *include_secretary(ClickList *list)
 {
     ClickTarget target;
     ClickList *expanded;
 
+    list = include_dialogs(list);
     if (!list || !secretary_hint_target(&g_mon_rect, &target))
         return list;
     if (list->count >= MAX_TARGETS) {

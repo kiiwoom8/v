@@ -136,7 +136,11 @@ static LRESULT CALLBACK editor_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM l
             return 0;
         }
         break;
+    case WM_ACTIVATE:
+        secretary_dialog_state(SECRETARY_DIALOG_EDITOR, hwnd, LOWORD(wp) != WA_INACTIVE);
+        break;
     case WM_DESTROY:
+        secretary_dialog_state(SECRETARY_DIALOG_EDITOR, NULL, FALSE);
         editor = slot_box = label_box = target_box = status = NULL;
         if (font) DeleteObject(font);
         font = NULL;

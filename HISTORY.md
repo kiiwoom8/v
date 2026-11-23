@@ -1511,6 +1511,14 @@ Invariants stated in `common.h` and enforced by history:
   The keyboard hook passed every key to Vim's own text windows, including the
   mouse-mode key. Pass typing only outside mouse mode and keep the mouse-mode
   key active there.
+- Kim still could not select the controls of **Claude 질문 준비**
+  (2026-11-23). Click hints skip Vim's own process (UI Automation must not
+  query it), so the dialog showed no labels, and Tailmon, a topmost window,
+  could cover it and take its clicks. The prompt and the shortcut editor now
+  publish their controls as native hint targets (`secretary_dialog_targets`),
+  stay topmost only while active, keep the pet from routing presses inside
+  them, and keep the pointer visible while in front. Verified on Windows:
+  all five prompt controls labelled, dropdown opened by a click over Tailmon.
 - The walk sheet draws the hind legs differently from frame to frame (far leg
   pale, dark or missing). No subset of the 16 frames keeps them steady without
   doubling the front-paw jumps, so the flicker needs redrawn frames.
@@ -2431,6 +2439,12 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Match body scale across poses.** Compare the grounded body and floor in
   standing, crouching and sleeping cels. Scaling every clip to the longest
   silhouette edge made the curled cat grow as soon as it reached the sleep loop.
+
+- **Every window Vim itself opens must stay reachable without the real
+  mouse.** Click hints never scan our own process, so a new Vim window with
+  controls registers as a `SECRETARY_DIALOG_*` (or the same pattern) to get
+  native hint targets, must not sit under the topmost pet while active, and
+  must count as a reason to keep the pointer shown.
 
 - **Keep Tailmon at its idle size when grabbed.** The longest edge makes
   dangling poses shrink because they are taller and narrower. Scale the

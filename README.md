@@ -524,8 +524,11 @@ It waves briefly when you quit Vim from the tray or the quit hotkey.
 **Claude 질문 준비** combines text you enter with a preset for summary,
 explanation, translation, or editing. It copies the result and opens Claude.
 Paste and send the prompt in Claude whenever you are ready. Its window and the
-shortcut editor take typing, but the mouse-mode key still works there, so
-mouse mode can reach every control even when the pointer is hidden.
+shortcut editor take typing, but the mouse-mode key and the hint hotkey still
+work there: click hints label every control of both windows, so they can be
+reached with a hidden or keyboard-driven pointer. While one of them is active
+it stays above the character, a click inside it never lands on the character,
+and the pointer is not hidden.
 
 Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
 To supply custom art, use an absolute path or a path relative to the INI.

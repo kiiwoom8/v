@@ -413,7 +413,8 @@ void input_forward_wheel(POINT point, UINT message, WPARAM keys_and_delta);
 // after the hotkey is not lost); hint.c turns it on when opened another way
 // and off when it closes.
 void input_set_key_capture(BOOL on);
-void input_config_changed(void);        // g_cfg was reloaded
+void input_config_changed(void);
+void input_pointer_refresh(void);      // any thread: decide again whether the pointer hides        // g_cfg was reloaded
 // Types text into the focused window (KEYEVENTF_UNICODE; \n = Enter, \t = Tab).
 // Text shortcuts use it only with shortcut_method = type (see snippet_insert).
 void input_type_text(const WCHAR *text);
@@ -487,6 +488,13 @@ void secretary_prompt_open(void);
 void secretary_prompt_close(void);
 BOOL secretary_prompt_message(MSG *message);
 BOOL secretary_prompt_has_focus(void);
+// Vim's own dialogs (prompt, slot editor). Keep them reachable by mouse,
+// mouse mode and click hints. While a dialog is active, it stays above the
+// pet, the pet does not take clicks inside it, and the pointer stays visible.
+enum { SECRETARY_DIALOG_PROMPT = 0, SECRETARY_DIALOG_EDITOR = 1, SECRETARY_DIALOGS = 2 };
+void secretary_dialog_state(int which, HWND dialog, BOOL active); // UI thread
+BOOL secretary_dialog_foreground(void);   // any thread, no messages
+int secretary_dialog_targets(const RECT *monitor, ClickTarget *out, int room); // UI thread
 void secretary_open_claude(void);
 void secretary_browser_result(UINT request, HWND browser);
 BOOL uia_find_browser_tab(HWND browser, const WCHAR *url, UINT request);

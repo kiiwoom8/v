@@ -3154,7 +3154,8 @@ static void ptr_update(void)
 
     InterlockedExchange(&s_ptr_posted, 0);
     if (s_ptr_thread && g_cfg.hide_pointer > 0 && !s_ptr_away &&
-        !flag_get(&s_paused) && !flag_get(&s_mouse_mode)) {
+        !flag_get(&s_paused) && !flag_get(&s_mouse_mode) &&
+        !secretary_dialog_foreground()) {
         DWORD last = (DWORD)InterlockedCompareExchange(&s_ptr_phys_tick, 0, 0);
         DWORD idle = GetTickCount() - last;
 
@@ -5275,6 +5276,11 @@ void input_type_text(const WCHAR *text)
     if (n > 0 && SendInput(n, in, sizeof(INPUT)) != n)
         app_log(L"input: typing a text shortcut failed (%lu)", GetLastError());
     free(in);
+}
+
+void input_pointer_refresh(void)
+{
+    ptr_schedule();
 }
 
 void input_config_changed(void)
