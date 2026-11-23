@@ -116,15 +116,17 @@ static const PoseStep settling[] = {
     {WALK_FIRST + 14, 145}, {WALK_FIRST + 15, 130}
 };
 // Order the detailed walk so the hind legs stay stable. Of walk.png's 16 cels,
-// 6..12 draw the rear legs inconsistently (the ground-contact count jumps 2->3
-// ->4->2), so cycling all 16 flickers the hind legs and bobs the body as the
-// motion pack morphs between mismatched frames. Cels 13,14,15,0,1,2,3,4,5 form
-// one contiguous run with constant leg topology (two contacts, the hind foot
-// sliding monotonically) and near-constant body height, so loop a ping-pong
-// across just that run. Every neighbouring pair here is an adjacent cel, so the
-// pack's prepared in-betweens (forward and reversed) still cover the whole walk.
-static const BYTE walk_detail_cycle[16] = {
-    13, 14, 15, 0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0, 15, 14
+// 6..12 draw the rear legs inconsistently (the ground-contact count jumps
+// 2->3->4->2), so cycling all 16 flickers the hind legs and bobs the body as the
+// motion pack morphs between mismatched frames. Cels 13,14,15,0,1,2,3,4,5 are one
+// contiguous run, in the sheet's own forward order, with a constant two-contact
+// topology and near-constant body height. Loop that run FORWARD only. (A first
+// attempt ping-ponged it, 13..5..13; the reverse half made the legs look like
+// they walked backwards, so forward only.) The one skipped step, cel 5 -> 13
+// where the inconsistent swing cels were dropped, blends as a short cross-fade
+// of adjacent key poses rather than a hard cut.
+static const BYTE walk_detail_cycle[9] = {
+    13, 14, 15, 0, 1, 2, 3, 4, 5
 };
 static const PoseStep falling_asleep[] = {
     {REST_FIRST, 280}, {REST_FIRST + 1, 450}, {REST_FIRST + 2, 410}, {REST_FIRST + 3, 300}
@@ -1866,7 +1868,7 @@ static PoseCue animated_pose(DWORD now)
     case PET_WALK: {
         BOOL detail = extra_ready[SECRETARY_WALK_DETAIL];
         int phase = (int)pet_motion.gait;
-        int pose = detail ? WALK_DETAIL_FIRST + walk_detail_cycle[phase % 16] :
+        int pose = detail ? WALK_DETAIL_FIRST + walk_detail_cycle[phase % (int)sizeof walk_detail_cycle] :
                    WALK_FIRST + (pet_motion.fast ? 8 + phase % 4 : phase % 8);
         int stride = px(detail ? (pet_motion.fast ? 5 : 4) : 7);
         int duration = (int)(1000 * stride / fmax(pet_motion.speed, 1.0));
