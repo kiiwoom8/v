@@ -1039,6 +1039,7 @@ static void build_help_rows(void)
         help_add_row(L"Tab / Shift+Tab", L"Move between bubble actions and use Enter to select");
         help_add_row(L"Right-click", L"Open this same Vim tray menu");
         help_add_row(L"[secretary] enabled", L"Set to 0 in the settings file to hide the secretary");
+        help_add_row(L"[secretary] play", L"Set to 0 to stop the exploring and playful scampers");
     }
 
     // The grid opens with hint_mode = grid or the grid key.

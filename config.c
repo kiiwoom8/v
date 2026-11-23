@@ -558,6 +558,7 @@ void config_set_defaults(Config *c)
     c->secretary_animate = -1;
     c->secretary_roam = 1;
     c->secretary_react = 1;
+    c->secretary_play = 1;
 
     parse_hotkey(L"Alt+F", &c->hint_hotkey);
     parse_hotkey(L"Ctrl+Alt+Q", &c->quit_hotkey);
@@ -868,6 +869,10 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
     }
     if (_wcsicmp(key, L"react") == 0) {
         apply_bool(&c->secretary_react, line, key, val);
+        return;
+    }
+    if (_wcsicmp(key, L"play") == 0) {
+        apply_bool(&c->secretary_play, line, key, val);
         return;
     }
     if (_wcsicmp(key, L"image") == 0) path = c->secretary_image;
@@ -1708,6 +1713,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
             L"walk_detail_sheet =\r\nattention_sheet =\r\nscroll_detail_sheet =\r\n"
             L"idle_detail_sheet =\r\ninteraction_detail_sheet =\r\n"
             L"roam = 1\r\nreact = 1\r\n"
+            L"; Set play to 0 to stop the occasional exploring and playful scampers.\r\n"
+            L"play = 1\r\n"
             L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
             L"1 = Claude | claude\r\n"
             L"; 2 = Wiki | https://example.org/wiki\r\n");

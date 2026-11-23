@@ -160,6 +160,7 @@ typedef struct {
     int secretary_animate;    // -1 = follow Windows animation effects, 0 = off, 1 = on
     int secretary_roam;       // walk between resting places when idle
     int secretary_react;      // play reactions when Vim runs a command
+    int secretary_play;       // occasional exploring and playful scampers
     WCHAR secretary_image[MAX_PATH];
     WCHAR secretary_sprite_sheet[MAX_PATH]; // custom 4x4 atlas, empty with image for bundled Tailmon
     WCHAR secretary_extra[SECRETARY_EXTRA_SHEETS][MAX_PATH];

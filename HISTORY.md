@@ -1553,6 +1553,28 @@ Invariants stated in `common.h` and enforced by history:
   redrawn; Tailmon is a copyrighted character this project does not redraw, so
   owner-supplied corrected walk frames would drop in through the sheet keys.
 
+### Tailmon: exploring and playful scampers (2026-11-23)
+
+- Once the walk read right, Kim asked for more behaviour variety. The idle
+  engine (`pick_behaviour`) already weighted walk, groom, rest, nap, look,
+  stretch, yawn and still by context; add two more, both re-sequencing the
+  existing cels (no new art): explore and scamper.
+- Explore is a shorter, deliberate walk that ends by looking around the new
+  spot: the walk sets `pet_motion.then_look`, and when it settles `PET_SETTLE`
+  starts `PET_LOOK` instead of idling. Scamper is a short dash: `start_walk`
+  runs the fast gait over a short distance and does not stop for the pointer.
+  `start_walk` branches on `pet_motion.walk_kind` (0 roam, 1 explore, 2
+  scamper), set in `pick_behaviour` right before the call.
+- Both are weighted modestly and only when roaming is on and the sheets are
+  loaded (explore also needs the attention sheet for its look), with the same
+  anti-repetition damping as the rest. A new `[secretary] play` setting
+  (default 1) gates them; `play = 0` leaves the earlier behaviour set. The
+  default, parser and written template are in `config.c`, the help row in
+  `tray.c`, the key and example in `README.md`: every new behaviour keeps an
+  off switch.
+- No drawings were made: explore and scamper only re-order and re-time cels
+  Tailmon already ships with.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2673,6 +2695,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | `Alt+=` / `Alt+-` zoom around the pointer with a two-finger touch pinch while held, not the page zoom (`key_zoom_in = none`, `key_zoom_out = none` restore the app's own keys) | phase 19 | The keys reached the app (Excel: AutoSum) |
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 | The detailed walk loops forward over walk.png cels 13,14,15,0..5 (`walk_detail_cycle`), not all sixteen in order, and never reversed | 2026-11-23 | Cels 6..12 draw an inconsistent number of ground contacts (2/3/4), so cycling all sixteen flickered the hind legs; a ping-pong closed the loop but ran the gait backwards, so forward only |
+| Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
 
 ## 7. Open threads
 

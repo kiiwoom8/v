@@ -491,7 +491,9 @@ any extra sheet paths blank to use all the bundled poses. Add personal links
 to numbered slots in your own settings file.
 
 The secretary remembers where you drop it. With a movement sheet, it wanders
-between resting spots at different speeds, and some walks stop when you reach for it. Click
+between resting spots at different speeds, and some walks stop when you reach for it. It
+also explores now and then — a short walk that ends by looking around the new spot — and
+has the odd playful scamper; set `play = 0` to turn those extras off. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). The grabbed pose keeps the character
@@ -573,6 +575,7 @@ idle_detail_sheet = secretary-idle-detail.png
 interaction_detail_sheet = secretary-interaction-detail.png
 roam = 1
 react = 1
+play = 1
 1 = Claude | claude
 2 = Wiki | https://example.org/wiki
 ```
@@ -584,6 +587,8 @@ shortcuts maximize the browser window so its tab strip and controls stay visible
 Set `enabled = 0` to hide the secretary. `animate = system` follows Windows'
 animation setting. `animate = 0` or `1` overrides it for the secretary.
 Set `roam = 0` to keep it in place, or `react = 0` to turn off Vim command reactions.
+Set `play = 0` to stop the occasional exploring (a short walk that ends by
+looking around) and playful scampers; ordinary roaming is unaffected.
 
 ## Settings
 

@@ -62,7 +62,8 @@ enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
 enum { PET_WAIT, PET_TURN, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH, PET_YAWN,
        PET_REST, PET_WAKE, PET_LOOK, PET_RISE };
 // What an idle cat does next; weights depend on context (pick_behaviour).
-enum { DO_WALK, DO_GROOM, DO_REST, DO_NAP, DO_LOOK, DO_STRETCH, DO_YAWN, DO_STILL, DO_COUNT };
+enum { DO_WALK, DO_GROOM, DO_REST, DO_NAP, DO_LOOK, DO_STRETCH, DO_YAWN, DO_STILL,
+       DO_EXPLORE, DO_SCAMPER, DO_COUNT };
 enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME, BUBBLE_PROMPT, BUBBLE_ACTIONS };
 
 static const PoseStep idle[] = {
@@ -232,6 +233,8 @@ static struct {
     int state;
     BOOL left, fast, face_right;
     BOOL curious;      // this walk stops for a nearby pointer
+    BOOL then_look;    // after this walk, look around at the new spot (explore)
+    int walk_kind;     // 0 roam, 1 explore, 2 scamper; start_walk reads it
     BOOL from_rest;    // the nap began from the resting loaf
     DWORD twitch_at;   // next small movement in deep sleep
     DWORD look_ms;     // length of this look around
@@ -1533,7 +1536,11 @@ static void start_nap(DWORD now, BOOL from_rest)
 
 static void start_walk(DWORD now)
 {
-    int margin = px(17), distance = px(105 + random_below(270));
+    int margin = px(17);
+    // Explore takes a shorter, deliberate hop; a scamper is a short dash; else a full roam.
+    int distance = pet_motion.walk_kind == 1 ? px(60 + random_below(110)) :
+                   pet_motion.walk_kind == 2 ? px(70 + random_below(120)) :
+                   px(105 + random_below(270));
     int left = work.left + margin, right = work.right - sprite.size.cx - margin;
     int top = work.top + (work.bottom - work.top) * 2 / 5;
     int bottom = work.bottom - layout_height() - margin;
@@ -1550,10 +1557,13 @@ static void start_walk(DWORD now)
     pet_motion.curve = px((int)random_below(49) - 24);
     pet_motion.left = x < anchor.x;
     pet_motion.face_right = !pet_motion.left;
-    // Now and then a long trip becomes a spontaneous run, and only some
-    // walks stop for a pointer that comes close.
-    pet_motion.fast = abs(x - anchor.x) > px(200) && random_below(5) == 0;
-    pet_motion.curious = random_below(100) < 40;
+    // A scamper always runs; otherwise a long trip now and then becomes a
+    // spontaneous run. Only some walks stop for a pointer that comes close, and
+    // a scamper commits to its dash. Explore ends by looking around the new spot.
+    pet_motion.fast = pet_motion.walk_kind == 2 ||
+                      (abs(x - anchor.x) > px(200) && random_below(5) == 0);
+    pet_motion.then_look = pet_motion.walk_kind == 1;
+    pet_motion.curious = pet_motion.walk_kind != 2 && random_below(100) < 40;
     pet_motion.cruise = px(pet_motion.fast ? 68 + random_below(17) : 37 + random_below(19));
     pet_motion.speed = pet_motion.gait = pet_motion.traveled = 0.0;
     pet_motion.state = PET_TURN;
@@ -1601,6 +1611,12 @@ static void pick_behaviour(DWORD now, BOOL hovered)
 
     if (g_cfg.secretary_roam && extra_ready[SECRETARY_MOVEMENT] && !hovered)
         weight[DO_WALK] = user_idle > 120000 ? 14 : 26;
+    // Playful extras: explore walks to a spot and looks around there; a scamper
+    // is a short dash. Both are roaming moves, so roam gates them as well.
+    if (g_cfg.secretary_play && g_cfg.secretary_roam && extra_ready[SECRETARY_MOVEMENT] && !hovered) {
+        if (extra_ready[SECRETARY_ATTENTION]) weight[DO_EXPLORE] = user_idle > 60000 ? 10 : 7;
+        weight[DO_SCAMPER] = 5;
+    }
     if (extra_ready[SECRETARY_REST]) {
         weight[DO_GROOM] = 14;
         weight[DO_STRETCH] = slept_lately ? 3 : 6;
@@ -1620,6 +1636,15 @@ static void pick_behaviour(DWORD now, BOOL hovered)
     last_behaviour = pick;
     switch (pick) {
     case DO_WALK:
+        pet_motion.walk_kind = 0;
+        start_walk(now);
+        break;
+    case DO_EXPLORE:
+        pet_motion.walk_kind = 1;
+        start_walk(now);
+        break;
+    case DO_SCAMPER:
+        pet_motion.walk_kind = 2;
         start_walk(now);
         break;
     case DO_GROOM:
@@ -1681,7 +1706,17 @@ static void advance_pet(DWORD now, POINT pointer)
             start_state(now, PET_SETTLE);
         return;
     case PET_SETTLE:
-        if (elapsed >= clip_length(CLIP(settling))) wait_to_roam(now, idle_pause());
+        if (elapsed >= clip_length(CLIP(settling))) {
+            // An explore walk ends by looking around at the new spot.
+            if (pet_motion.then_look && g_cfg.secretary_play && extra_ready[SECRETARY_ATTENTION]) {
+                pet_motion.then_look = FALSE;
+                start_state(now, PET_LOOK);
+                pet_motion.look_ms = 108 * (7 + random_below(12));
+            } else {
+                pet_motion.then_look = FALSE;
+                wait_to_roam(now, idle_pause());
+            }
+        }
         return;
     case PET_REST:
         if (elapsed >= pet_motion.duration) {
