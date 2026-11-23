@@ -2301,7 +2301,13 @@ static BOOL handle_down(UINT vk)
         s_owner[vk] = OWN_SWALLOW;
         return TRUE;
     }
-    if (!flag_get(&s_capture) && (secretary_editor_has_focus() || secretary_prompt_has_focus())) {
+    // Vim's own text windows receive typing, but mouse mode stays available:
+    // the mouse-mode key and every mouse-mode key keep working there, so the
+    // window's controls can be reached with a hidden or keyboard-driven pointer.
+    if (!flag_get(&s_capture) && !flag_get(&s_mouse_mode) &&
+        !(g_cfg.mouse_mode_key != 0 && vk == g_cfg.mouse_mode_key &&
+          !(mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN | KMOD_SHIFT))) &&
+        (secretary_editor_has_focus() || secretary_prompt_has_focus())) {
         s_owner[vk] = OWN_PASS;
         return FALSE;
     }

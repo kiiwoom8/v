@@ -1497,6 +1497,23 @@ Invariants stated in `common.h` and enforced by history:
   drawings. Bake in-betweens ahead of time for walking, resting, attention,
   grabbing, landing, and handoffs. Play the packaged frames from the animation
   clock. Use the same normalized artwork for the key poses at every monitor scale.
+- Kim asked for a cat that behaves naturally instead of following scripts
+  (2026-11-23). Commands now start a reaction only while the character sits
+  free; others are dropped with no queue, and an event older than 150 ms is
+  discarded. Interest falls with repeated commands and returns after 25 s, so
+  some commands are ignored. Only a grab stops a playing action; a click opens
+  the bubble without a reaction or wake-up. Idle choices use context weights
+  with the last choice damped: still, look around, groom, stretch, yawn, walk
+  or run, rest, nap. Rest lies down for 15–90 s, then rises or curls up. Naps
+  last 2–35 minutes with slow breathing, a rare shift, and a wake-up stretch.
+  Grooming, stretching and yawning pause under hints and resume.
+- Kim could not reach the controls of **Claude 질문 준비** with mouse mode.
+  The keyboard hook passed every key to Vim's own text windows, including the
+  mouse-mode key. Pass typing only outside mouse mode and keep the mouse-mode
+  key active there.
+- The walk sheet draws the hind legs differently from frame to frame (far leg
+  pale, dark or missing). No subset of the 16 frames keeps them steady without
+  doubling the front-paw jumps, so the flicker needs redrawn frames.
 
 ## 4. Complete commit log (non-merge, oldest first)
 

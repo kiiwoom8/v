@@ -59,7 +59,10 @@ typedef struct {
 static const PoseCue no_cue = {-1, 0};
 
 enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
-enum { PET_WAIT, PET_TURN, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH, PET_YAWN };
+enum { PET_WAIT, PET_TURN, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH, PET_YAWN,
+       PET_REST, PET_WAKE, PET_LOOK, PET_RISE };
+// What an idle cat does next; weights depend on context (pick_behaviour).
+enum { DO_WALK, DO_GROOM, DO_REST, DO_NAP, DO_LOOK, DO_STRETCH, DO_YAWN, DO_STILL, DO_COUNT };
 enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME, BUBBLE_PROMPT, BUBBLE_ACTIONS };
 
 static const PoseStep idle[] = {
@@ -115,9 +118,22 @@ static const PoseStep settling[] = {
 static const PoseStep falling_asleep[] = {
     {REST_FIRST, 280}, {REST_FIRST + 1, 450}, {REST_FIRST + 2, 410}, {REST_FIRST + 3, 300}
 };
-static const PoseStep sleeping[] = {
-    {REST_FIRST + 4, 520}, {REST_FIRST + 5, 460},
-    {REST_FIRST + 6, 580}, {REST_FIRST + 7, 290}, {REST_FIRST + 6, 470}
+// Resting: lie down into the loaf, hold it, and either curl up or get up.
+static const PoseStep lying_down[] = {
+    {REST_FIRST, 340}, {REST_FIRST + 1, 560}, {REST_FIRST + 2, 700}
+};
+static const PoseStep curling_up[] = {{REST_FIRST + 2, 420}, {REST_FIRST + 3, 900}};
+static const PoseStep getting_up[] = {
+    {REST_FIRST + 2, 420}, {REST_FIRST + 1, 520}, {REST_FIRST, 380}
+};
+// Deep sleep breathes slowly between two curled drawings. A rare shift
+// (sleep_shift) is the only other movement until the cat wakes.
+static const PoseStep sleep_breath[] = {{REST_FIRST + 4, 2300}, {REST_FIRST + 5, 2700}};
+static const PoseStep sleep_shift[] = {
+    {REST_FIRST + 6, 700}, {REST_FIRST + 7, 480}, {REST_FIRST + 6, 900}
+};
+static const PoseStep waking[] = {
+    {REST_FIRST + 3, 1100}, {REST_FIRST + 2, 1300}, {REST_FIRST + 1, 800}, {REST_FIRST, 420}
 };
 static const PoseStep stretching[] = {
     {REST_FIRST + 8, 240}, {REST_FIRST + 9, 235}, {REST_FIRST + 10, 380},
@@ -170,7 +186,7 @@ static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
 static DWORD *pose_pixels, *blend_from, *blend_to, *blend_entry;
 static POINT pose_clicks[POSE_COUNT];
 static RECT pose_bounds[POSE_COUNT], sprite_bounds;
-static int painted_pose = -1, reaction, queued_reaction;
+static int painted_pose = -1, reaction;
 static DWORD blend_started, blend_ms, bridge_ms, last_yawn, idle_started;
 static SecretaryMotion prepared_motion;
 static int blend_sample;
@@ -189,7 +205,7 @@ static POINT bubble_painted_at;
 static int rows[SECRETARY_SLOTS], row_count, armed_key, focus_item, selected = -1;
 static int pending_slot = -1;
 static volatile LONG pending_command;
-static int command_pose, queued_command;
+static int command_pose;
 static DWORD command_started, attention_started;
 static POINT hint_hit;
 static BOOL hint_animate, hint_sleeping;
@@ -202,7 +218,16 @@ static struct {
     DWORD started, next, last_frame, duration, seed;
     int state;
     BOOL left, fast, face_right;
+    BOOL curious;      // this walk stops for a nearby pointer
+    BOOL from_rest;    // the nap began from the resting loaf
+    DWORD twitch_at;   // next small movement in deep sleep
+    DWORD look_ms;     // length of this look around
 } pet_motion;
+// Reactions start only when the cat is free; anything else is dropped, never
+// replayed later. Interest falls with repeated stimulation and recovers.
+static volatile LONG pending_command_tick;
+static DWORD ignore_until, last_reacted, last_nap_end;
+static int interest = 80, last_behaviour = -1;
 static BOOL (WINAPI *process_path)(HANDLE, DWORD, LPWSTR, PDWORD);
 
 // A web shortcut works in the open browser and checks for an existing tab.
@@ -932,20 +957,34 @@ static void open_bubble(void)
     activating_bubble = FALSE;
 }
 
+// Free to start a reaction now without cutting another animation short.
+static BOOL pet_available(void)
+{
+    return !reaction && !command_pose && !pressed && !dragging && pet_motion.state == PET_WAIT;
+}
+
+static BOOL sleepy_state(void)
+{
+    return pet_motion.state == PET_NAP || pet_motion.state == PET_REST || pet_motion.state == PET_WAKE;
+}
+
 static void react(int action)
 {
-    queued_reaction = action;
     last_activity = pulse = animation_now();
-    pet_motion.next = pulse + 3000;
     if (action == REACT_LAND) {
+        // A landing follows a drag: the cat was carried, so this always plays.
         pet_motion.state = PET_WAIT;
+        pet_motion.next = pulse + 3000;
+        command_pose = 0;
         reaction = REACT_LAND;
         reaction_started = pulse;
-        queued_reaction = REACT_NONE;
-    } else if (pet_motion.state == PET_NAP) {
-        pet_motion.state = PET_STRETCH;
-        pet_motion.started = pulse;
+    } else if (pet_available()) {
+        reaction = action;
+        reaction_started = pulse;
+        if ((LONG)(pet_motion.next - (pulse + 3000)) < 0) pet_motion.next = pulse + 3000;
     }
+    // Otherwise the cat carries on: a click never cuts an animation short,
+    // wakes a sleeper, or plays afterwards. The bubble or menu still opens.
 }
 
 typedef struct { HMONITOR handle; RECT area; } PetMonitor;
@@ -1265,8 +1304,8 @@ static void move_from_press(POINT pointer)
 {
     if (!dragging && (abs(pointer.x - press.x) >= px(5) || abs(pointer.y - press.y) >= px(5))) {
         dragging = TRUE;
-        reaction = queued_reaction = REACT_NONE;
-        command_pose = queued_command = 0;
+        reaction = REACT_NONE;
+        command_pose = 0;
         secretary_dismiss();
     }
     if (dragging) {
@@ -1349,6 +1388,45 @@ static void wait_to_roam(DWORD now, DWORD delay)
     pet_motion.next = now + delay;
 }
 
+static void start_state(DWORD now, int state)
+{
+    pet_motion.state = state;
+    pet_motion.started = now;
+}
+
+// Idle pauses: mostly short, often longer, sometimes a long still sit.
+static DWORD idle_pause(void)
+{
+    unsigned roll = random_below(100);
+    if (roll < 55) return 3000 + random_below(6000);
+    if (roll < 87) return 9000 + random_below(16000);
+    return 25000 + random_below(35000);
+}
+
+// Deep sleep lasts minutes: usually 2-6, often 6-15, sometimes 15-35.
+static DWORD nap_length(void)
+{
+    unsigned roll = random_below(100);
+    if (roll < 45) return 120000 + random_below(240000);
+    if (roll < 80) return 360000 + random_below(540000);
+    return 900000 + random_below(1200000);
+}
+
+static void schedule_twitch(DWORD now)
+{
+    pet_motion.twitch_at = now + 25000 + random_below(70000);
+}
+
+static void start_nap(DWORD now, BOOL from_rest)
+{
+    start_state(now, PET_NAP);
+    pet_motion.from_rest = from_rest;
+    pet_motion.duration = nap_length();
+    schedule_twitch(now);
+    reaction = REACT_NONE;
+    command_pose = 0;
+}
+
 static void start_walk(DWORD now)
 {
     int margin = px(17), distance = px(105 + random_below(270));
@@ -1368,7 +1446,10 @@ static void start_walk(DWORD now)
     pet_motion.curve = px((int)random_below(49) - 24);
     pet_motion.left = x < anchor.x;
     pet_motion.face_right = !pet_motion.left;
-    pet_motion.fast = abs(x - anchor.x) > px(200) && random_below(8) == 0;
+    // Now and then a long trip becomes a spontaneous run, and only some
+    // walks stop for a pointer that comes close.
+    pet_motion.fast = abs(x - anchor.x) > px(200) && random_below(5) == 0;
+    pet_motion.curious = random_below(100) < 40;
     pet_motion.cruise = px(pet_motion.fast ? 68 + random_below(17) : 37 + random_below(19));
     pet_motion.speed = pet_motion.gait = pet_motion.traveled = 0.0;
     pet_motion.state = PET_TURN;
@@ -1404,103 +1485,190 @@ static void advance_walk(DWORD now, double seconds, BOOL stopping)
     clamp_anchor();
 }
 
+// Chooses what an idle cat does next. Weights follow context: a quiet user
+// makes rest and sleep likelier, a recent nap makes them rarer, and the last
+// choice is damped so the same behaviour seldom repeats.
+static void pick_behaviour(DWORD now, BOOL hovered)
+{
+    unsigned weight[DO_COUNT] = {0}, total = 0, roll;
+    DWORD user_idle = now - last_activity;
+    BOOL slept_lately = last_nap_end && now - last_nap_end < 240000;
+    int i, pick = DO_STILL;
+
+    if (g_cfg.secretary_roam && extra_ready[SECRETARY_MOVEMENT] && !hovered)
+        weight[DO_WALK] = user_idle > 120000 ? 14 : 26;
+    if (extra_ready[SECRETARY_REST]) {
+        weight[DO_GROOM] = 14;
+        weight[DO_STRETCH] = slept_lately ? 3 : 6;
+        weight[DO_REST] = slept_lately ? 5 : 12 + (unsigned)min(user_idle / 20000, 20);
+        weight[DO_NAP] = slept_lately ? 1 : 2 + (unsigned)min(user_idle / 30000, 14);
+    }
+    if (extra_ready[SECRETARY_ATTENTION]) weight[DO_LOOK] = 13;
+    if (now - last_yawn >= 90000) weight[DO_YAWN] = 6;
+    weight[DO_STILL] = 16;
+    if (last_behaviour >= 0 && weight[last_behaviour] > 3) weight[last_behaviour] /= 3;
+    for (i = 0; i < DO_COUNT; ++i) total += weight[i];
+    roll = random_below(total);
+    for (i = 0; i < DO_COUNT; ++i) {
+        if (roll < weight[i]) { pick = i; break; }
+        roll -= weight[i];
+    }
+    last_behaviour = pick;
+    switch (pick) {
+    case DO_WALK:
+        start_walk(now);
+        break;
+    case DO_GROOM:
+        start_state(now, PET_GROOM);
+        break;
+    case DO_STRETCH:
+        start_state(now, PET_STRETCH);
+        break;
+    case DO_REST:
+        start_state(now, PET_REST);
+        pet_motion.duration = clip_length(CLIP(lying_down)) + 15000 + random_below(75000);
+        break;
+    case DO_NAP:
+        start_nap(now, FALSE);
+        break;
+    case DO_LOOK:
+        start_state(now, PET_LOOK);
+        pet_motion.look_ms = 108 * (6 + random_below(11));
+        break;
+    case DO_YAWN:
+        start_state(now, PET_YAWN);
+        last_yawn = now;
+        break;
+    default:
+        wait_to_roam(now, idle_pause());
+        break;
+    }
+}
+
 static void advance_pet(DWORD now, POINT pointer)
 {
     double seconds = clamp((int)(now - pet_motion.last_frame), 0, 60) / 1000.0;
     DWORD elapsed = now - pet_motion.started;
     RECT hover_zone = {pet_at.x, pet_at.y, pet_at.x + sprite.size.cx, pet_at.y + layout_height()};
     BOOL hovered;
-    unsigned choice;
 
     pet_motion.last_frame = now;
     InflateRect(&hover_zone, px(25), px(19));
     hovered = PtInRect(&hover_zone, pointer);
-    if (!animate || !use_atlas || (input_is_locked() &&
-        pet_motion.state != PET_NAP && pet_motion.state != PET_STRETCH)) {
+    if (!animate || !use_atlas || (input_is_locked() && !sleepy_state() &&
+        pet_motion.state != PET_STRETCH)) {
         wait_to_roam(now, 3000);
         return;
     }
+    // Every action runs to its end; only being picked up (pressed) stops one.
     switch (pet_motion.state) {
     case PET_TURN:
-        if (pressed || opened || hovered || queued_command || queued_reaction || !g_cfg.secretary_roam)
+        if (pressed || !g_cfg.secretary_roam)
             wait_to_roam(now, 3000);
-        else if (elapsed >= clip_length(CLIP(turning))) {
-            pet_motion.state = PET_WALK;
-            pet_motion.started = now;
-        }
+        else if (elapsed >= clip_length(CLIP(turning)))
+            start_state(now, PET_WALK);
         return;
     case PET_WALK:
-        if (!pressed && !opened && g_cfg.secretary_roam)
-            advance_walk(now, seconds, hovered || queued_command || queued_reaction);
-        else {
-            pet_motion.state = PET_SETTLE;
-            pet_motion.started = now;
-        }
+        // An open bubble, or a pointer this walk is curious about, makes the
+        // cat slow to a stop instead of halting on the spot.
+        if (!pressed && g_cfg.secretary_roam)
+            advance_walk(now, seconds, opened || (pet_motion.curious && hovered));
+        else
+            start_state(now, PET_SETTLE);
         return;
     case PET_SETTLE:
-        if (elapsed >= clip_length(CLIP(settling))) wait_to_roam(now, 4000 + random_below(6500));
+        if (elapsed >= clip_length(CLIP(settling))) wait_to_roam(now, idle_pause());
+        return;
+    case PET_REST:
+        if (elapsed >= pet_motion.duration) {
+            if (random_below(100) < 65) start_nap(now, TRUE);
+            else start_state(now, PET_RISE);
+        }
+        return;
+    case PET_RISE:
+        if (elapsed >= clip_length(CLIP(getting_up))) wait_to_roam(now, idle_pause());
         return;
     case PET_NAP:
         if (elapsed >= pet_motion.duration) {
-            pet_motion.started = now;
-            pet_motion.state = PET_STRETCH;
+            start_state(now, PET_WAKE);
+            last_nap_end = now;
+        } else if ((LONG)(now - (pet_motion.twitch_at + clip_length(CLIP(sleep_shift)))) >= 0) {
+            schedule_twitch(now);
+        }
+        return;
+    case PET_WAKE:
+        if (elapsed >= clip_length(CLIP(waking))) {
+            unsigned roll = random_below(100);
+            if (roll < 60) start_state(now, PET_STRETCH);
+            else if (roll < 85) start_state(now, PET_GROOM);
+            else wait_to_roam(now, idle_pause());
         }
         return;
     case PET_STRETCH:
-        if (elapsed >= clip_length(CLIP(stretching))) wait_to_roam(now, 3800 + random_below(3200));
+        if (elapsed >= clip_length(CLIP(stretching))) wait_to_roam(now, idle_pause());
         return;
     case PET_GROOM:
-        if (elapsed >= clip_length(CLIP(grooming))) wait_to_roam(now, 4300 + random_below(5500));
+        if (elapsed >= clip_length(CLIP(grooming))) wait_to_roam(now, idle_pause());
         return;
     case PET_YAWN:
         if (elapsed >= (extra_ready[SECRETARY_IDLE_DETAIL] ? clip_length(CLIP(yawn_detail)) : clip_length(CLIP(bored))))
-            wait_to_roam(now, 3200 + random_below(4500));
+            wait_to_roam(now, idle_pause());
+        return;
+    case PET_LOOK:
+        if (elapsed >= pet_motion.look_ms) wait_to_roam(now, idle_pause());
         return;
     }
     if (pressed || opened || secretary_editor_visible() || secretary_prompt_has_focus() ||
-        reaction || queued_reaction || command_pose || queued_command || hovered) {
+        reaction || command_pose) {
         if ((LONG)(now - pet_motion.next) >= 0) pet_motion.next = now + 1500;
         return;
     }
-    if (now - last_activity >= 14000 && now - last_yawn >= 27000) {
-        pet_motion.state = PET_YAWN;
-        pet_motion.started = last_yawn = now;
-        return;
-    }
     if ((LONG)(now - pet_motion.next) < 0) return;
-    choice = random_below(100);
-    if (g_cfg.secretary_roam && extra_ready[SECRETARY_MOVEMENT] && (choice < 68 || now - born < 6000)) {
-        start_walk(now);
-    } else if (extra_ready[SECRETARY_REST]) {
-        pet_motion.started = now;
-        if (choice < 83) pet_motion.state = PET_GROOM;
-        else {
-            pet_motion.state = PET_NAP;
-            pet_motion.duration = 8500 + random_below(11500);
-            command_pose = queued_command = 0;
-        }
-    } else {
-        wait_to_roam(now, 2700 + random_below(3000));
-    }
+    pick_behaviour(now, hovered);
 }
 
 void secretary_command(int command)
 {
-    // Hooks and worker threads leave a single event. Nothing here touches a window.
-    if (g_cfg.secretary_enabled && g_cfg.secretary_react)
+    // Hooks and worker threads leave a single event with its time. Nothing
+    // here touches a window.
+    if (g_cfg.secretary_enabled && g_cfg.secretary_react) {
+        InterlockedExchange(&pending_command_tick, (LONG)GetTickCount());
         InterlockedExchange(&pending_command, command);
+    }
 }
 
+// The cat notices only some stimuli. Interest drops as they repeat and comes
+// back after a quiet spell; an ignored stimulus starts a short spell of
+// ignoring everything.
+static BOOL notices(DWORD now)
+{
+    if ((LONG)(now - ignore_until) < 0) return FALSE;
+    if (now - last_reacted > 25000) interest = 80;
+    if ((int)random_below(100) >= interest) {
+        ignore_until = now + 2000 + random_below(7000);
+        return FALSE;
+    }
+    interest = max(20, interest - 15);
+    last_reacted = now;
+    return TRUE;
+}
+
+// A command either starts its reaction now or is dropped. Nothing waits for
+// the cat to become free, so no reaction ever plays late.
 static void receive_command(DWORD now)
 {
     int command = (int)InterlockedExchange(&pending_command, 0);
-    if (!g_cfg.secretary_react) command_pose = queued_command = 0;
-    if (!animate || !use_atlas || !g_cfg.secretary_react || pressed || pet_motion.state == PET_NAP) return;
+    DWORD posted = (DWORD)InterlockedCompareExchange(&pending_command_tick, 0, 0);
+    if (command && GetTickCount() - posted > 150) command = 0;
+    if (!g_cfg.secretary_react) command_pose = 0;
+    if (!animate || !use_atlas || !g_cfg.secretary_react) return;
     if (!command) command = input_secretary_motion();
     if (!command) return;
-    if (command != command_pose) queued_command = command;
     last_activity = now;
-    pet_motion.next = now + 2400;
+    if (!pet_available() || !notices(now)) return;
+    command_pose = command;
+    command_started = now;
+    if ((LONG)(pet_motion.next - (now + 2400)) < 0) pet_motion.next = now + 2400;
 }
 
 static PoseCue command_frame(DWORD now)
@@ -1564,8 +1732,8 @@ static PoseCue animated_pose(DWORD now)
     BOOL detailed_idle = extra_ready[SECRETARY_IDLE_DETAIL];
 
     if (!animate) {
-        reaction = queued_reaction = REACT_NONE;
-        command_pose = queued_command = 0;
+        reaction = REACT_NONE;
+        command_pose = 0;
         return (PoseCue){0, 0};
     }
     if (dragging || (pressed && now - press_started >= 160)) {
@@ -1581,8 +1749,13 @@ static PoseCue animated_pose(DWORD now)
     reaction = REACT_NONE;
     cue = command_frame(now);
     if (cue.pose >= 0) return cue;
-    if (command_pose && !queued_command && command_pose == input_secretary_motion())
-        queued_command = command_pose;
+    // A key still held keeps the same gesture going without a pause.
+    if (command_pose && g_cfg.secretary_react && pet_motion.state == PET_WAIT &&
+        command_pose == input_secretary_motion()) {
+        command_started = now;
+        cue = command_frame(now);
+        if (cue.pose >= 0) return cue;
+    }
     command_pose = 0;
     switch (pet_motion.state) {
     case PET_TURN:
@@ -1599,9 +1772,34 @@ static PoseCue animated_pose(DWORD now)
     case PET_SETTLE:
         cue = step_at(CLIP(settling), elapsed, FALSE);
         break;
-    case PET_NAP:
-        cue = step_at(CLIP(falling_asleep), elapsed, FALSE);
-        if (cue.pose < 0) cue = step_at(CLIP(sleeping), elapsed - clip_length(CLIP(falling_asleep)), TRUE);
+    case PET_REST:
+        cue = step_at(CLIP(lying_down), elapsed, FALSE);
+        if (cue.pose < 0) cue = (PoseCue){REST_FIRST + 2, 1000};
+        break;
+    case PET_RISE:
+        // The last drawing holds only while hints freeze the state.
+        cue = step_at(CLIP(getting_up), elapsed, FALSE);
+        if (cue.pose < 0) cue = (PoseCue){REST_FIRST, 1000};
+        break;
+    case PET_NAP: {
+        DWORD intro = pet_motion.from_rest ? clip_length(CLIP(curling_up)) : clip_length(CLIP(falling_asleep));
+        DWORD shift = now - pet_motion.twitch_at;
+        cue = pet_motion.from_rest ? step_at(CLIP(curling_up), elapsed, FALSE)
+                                   : step_at(CLIP(falling_asleep), elapsed, FALSE);
+        if (cue.pose >= 0) break;
+        if ((LONG)shift >= 0 && shift < clip_length(CLIP(sleep_shift)))
+            cue = step_at(CLIP(sleep_shift), shift, FALSE);
+        else
+            cue = step_at(CLIP(sleep_breath), elapsed - intro, TRUE);
+        break;
+    }
+    case PET_WAKE:
+        cue = step_at(CLIP(waking), elapsed, FALSE);
+        if (cue.pose < 0) cue = (PoseCue){REST_FIRST, 1000};
+        break;
+    case PET_LOOK:
+        if (elapsed < pet_motion.look_ms && extra_ready[SECRETARY_ATTENTION])
+            cue = (PoseCue){ATTENTION_FIRST + (int)(elapsed / 108 % 16), 108};
         break;
     case PET_STRETCH:
         cue = step_at(CLIP(stretching), elapsed, FALSE);
@@ -1615,18 +1813,6 @@ static PoseCue animated_pose(DWORD now)
         break;
     }
     if (cue.pose >= 0) return cue;
-    if (queued_reaction) {
-        reaction = queued_reaction;
-        queued_reaction = REACT_NONE;
-        reaction_started = now;
-        return reaction_frame(now);
-    }
-    if (queued_command && g_cfg.secretary_react) {
-        command_pose = queued_command;
-        queued_command = 0;
-        command_started = now;
-        return command_frame(now);
-    }
     // Each action returns through the same neutral resting drawing.
     if (detailed_idle && tailmon_art[1 + SECRETARY_IDLE_DETAIL]) {
         int previous = painted_pose < 0 ? -1 : painted_pose % POSE_COUNT;
@@ -1801,10 +1987,19 @@ static void frame(void)
     if (hints) last_hint = now;
     pinned = !dragging && now - last_hint < 400 && (hints || now - pulse > now - last_hint);
     if (pinned) {
+        DWORD paused = now - pet_motion.last_frame;
         pet_motion.last_frame = now;
-        if (pet_motion.state == PET_NAP) InterlockedExchange(&pending_command, 0);
+        if (sleepy_state()) InterlockedExchange(&pending_command, 0);
         else InterlockedCompareExchange(&pending_command, 0, SECRETARY_HINT);
-        if (!hint_animate || !animate) return;
+        if (!hint_animate || !animate) {
+            // Frozen under the hints: resume from the same drawing afterwards.
+            if (paused < 1000) {
+                pet_motion.started += paused;
+                reaction_started += paused;
+                command_started += paused;
+            }
+            return;
+        }
     } else if (!saying_goodbye) {
         receive_command(now);
         advance_pet(now, pointer);
@@ -1838,18 +2033,21 @@ void secretary_hint_reaction(void)
     DWORD now = animation_now();
     int leading[POSES_PER_SHEET * 2], count = 0;
     if (!pet || hint_is_open()) return;
-    hint_sleeping = pet_motion.state == PET_NAP;
+    hint_sleeping = sleepy_state() || pet_motion.state == PET_RISE;
     if (hint_sleeping) InterlockedExchange(&pending_command, 0);
     else {
         InterlockedCompareExchange(&pending_command, 0, SECRETARY_HINT);
-        if (queued_command == SECRETARY_HINT) queued_command = 0;
         if (pet_motion.state == PET_TURN || pet_motion.state == PET_WALK) {
             pet_motion.state = PET_SETTLE;
             pet_motion.started = now;
         }
     }
     last_hint = now - 400;
-    hint_animate = use_atlas && animate && (hint_sleeping ? extra_ready[SECRETARY_REST] :
+    // Grooming, stretching and yawning pause under the hints rather than
+    // jumping to the attention loop; they finish once the hints close.
+    hint_animate = use_atlas && animate && pet_motion.state != PET_GROOM &&
+                   pet_motion.state != PET_STRETCH && pet_motion.state != PET_YAWN &&
+                   (hint_sleeping ? extra_ready[SECRETARY_REST] :
                    g_cfg.secretary_react && extra_ready[SECRETARY_ATTENTION]);
     hint_hit = click_pixel;
     if (hint_animate && !hint_sleeping) {
@@ -1873,7 +2071,7 @@ void secretary_hint_reaction(void)
 BOOL secretary_farewell(void)
 {
     DWORD now = animation_now();
-    if (!pet || !animate || !use_atlas || !g_cfg.secretary_react || input_is_locked() || pet_motion.state == PET_NAP)
+    if (!pet || !animate || !use_atlas || !g_cfg.secretary_react || input_is_locked() || sleepy_state())
         return FALSE;
     if (saying_goodbye) return TRUE;
     if (!SetTimer(g_main_wnd, SECRETARY_FAREWELL_TIMER, 590, NULL)) return FALSE;
@@ -1885,8 +2083,7 @@ BOOL secretary_farewell(void)
     pending_slot = -1;
     launch.exe = NULL;
     uia_cancel_browser_tab();
-    reaction = queued_reaction = REACT_NONE;
-    queued_command = 0;
+    reaction = REACT_NONE;
     command_pose = SECRETARY_ACTION;
     command_started = now;
     last_hint = now - 400;
@@ -2188,9 +2385,9 @@ void secretary_config_changed(void)
     if (!pet || !bubble) goto fail;
     born = animation_now();
     last_activity = born;
-    reaction = queued_reaction = REACT_NONE;
-    command_pose = queued_command = 0;
-    last_yawn = born - 27000;
+    reaction = REACT_NONE;
+    command_pose = 0;
+    last_yawn = born - 90000;
     pet_motion.seed = (born ^ GetCurrentProcessId() ^ GetCurrentThreadId()) | 1;
     pet_motion.face_right = FALSE;
     pet_motion.last_frame = born;

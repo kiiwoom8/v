@@ -491,7 +491,7 @@ any extra sheet paths blank to use all the bundled poses. Add personal links
 to numbered slots in your own settings file.
 
 The secretary remembers where you drop it. With a movement sheet, it wanders
-between resting spots at different speeds and settles when you reach for it. Click
+between resting spots at different speeds, and some walks stop when you reach for it. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). The grabbed pose keeps the character
@@ -505,17 +505,27 @@ The bubble can edit a numbered shortcut, pause or resume roaming, or bring
 the secretary back to the last place you dropped it. **Next screen** moves
 it to the next monitor. On a single monitor that button opens Vim's click
 hints. The character reacts to Vim commands such as scrolling, clicks,
-hints, and mode changes. The latest command can follow a playing reaction.
-Held keys repeat the relevant cycle at its end. Hints hold the character's
-position while its pose keeps moving. Vim's pointer movement passes over the
+hints, and mode changes only when it is sitting free: a command that arrives
+while it is walking, grooming, resting or already reacting is dropped, never
+played later, and nothing you do cuts an animation short except picking the
+character up. It also ignores some commands, more often when they repeat. A
+held key keeps the same gesture going. Hints hold the character's position;
+grooming, stretching and yawning pause under them and finish afterwards. Vim's pointer movement passes over the
 character. Keyboard scrolling and the physical wheel reach the window behind
 the character at the pointer's location. The character follows upward and
-downward scrolls with different movements and sleeps through Vim activity.
+downward scrolls with different movements. When idle it chooses by weighted
+chance between sitting still, looking around, grooming, stretching, yawning,
+walking or running, and resting. A rest lies down for 15–90 seconds and then
+gets up or curls up asleep. Sleep lasts minutes (usually 2–15, sometimes up to
+35), breathes slowly with an occasional shift, and ends by waking and
+stretching. Clicks, hints and Vim activity do not wake it; picking it up does.
 It waves briefly when you quit Vim from the tray or the quit hotkey.
 
 **Claude 질문 준비** combines text you enter with a preset for summary,
 explanation, translation, or editing. It copies the result and opens Claude.
-Paste and send the prompt in Claude whenever you are ready.
+Paste and send the prompt in Claude whenever you are ready. Its window and the
+shortcut editor take typing, but the mouse-mode key still works there, so
+mouse mode can reach every control even when the pointer is hidden.
 
 Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
 To supply custom art, use an absolute path or a path relative to the INI.
