@@ -1592,15 +1592,27 @@ Invariants stated in `common.h` and enforced by history:
   linearly over the whole step (`paint_atlas_pose`: a same-clip walk step
   with no prepared motion blends for `cue.duration - 16` ms, minimum 40 ms,
   instead of a fixed 40 ms).
-- `tools/bake_tailmon_motion.py` now lists both seams (70-73, 74-77, 7
-  frames), so the next RIFE bake prepares real in-betweens for them. motion.bin
-  is unchanged because RIFE is not installed on the desktop PC. Until the
-  next bake, the seams fade.
+- `tools/bake_tailmon_motion.py` lists both seams (70-73, 74-77, 7 frames).
+  The same day Kim approved installing RIFE NCNN Vulkan 20221029 on the
+  desktop PC (`%LOCALAPPDATA%\rife-ncnn-vulkan`). The bake with `--reuse` kept
+  all 454 earlier transitions byte-identical and added RIFE in-betweens for
+  the two seams. motion.bin went from 17,308,802 to 17,425,220 bytes (budget
+  17,450,000) and vim.exe to 33,222,038 bytes (updater limit 32 MiB). The
+  whole-step cross-fade remains only as the fallback for a pack without them.
+- The first bake attempt would have dropped two sleep transitions (36-38,
+  37-38) and cut 36-37 and 38-39 from 7 frames to 3. cbfa6ef had split the
+  `sleeping` clip into `sleep_breath` and `sleep_shift`, and the bake script
+  still keyed its loop and 7-frame sets on the old name. The script now names
+  both clips and lists the breath-to-shift edges, so a bake reproduces the
+  shipped pack.
 - Verified by decoding motion.bin in Python and replaying both loops as the
   engine plays them (prepared frames per baked pair, cross-fade otherwise):
   the old seam shows the paws swapping in one blended frame, the new one a
-  forward step in three hops. Clean `-Werror` build; the rebuilt vim.exe ran
-  with the 164x196 Tailmon window visible.
+  forward step in three hops. The baked seams show the paw moving through
+  RIFE in-betweens with no double image. Clean `-Werror` build. A probe
+  linked against the built resources found the 70-73 and 74-77 edges (7
+  frames each, both directions). The rebuilt vim.exe ran with the 164x196
+  Tailmon window visible.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2518,6 +2530,12 @@ last ten are all `worktree-agent-*` into `element-hints`.
 - **Match body scale across poses.** Compare the grounded body and floor in
   standing, crouching and sleeping cels. Scaling every clip to the longest
   silhouette edge made the curled cat grow as soon as it reached the sleep loop.
+
+- **Rename a clip in `secretary.c` and the bake script with it.**
+  `transition_edges` finds clips by name, so a renamed clip silently loses its
+  loop edge and frame count on the next bake. Before shipping a rebake, diff
+  the old and new packs' edge tables. Only the intended edges may differ, and
+  reused frames must stay byte-identical.
 
 - **A curated gait loop must keep every limb's step.** Check each leg's
   track (front and hind) across every cel and seam, not only the leg reported.

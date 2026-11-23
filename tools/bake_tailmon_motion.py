@@ -41,9 +41,9 @@ def transition_edges():
             base, _, offset = expression.partition("+")
             base = base.strip()
             poses.append((int(base) if base.isdecimal() else SHEETS[base]) + int(offset or 0))
-        run(poses, name in {"idle", "grabbed", "breathing_detail", "grab_detail", "sleeping"},
+        run(poses, name in {"idle", "grabbed", "breathing_detail", "grab_detail", "sleeping", "sleep_breath"},
             7 if name in {"breathing_detail", "falling_asleep", "grab_detail", "grooming", "settling",
-                          "sleeping", "stretching", "turning"} else 3)
+                          "sleeping", "sleep_breath", "sleep_shift", "stretching", "turning"} else 3)
 
     for first, length in ((16, 8), (24, 4), (64, 16), (80, 16)):
         run(list(range(first, first + length)), True, 7 if first in (64, 80) else 3)
@@ -71,6 +71,9 @@ def transition_edges():
         edge(phase, 28, 3)
     for phase in (16, 24, 64):
         edge(phase, 28, 7)
+    # A rare sleep_shift starts from either breathing drawing (secretary.c).
+    edge(36, 38, 7)
+    edge(37, 38, 7)
     edge(35, 36, 7)
     for phase in range(32, 36):
         edge(phase, 128, 2)

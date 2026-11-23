@@ -123,8 +123,9 @@ static const PoseStep settling[] = {
 // so skip those, but keep 6, 9 and 10: without them (the earlier 13..5 loop)
 // the near paw never swings and the two front paws swap places in one jump at
 // the 5 -> 13 seam. Always FORWARD in the sheet's order; reversing gait cels
-// makes the legs walk backwards. The two seams with no prepared in-betweens,
-// 6 -> 9 and 10 -> 13, cross-fade over the whole step (paint_atlas_pose).
+// makes the legs walk backwards. The two seams, 6 -> 9 and 10 -> 13, have
+// their own RIFE in-betweens in motion.bin; a pack without them cross-fades
+// them over the whole step (paint_atlas_pose).
 static const BYTE walk_detail_cycle[12] = {
     13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 9, 10
 };
