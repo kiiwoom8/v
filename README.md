@@ -759,8 +759,9 @@ ones:
   and `v` in the label font. The grid's rows and columns use the same
   letters in this order)
 - `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `opacity` (the fill
-  of the labels and the status bar, 30-255, default 150: the screen shows
-  through the fill; letters and borders stay solid)
+  of the labels and the status bar, 30-255, default 235: nearly solid, so the letters
+  read on any page; lower lets the screen show through the fill; letters and
+  borders stay solid)
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,

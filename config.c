@@ -638,7 +638,7 @@ void config_set_defaults(Config *c)
     c->subgrid = 1;
     wcscpy(c->subgrid_keys, L"qwer/asdf/zxcv");
     c->font_size = 0;
-    c->opacity = 150;
+    c->opacity = 235;
     c->label_bg = RGB(0xFF, 0xD6, 0x33);
     c->label_fg = RGB(0x14, 0x14, 0x14);
     c->label_border = RGB(0x7A, 0x5C, 0x00);
@@ -1875,7 +1875,7 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"subgrid_keys = %ls\r\n", d.subgrid_keys);
     appendf(buf, cch, L"; Label font size in pixels at 100%% scaling; 0 = automatic (or 6-72).\r\n");
     appendf(buf, cch, L"font_size = %d\r\n", d.font_size);
-    appendf(buf, cch, L"; Opacity of the labels and status bar (30-255); lower lets the screen show through.\r\n");
+    appendf(buf, cch, L"; Opacity of the labels and status bar (30-255); lower lets the screen show through the fill.\r\n");
     appendf(buf, cch, L"opacity = %u\r\n", (unsigned)d.opacity);
     appendf(buf, cch, L"; Label background colour as #RRGGBB.\r\n");
     _snwprintf(num, 64, L"#%02X%02X%02X", GetRValue(d.label_bg),

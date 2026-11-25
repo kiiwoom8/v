@@ -1848,6 +1848,10 @@ Invariants stated in `common.h` and enforced by history:
 - Built with MinGW.org GCC 6.3 and `-Werror`. Not yet tried on the user's
   Chrome (the running vim.exe was left alone): update from the tray, then
   `>>` / `<<` on a page.
+- Kim: "back to default transparency of v. i cannot read texts properly".
+  With the fill at 150 a busy page showed through behind the dark letters.
+  `opacity` default 150 -> 235 (the value before 2026-11-25); letters and
+  borders stay opaque (per-pixel alpha). Kim's own `vim.ini` 150 -> 235.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -3009,7 +3013,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
 | A maximized topmost Chrome or Edge window of another process becomes an ordinary window (`demote_maximized`) | 2026-11-25 | Tailmon re-raised above it after every one of its raises, a blink each time |
 | A web shortcut switches tabs by reading the address bar and tab names and selecting the tab; nothing is typed into the browser | 2026-11-25 | Typed `@tabs` and the URL into the address bar and picked the suggestion |
-| `opacity` default 150 is the alpha of the label and status-bar fills only; letters and borders are opaque (per-pixel alpha) | 2026-11-25, 2026-11-26 | 235 for the whole overlay, letters included |
+| `opacity` (default 235) is the alpha of the label and status-bar fills only; letters and borders are opaque (per-pixel alpha) | 2026-11-26 | 235 for the whole overlay, letters included; 150 on 2026-11-25 and 26 |
 | Sticky Keys and their Shift-five-times shortcut are turned off at start (`sticky_keys_off = 0` leaves them alone) | 2026-11-26 | Windows' own setting, the shortcut on |
 | Shift tapped twice (Alt + Shift twice in a text field) opens or closes Tailmon's bubble (`[secretary] shift_tap = 0` restores) | 2026-11-26 | Only a click on her |
 | Tailmon draws one frame per display refresh (DWM timing) | 2026-11-25 | A frame every 8 ms, twice per 60 Hz refresh |
