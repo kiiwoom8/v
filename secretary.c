@@ -2087,11 +2087,15 @@ finished:
 }
 
 // Another program's topmost window shown after Tailmon covers her: Chrome's
-// main window can turn topmost, and Windows stacks the newest topmost window
-// first. Lift her just above the highest such window over her. Owned popups
-// (menus, tooltips), tool windows (the taskbar), cloaked windows (other
+// main window can turn topmost, Chrome's status bubble ("Loading...", link
+// URLs) is a topmost popup shown on every navigation, and Windows stacks the
+// newest topmost window first. Lift her just above the highest such window
+// over her: a main window (unowned, not a tool window) or a click-through
+// overlay (WS_EX_TRANSPARENT, which nobody clicks anyway). Clickable popups
+// (menus, dropdowns), tool windows (the taskbar), cloaked windows (other
 // virtual desktops) and Vim's own windows (hints, dialogs) stay where they are.
 static DWORD last_raise_check;
+static HWINEVENTHOOK raise_hooks[3];
 
 static void keep_above_foreign_topmost(void)
 {
@@ -2101,11 +2105,11 @@ static void keep_above_foreign_topmost(void)
     DWORD self = GetCurrentProcessId(), pid;
     LONG ex;
 
-    if (!GetWindowRect(pet, &mine)) return;
+    if (!pet || !GetWindowRect(pet, &mine)) return;
     for (w = GetWindow(pet, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
         ex = GetWindowLongW(w, GWL_EXSTYLE);
-        if (!(ex & WS_EX_TOPMOST) || (ex & WS_EX_TOOLWINDOW) || !IsWindowVisible(w) ||
-            IsIconic(w) || GetWindow(w, GW_OWNER))
+        if (!(ex & WS_EX_TOPMOST) || !IsWindowVisible(w) || IsIconic(w) ||
+            (!(ex & WS_EX_TRANSPARENT) && ((ex & WS_EX_TOOLWINDOW) || GetWindow(w, GW_OWNER))))
             continue;
         GetWindowThreadProcessId(w, &pid);
         if (pid == self || !GetWindowRect(w, &theirs) ||
@@ -2114,6 +2118,14 @@ static void keep_above_foreign_topmost(void)
         cover = w;
     }
     if (!cover) return;
+    {
+        // Another program that also forces itself back on top would answer
+        // every raise with its own: at most 20 raises a second.
+        static DWORD second_start, raises;
+        DWORD now = GetTickCount();
+        if (now - second_start >= 1000) second_start = now, raises = 0;
+        if (++raises > 20) return;
+    }
     after = GetWindow(cover, GW_HWNDPREV);
     if (!after) after = HWND_TOPMOST;
     if (cover != last_cover) {
@@ -2124,6 +2136,44 @@ static void keep_above_foreign_topmost(void)
     SetWindowPos(pet, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     if (IsWindowVisible(bubble))
         SetWindowPos(bubble, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+// The frame check alone left her hidden for up to 500 ms each time Chrome's
+// status bubble appeared. React to the show, move, reorder or activation of
+// another process's topmost window at once; the frame check stays as the
+// fallback for z-order changes that raise no event.
+static void CALLBACK topmost_event(HWINEVENTHOOK hook, DWORD event, HWND wnd, LONG object,
+                                   LONG child, DWORD thread, DWORD time)
+{
+    (void)hook; (void)event; (void)thread; (void)time;
+    if (!wnd || object != OBJID_WINDOW || child != CHILDID_SELF || !pet || dragging ||
+        hint_is_open() || !(GetWindowLongW(wnd, GWL_EXSTYLE) & WS_EX_TOPMOST) ||
+        GetAncestor(wnd, GA_ROOT) != wnd)
+        return;
+    keep_above_foreign_topmost();
+}
+
+static void watch_topmost(BOOL on)
+{
+    int i;
+    for (i = 0; i < 3; ++i)
+        if (raise_hooks[i]) UnhookWinEvent(raise_hooks[i]);
+    ZeroMemory(raise_hooks, sizeof(raise_hooks));
+    if (!on) return;
+    // SHOW, HIDE, REORDER; LOCATIONCHANGE (the bubble moves aside from the
+    // pointer); FOREGROUND (an activated topmost window comes to the front).
+    // A bare SetWindowPos z-order change raises none of these: the frame
+    // check catches it within 100 ms.
+    raise_hooks[2] = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
+                                     topmost_event, 0, 0,
+                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    raise_hooks[0] = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER, NULL, topmost_event,
+                                     0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    raise_hooks[1] = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, NULL,
+                                     topmost_event, 0, 0,
+                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    if (!raise_hooks[0] || !raise_hooks[1] || !raise_hooks[2])
+        app_log(L"secretary: topmost event hook failed (%lu)", GetLastError());
 }
 
 static void frame(void)
@@ -2167,7 +2217,7 @@ static void frame(void)
     }
     finish_launch(now);
     render_bubble(now);
-    if (!hints && now - last_raise_check >= 500) {
+    if (!hints && now - last_raise_check >= 100) {
         last_raise_check = now;
         keep_above_foreign_topmost();
     }
@@ -2423,6 +2473,7 @@ void secretary_shutdown(void)
     launch.exe = NULL;
     uia_cancel_browser_tab();
     stop_frame_timer();
+    watch_topmost(FALSE);
     if (pet) DestroyWindow(pet);
     if (bubble) DestroyWindow(bubble);
     pet = bubble = NULL;
@@ -2584,6 +2635,7 @@ void secretary_config_changed(void)
     frame();
     ShowWindow(pet, SW_SHOWNOACTIVATE);
     start_frame_timer();
+    watch_topmost(TRUE);
     return;
 fail:
     secretary_shutdown();

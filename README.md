@@ -491,8 +491,9 @@ any extra sheet paths blank to use all the bundled poses. Add personal links
 to numbered slots in your own settings file.
 
 The secretary stays on top of other windows, including programs that make
-their own window always-on-top (Chrome can): within half a second it moves back
-above such a window. Menus, tooltips and the taskbar are left above it.
+their own window always-on-top (Chrome can) and click-through overlays such as
+Chrome's "Loading..." / link status bubble: it moves back above them at once.
+Menus, dropdowns and the taskbar are left above it.
 
 The secretary remembers where you drop it. With a movement sheet, it wanders
 between resting spots at different speeds, and some walks stop when you reach for it. It

@@ -1635,6 +1635,25 @@ Invariants stated in `common.h` and enforced by history:
   probe re-raised Chrome above the pet twice and the pet was back on top
   after 550 and 350 ms. `mingw32-make` failed in the agent shell with
   "INTERNAL: readdir"; the same gcc/windres commands run one by one built it.
+- Same day, Kim: "tailmon disappears in a sec when i change url while
+  browsing (flickers)". A WinEvent probe on Chrome's process showed the cause:
+  on every navigation Chrome shows its status bubble ("Loading...", link
+  URLs), an owned topmost popup (ex 0x82000a8: topmost, tool window,
+  click-through, layered, no-activate), which the first rule skipped as an
+  owned popup and which covered the pet for about 500 ms.
+- Rule now: also lift her above click-through (`WS_EX_TRANSPARENT`) topmost
+  windows, owned or not; clickable owned popups (menus, dropdowns) still stay
+  above her. `watch_topmost` hooks SHOW..REORDER, LOCATIONCHANGE and
+  FOREGROUND (out of context, own process skipped) so she rises on the event,
+  and the frame check runs every 100 ms instead of 500 for z-order changes
+  that raise no event. At most 20 raises a second, so a program that also
+  forces itself on top cannot start a raise loop.
+- Verified: a test popup shaped like the bubble shown over the pet was below
+  her again in 0.2-4.6 ms; a bare SetWindowPos z-order change (no event)
+  within the 100 ms check; a clickable owned topmost popup stayed above her
+  for 3 s. With a 5 ms coverage probe on Chrome during four navigations the
+  bubble showed and the pet was never covered (before: covered ~500 ms per
+  navigation). vim.exe used 0.33 s CPU over 5 s with the hooks running.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2769,7 +2788,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 | The detailed walk loops forward over walk.png cels 13,14,15,0..5 (`walk_detail_cycle`), not all sixteen in order, and never reversed | 2026-11-23 | Cels 6..12 draw an inconsistent number of ground contacts (2/3/4), so cycling all sixteen flickered the hind legs; a ping-pong closed the loop but ran the gait backwards, so forward only |
 | Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
-| Tailmon moves back above another program's topmost, unowned, overlapping window within 500 ms (`keep_above_foreign_topmost`) | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window (Chrome's main window) covered her |
+| Tailmon moves back above another program's overlapping topmost window that is unowned or click-through (Chrome's main window, its status bubble) on its show/move/activation event, else within 100 ms (`keep_above_foreign_topmost`, `watch_topmost`); clickable owned popups (menus) stay above her | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window covered her, and Chrome's status bubble hid her on every navigation |
 
 ## 7. Open threads
 
