@@ -1771,6 +1771,20 @@ Invariants stated in `common.h` and enforced by history:
   are never asked), so a plain double Shift was taken as typing. While the
   bubble is open (`secretary_bubble_open`) the text-field rule does not
   apply.
+- Kim: still no close. Measured with a diagnostic build that took injected
+  keys and logged every step: the toggle opened the bubble, and from then on
+  the keyboard hook got no key at all while the bubble was in front (raw
+  input arrived, `raw_input_check` reinstalled the hook, still nothing; the
+  input thread answered a 50 ms ping and no hook, mouse or focus callback ran
+  20 ms or more). A standalone test (a hook on one thread, a window shaped
+  like the bubble on another) got every key, so something in vim mouse's own
+  setup stops the calls: not yet found. The bubble now closes itself on Shift
+  twice from its own WM_KEYDOWN / WM_KEYUP (`bubble_shift_*`), and the hook
+  ignores Shift while the bubble has the focus so it cannot reopen it.
+  Verified: open and close twice in a row by injected Shift taps. Also: a
+  Shift down the hook saw without its release made the next real tap count
+  from that old press; a down more than 600 ms after the last one is now a
+  new press.
 - Kim: "always disable sticky keys". New `sticky_keys_off` (default 1):
   `main.c` turns off Sticky Keys and their shortcut (Shift five times, which
   asks to turn them on) at start and on every reload, saved in the profile
@@ -2729,6 +2743,10 @@ last ten are all `worktree-agent-*` into `element-hints`.
   The `@tabs` lookup worked but showed the typing and depended on the
   suggestion list; UI Automation already exposes the tab names, the active
   address and a Select action.
+
+- **Vim mouse's keyboard hook gets no keys while Tailmon's bubble is in front**
+  (2026-11-26, cause not found; a standalone hook does get them). Handle a
+  key the bubble needs in the bubble's own window procedure.
 
 - **Fix the state of a window that keeps re-raising itself; do not race it.**
   Answering each raise a frame later still shows as a blink. A maximized

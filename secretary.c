@@ -226,6 +226,11 @@ static UINT page_request;
 // click_pixel and sprite_bounds describe the painted sprite. A blended frame
 // leaves them stale; ensure_measured measures it only when they are used.
 static BOOL measured;
+// Shift tapped twice in the bubble closes it (bubble_shift_key). The bubble
+// has the keyboard focus, so it sees the keys itself: the keyboard hook got
+// none of them while the bubble was in front (measured 2026-11-26).
+static BOOL bubble_shift_alone, bubble_shift_first;
+static DWORD bubble_shift_down_at, bubble_shift_up_at;
 static int pending_slot = -1;
 static volatile LONG pending_command;
 static int command_pose;
@@ -1198,6 +1203,7 @@ static void open_bubble(void)
     bubble_at.y = clamp(pet_at.y + layout_height() / 2 - px(45), work.top, work.bottom - height);
     selected = -1;
     focus_item = 0;
+    bubble_shift_alone = bubble_shift_first = FALSE;
     draw_bubble();
     opened = TRUE;
     bubble_tick = animation_now();
@@ -2620,6 +2626,14 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             if (LOWORD(wp) == WA_INACTIVE && !activating_bubble) secretary_dismiss();
             break;
         case WM_KEYDOWN:
+            if (wp == VK_SHIFT) {
+                if (!(lp & (1L << 30))) {
+                    bubble_shift_alone = TRUE;
+                    bubble_shift_down_at = GetMessageTime();
+                }
+                return 0;
+            }
+            bubble_shift_alone = bubble_shift_first = FALSE;
             if (wp == VK_TAB && !(lp & (1L << 30))) {
                 int count = row_count + action_count;
                 int offset = GetKeyState(VK_SHIFT) < 0 ? -1 : 1;
@@ -2632,6 +2646,21 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             if (!(lp & (1L << 30)) && !secretary_modifiers_down()) armed_key = (int)wp;
             return 0;
         case WM_KEYUP:
+            if (wp == VK_SHIFT) {
+                DWORD at = GetMessageTime();
+                if (!g_cfg.secretary_shift_tap || !bubble_shift_alone ||
+                    at - bubble_shift_down_at > SHIFT_TAP_MS) {
+                    bubble_shift_first = FALSE;
+                } else if (bubble_shift_first && at - bubble_shift_up_at <= SHIFT_TAP_MS) {
+                    bubble_shift_first = FALSE;
+                    secretary_dismiss();
+                } else {
+                    bubble_shift_first = TRUE;
+                    bubble_shift_up_at = at;
+                }
+                bubble_shift_alone = FALSE;
+                return 0;
+            }
             if ((int)wp != armed_key) return 0;
             armed_key = 0;
             if (wp == VK_ESCAPE) secretary_dismiss();

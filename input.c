@@ -2779,9 +2779,8 @@ static void react_to_command(UINT vk, BOOL captured)
 // double Shift may be typing, Alt must be held through both taps. Any other
 // key or a mouse button in between starts over. It only watches: the keys
 // still reach the app and nothing is injected.
-#define SHIFT_TAP_MS 400
 static BOOL  s_tap_shift_down, s_tap_alone, s_tap_first, s_tap_alt;
-static DWORD s_tap_down_time, s_tap_up_time;
+static DWORD s_tap_down_time, s_tap_up_time, s_tap_last_down;
 static volatile LONG s_tap_clicked; // mouse hook: a button went down
 
 static void shift_tap_watch(UINT vk, BOOL down, DWORD time)
@@ -2798,14 +2797,23 @@ static void shift_tap_watch(UINT vk, BOOL down, DWORD time)
         return;
     }
     if (down) {
-        if (!s_tap_shift_down) {
+        // Held Shift repeats every ~30 ms; a longer gap is a new press whose
+        // release before it was never seen (the hook was gone).
+        if (!s_tap_shift_down || time - s_tap_last_down > 600) {
             s_tap_shift_down = TRUE;
             s_tap_alone = TRUE;
             s_tap_down_time = time;
         }
+        s_tap_last_down = time;
         return;
     }
     s_tap_shift_down = FALSE;
+    // The bubble in front closes itself on Shift twice (secretary.c); acting
+    // here too would open it again.
+    if (secretary_has_focus()) {
+        s_tap_first = s_tap_alone = FALSE;
+        return;
+    }
     if (!s_tap_alone || time - s_tap_down_time > SHIFT_TAP_MS ||
         !g_cfg.secretary_enabled || !g_cfg.secretary_shift_tap ||
         flag_get(&s_paused) || flag_get(&s_locked) || flag_get(&s_capture) ||
