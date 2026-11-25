@@ -503,7 +503,8 @@ has the odd playful scamper; set `play = 0` to turn those extras off. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
 menu. Tapping Shift twice also opens the bubble (and closes it again). Each
 tap is Shift alone, and the second comes within 0.4 s. In a text field, where
-a double Shift may be typing, hold Alt and tap Shift twice. Set
+a double Shift may be typing, hold Alt and tap Shift twice; a plain double
+Shift always closes an open bubble. Set
 `shift_tap = 0` to turn this off. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). The grabbed pose keeps the character
 at its idle size. Click hints (`Alt+F` by default) also

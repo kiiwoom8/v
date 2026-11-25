@@ -1122,6 +1122,8 @@ static void render_bubble(DWORD now)
 static void react(int action);
 static void open_bubble(void);
 
+BOOL secretary_bubble_open(void) { return opened; }
+
 // Shift twice (input.c): the same as clicking her.
 void secretary_toggle_bubble(void)
 {

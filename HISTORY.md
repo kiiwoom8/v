@@ -1766,6 +1766,11 @@ Invariants stated in `common.h` and enforced by history:
   paused, locked or capturing. `secretary_toggle_bubble` opens the bubble as a
   click does, or closes it. New `[secretary] shift_tap` (default 1). Not
   testable by injection (the watch skips injected keys): Kim tests.
+- Kim: "shift+shift again for close that". An open bubble has the focus,
+  but `uia_focus_state` still held the app's text field (Vim's own windows
+  are never asked), so a plain double Shift was taken as typing. While the
+  bubble is open (`secretary_bubble_open`) the text-field rule does not
+  apply.
 
 ## 4. Complete commit log (non-merge, oldest first)
 

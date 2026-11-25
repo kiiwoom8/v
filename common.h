@@ -510,6 +510,7 @@ typedef struct {
 void secretary_browser_result(UINT request, HWND browser);
 void secretary_page_result(UINT request, BrowserPage *page);
 void secretary_toggle_bubble(void);   // UI thread: open the bubble, or close it
+BOOL secretary_bubble_open(void);     // any thread, a plain read (keyboard hook)
 BOOL uia_find_browser_tab(const HWND *windows, int count, const WCHAR *url, UINT request);
 BOOL uia_read_browser_page(HWND window, UINT request);
 BOOL uia_learn_browser_tab(HWND window, const WCHAR *url, UINT request);

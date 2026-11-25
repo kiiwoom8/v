@@ -2809,7 +2809,10 @@ static void shift_tap_watch(UINT vk, BOOL down, DWORD time)
     if (!s_tap_alone || time - s_tap_down_time > SHIFT_TAP_MS ||
         !g_cfg.secretary_enabled || !g_cfg.secretary_shift_tap ||
         flag_get(&s_paused) || flag_get(&s_locked) || flag_get(&s_capture) ||
-        (!s_tap_alt && uia_focus_state() == FOCUS_TEXT)) {
+        // An open bubble has the focus, but the focus state still holds
+        // the app's text field (our own windows are never asked): a plain
+        // double Shift closes it.
+        (!s_tap_alt && !secretary_bubble_open() && uia_focus_state() == FOCUS_TEXT)) {
         s_tap_first = FALSE;
         return;
     }
