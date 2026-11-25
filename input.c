@@ -935,6 +935,8 @@ static BOOL window_cloaked(HWND hwnd)
     return cloaked != 0;
 }
 
+BOOL input_window_cloaked(HWND hwnd) { return window_cloaked(hwnd); }
+
 // which (may be NULL) gets the window that counts as open: the popup, or the
 // foreground window while it is in menu mode. With skip_panels, Chrome's panels
 // (downloads, extensions, permission prompts) do not count, neither as the

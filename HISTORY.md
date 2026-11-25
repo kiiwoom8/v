@@ -1614,6 +1614,28 @@ Invariants stated in `common.h` and enforced by history:
   frames each, both directions). The rebuilt vim.exe ran with the 164x196
   Tailmon window visible.
 
+### Tailmon: kept above Chrome's topmost window (2026-11-25)
+
+- Kim: Tailmon missing on virtual desktop 1 but shown on 2 and 3; "chrome
+  overrides tailmon". On desktop 1 Chrome's maximized main window carried
+  `WS_EX_TOPMOST` (ex style 0x200108; set by Chrome itself, not by vim
+  mouse). Windows stacks the most recently raised topmost window first, so
+  Chrome sat above the topmost pet window. Tool windows are not tied to a
+  virtual desktop, so on 2 and 3, with no topmost Chrome, Tailmon showed.
+- `secretary.c` `keep_above_foreign_topmost`, run from `frame()` every
+  500 ms while the hints are closed: walks the z-order above the pet
+  (`GW_HWNDPREV`) for a visible, uncloaked, unowned, non-tool, non-minimized
+  topmost window of another process that overlaps it, and inserts the pet
+  (and a visible bubble) just below the window above the highest one. Owned
+  popups (Chrome menus, tooltips), the taskbar, windows on other virtual
+  desktops (`input_window_cloaked`, now exported from `input.c`) and vim
+  mouse's own windows (hint overlay, active dialogs) keep their place. Logs
+  once per covering window.
+- Verified: a clean `-Werror` build of every file; with the rebuilt exe a
+  probe re-raised Chrome above the pet twice and the pet was back on top
+  after 550 and 350 ms. `mingw32-make` failed in the agent shell with
+  "INTERNAL: readdir"; the same gcc/windres commands run one by one built it.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2747,6 +2769,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 | The detailed walk loops forward over walk.png cels 13,14,15,0..5 (`walk_detail_cycle`), not all sixteen in order, and never reversed | 2026-11-23 | Cels 6..12 draw an inconsistent number of ground contacts (2/3/4), so cycling all sixteen flickered the hind legs; a ping-pong closed the loop but ran the gait backwards, so forward only |
 | Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
+| Tailmon moves back above another program's topmost, unowned, overlapping window within 500 ms (`keep_above_foreign_topmost`) | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window (Chrome's main window) covered her |
 
 ## 7. Open threads
 

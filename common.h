@@ -405,6 +405,7 @@ BOOL input_modifier_held(void);
 void input_set_mouse_mode(BOOL on);
 BOOL input_mouse_mode_active(void);
 BOOL input_mouse_hook_active(void);       // atomic snapshot for the secretary window
+BOOL input_window_cloaked(HWND hwnd);     // DWM-cloaked, e.g. on another virtual desktop
 BOOL input_left_button_held(void);      // a drag is in progress (via hold-a or v)
 int input_secretary_motion(void);       // current held move/scroll, or 0; atomic snapshot
 void input_forward_wheel(POINT point, UINT message, WPARAM keys_and_delta);

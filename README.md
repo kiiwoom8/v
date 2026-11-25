@@ -490,6 +490,10 @@ set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and
 any extra sheet paths blank to use all the bundled poses. Add personal links
 to numbered slots in your own settings file.
 
+The secretary stays on top of other windows, including programs that make
+their own window always-on-top (Chrome can): within half a second it moves back
+above such a window. Menus, tooltips and the taskbar are left above it.
+
 The secretary remembers where you drop it. With a movement sheet, it wanders
 between resting spots at different speeds, and some walks stop when you reach for it. It
 also explores now and then — a short walk that ends by looking around the new spot — and

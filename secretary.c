@@ -2086,6 +2086,46 @@ finished:
     return TRUE;
 }
 
+// Another program's topmost window shown after Tailmon covers her: Chrome's
+// main window can turn topmost, and Windows stacks the newest topmost window
+// first. Lift her just above the highest such window over her. Owned popups
+// (menus, tooltips), tool windows (the taskbar), cloaked windows (other
+// virtual desktops) and Vim's own windows (hints, dialogs) stay where they are.
+static DWORD last_raise_check;
+
+static void keep_above_foreign_topmost(void)
+{
+    static HWND last_cover;
+    RECT mine, theirs, overlap;
+    HWND w, cover = NULL, after;
+    DWORD self = GetCurrentProcessId(), pid;
+    LONG ex;
+
+    if (!GetWindowRect(pet, &mine)) return;
+    for (w = GetWindow(pet, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
+        ex = GetWindowLongW(w, GWL_EXSTYLE);
+        if (!(ex & WS_EX_TOPMOST) || (ex & WS_EX_TOOLWINDOW) || !IsWindowVisible(w) ||
+            IsIconic(w) || GetWindow(w, GW_OWNER))
+            continue;
+        GetWindowThreadProcessId(w, &pid);
+        if (pid == self || !GetWindowRect(w, &theirs) ||
+            !IntersectRect(&overlap, &mine, &theirs) || input_window_cloaked(w))
+            continue;
+        cover = w;
+    }
+    if (!cover) return;
+    after = GetWindow(cover, GW_HWNDPREV);
+    if (!after) after = HWND_TOPMOST;
+    if (cover != last_cover) {
+        last_cover = cover;
+        GetWindowThreadProcessId(cover, &pid);
+        app_log(L"secretary: raised above a topmost window of process %lu", pid);
+    }
+    SetWindowPos(pet, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (IsWindowVisible(bubble))
+        SetWindowPos(bubble, after, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 static void frame(void)
 {
     DWORD now = animation_now();
@@ -2127,6 +2167,10 @@ static void frame(void)
     }
     finish_launch(now);
     render_bubble(now);
+    if (!hints && now - last_raise_check >= 500) {
+        last_raise_check = now;
+        keep_above_foreign_topmost();
+    }
     if (hints) last_hint = now;
     pinned = !dragging && now - last_hint < 400 && (hints || now - pulse > now - last_hint);
     if (pinned) {
