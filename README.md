@@ -617,6 +617,9 @@ ones:
 - `capslock_off` (1 = keep the CapsLock state off while vim mouse runs, not
   while paused, default; 0 = `Shift+CapsLock` turns the real CapsLock on and
   off)
+- `sticky_keys_off` (1 = Windows' Sticky Keys and their shortcut, Shift
+  pressed five times, are turned off when vim mouse starts and saved that way
+  in your profile, default; 0 = left as Windows has them)
 - `touchpad_off` (1 = the touchpad is off while vim mouse runs and back on
   while paused, while the keyboard is locked or after quitting, default;
   0 = left alone)

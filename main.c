@@ -739,6 +739,37 @@ void app_config_written(void)
     app_reload_config(FALSE);
 }
 
+#ifndef SKF_STICKYKEYSON
+#define SKF_STICKYKEYSON 0x00000001
+#endif
+#ifndef SKF_HOTKEYACTIVE
+#define SKF_HOTKEYACTIVE 0x00000004
+#endif
+#ifndef SKF_CONFIRMHOTKEY
+#define SKF_CONFIRMHOTKEY 0x00000008
+#endif
+
+// sticky_keys_off: Windows' Sticky Keys and its shortcut (Shift five times,
+// which asks whether to turn them on) off, saved in the profile. Shift tapped
+// twice opens Tailmon, so Shift is tapped often. Only when something is on:
+// an unchanged setting is not written again.
+static void sticky_keys_off(void)
+{
+    STICKYKEYS sk;
+    DWORD off = SKF_STICKYKEYSON | SKF_HOTKEYACTIVE | SKF_CONFIRMHOTKEY;
+
+    ZeroMemory(&sk, sizeof(sk));
+    sk.cbSize = sizeof(sk);
+    if (!g_cfg.sticky_keys_off ||
+        !SystemParametersInfoW(SPI_GETSTICKYKEYS, sizeof(sk), &sk, 0) ||
+        !(sk.dwFlags & off))
+        return;
+    sk.dwFlags &= ~off;
+    if (SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof(sk), &sk,
+                              SPIF_UPDATEINIFILE | SPIF_SENDCHANGE))
+        app_log(L"main: Sticky Keys and their shortcut turned off (sticky_keys_off)");
+}
+
 void app_reload_config(BOOL notify)
 {
     Config tmp;
@@ -755,6 +786,7 @@ void app_reload_config(BOOL notify)
     }
 
     g_cfg = tmp;
+    sticky_keys_off();
     snippet_editor_refresh();
     input_config_changed();
     shutdown_config_changed();
@@ -998,6 +1030,7 @@ int main(void)
 
     hint_init(g_hinst);
     tray_init(g_main_wnd);
+    sticky_keys_off();
     // After the tray: how the last run ended may need a balloon.
     run_record_start();
 

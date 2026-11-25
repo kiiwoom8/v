@@ -1771,6 +1771,13 @@ Invariants stated in `common.h` and enforced by history:
   are never asked), so a plain double Shift was taken as typing. While the
   bubble is open (`secretary_bubble_open`) the text-field rule does not
   apply.
+- Kim: "always disable sticky keys". New `sticky_keys_off` (default 1):
+  `main.c` turns off Sticky Keys and their shortcut (Shift five times, which
+  asks to turn them on) at start and on every reload, saved in the profile
+  (`SPI_SETSTICKYKEYS`, `SPIF_UPDATEINIFILE`), only when one is on. With
+  Shift twice opening Tailmon, Shift is tapped often. Verified: the
+  shortcut switched back on (flags 0x1FE) was off again (0x1F2, registry 498)
+  after vim.exe started.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2927,6 +2934,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | A maximized topmost Chrome or Edge window of another process becomes an ordinary window (`demote_maximized`) | 2026-11-25 | Tailmon re-raised above it after every one of its raises, a blink each time |
 | A web shortcut switches tabs by reading the address bar and tab names and selecting the tab; nothing is typed into the browser | 2026-11-25 | Typed `@tabs` and the URL into the address bar and picked the suggestion |
 | `opacity` default 150 is the alpha of the label and status-bar fills only; letters and borders are opaque (per-pixel alpha) | 2026-11-25, 2026-11-26 | 235 for the whole overlay, letters included |
+| Sticky Keys and their Shift-five-times shortcut are turned off at start (`sticky_keys_off = 0` leaves them alone) | 2026-11-26 | Windows' own setting, the shortcut on |
 | Shift tapped twice (Alt + Shift twice in a text field) opens or closes Tailmon's bubble (`[secretary] shift_tap = 0` restores) | 2026-11-26 | Only a click on her |
 | Tailmon draws one frame per display refresh (DWM timing) | 2026-11-25 | A frame every 8 ms, twice per 60 Hz refresh |
 | The bubble shows only buttons that apply; no Claude prompt helper, no single-monitor hint button | 2026-11-25 | Five fixed buttons including **Claude 질문 준비** and **Vim 힌트** |

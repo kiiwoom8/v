@@ -569,6 +569,7 @@ void config_set_defaults(Config *c)
     parse_hotkey(L"Alt+T", &c->touchpad_hotkey);
     c->mouse_mode_key = VK_CAPITAL;
     c->capslock_off = 1;
+    c->sticky_keys_off = 1;
     c->touchpad_off = 1;
     c->indicator = INDICATOR_CURSOR;
     c->hide_pointer = 2000;
@@ -943,6 +944,8 @@ static void process_general(Config *c, int line, const WCHAR *key,
         apply_key(&c->mouse_mode_key, line, key, val);
     else if (_wcsicmp(key, L"capslock_off") == 0)
         apply_bool(&c->capslock_off, line, key, val);
+    else if (_wcsicmp(key, L"sticky_keys_off") == 0)
+        apply_bool(&c->sticky_keys_off, line, key, val);
     else if (_wcsicmp(key, L"touchpad_off") == 0)
         apply_bool(&c->touchpad_off, line, key, val);
     else if (_wcsicmp(key, L"hide_pointer") == 0)
@@ -1650,6 +1653,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; Shift+CapsLock, an administrator window or the lock screen.\r\n");
     appendf(buf, cch, L"; 0 = Shift+CapsLock turns the real CapsLock on and off.\r\n");
     appendf(buf, cch, L"capslock_off = %d\r\n", d.capslock_off ? 1 : 0);
+    appendf(buf, cch, L"; 1 = turn off Windows' Sticky Keys and its shortcut (Shift five times)\r\n");
+    appendf(buf, cch, L"; at start, saved in your profile. 0 = leave them as Windows has them.\r\n");
+    appendf(buf, cch, L"sticky_keys_off = %d\r\n", d.sticky_keys_off ? 1 : 0);
     appendf(buf, cch, L"; 1 = the touchpad is off while vim mouse runs, and back on while\r\n");
     appendf(buf, cch, L"; paused, while the keyboard is locked and after quitting (a precision\r\n");
     appendf(buf, cch, L"; touchpad, Windows 11 24H2 or later). 0 = vim mouse leaves it alone.\r\n");

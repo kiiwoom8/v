@@ -130,6 +130,8 @@ typedef struct {
                                // again (flips touchpad_off for the session)
     UINT   mouse_mode_key;     // default VK_CAPITAL; tap toggles, hold = momentary
     int    capslock_off;       // 1 = the CapsLock state is kept off while the program runs
+    int    sticky_keys_off;    // 1 = Windows' Sticky Keys and its five-Shift shortcut are turned
+                               // off (saved in the profile) at start and on reload
                                // (not while paused): turned off at start and whenever it
                                // comes on (Shift+CapsLock, an admin window, the lock
                                // screen); default 1. 0 = Shift+CapsLock is the real CapsLock.
