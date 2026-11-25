@@ -2002,6 +2002,7 @@ static void dissolve(const DWORD *target, DWORD weight, size_t count)
     for (i = 0; i < count; ++i) sprite.pixels[i] = mix_pixels(blend_from[i], target[i], weight);
 }
 
+
 static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
 {
     int x, y, w = sprite.size.cx, h = sprite.size.cy;
@@ -2094,8 +2095,10 @@ finished:
 // overlay (WS_EX_TRANSPARENT, which nobody clicks anyway). Clickable popups
 // (menus, dropdowns), tool windows (the taskbar), cloaked windows (other
 // virtual desktops) and Vim's own windows (hints, dialogs) stay where they are.
-static DWORD last_raise_check;
-static HWINEVENTHOOK raise_hooks[3];
+static HWINEVENTHOOK raise_hooks[4];
+// winuser.h has these only for Windows 8 and later; MinGW.org lacks them.
+#define EVENT_OBJECT_CLOAKED_ID 0x8017
+#define EVENT_OBJECT_UNCLOAKED_ID 0x8018
 
 static void keep_above_foreign_topmost(void)
 {
@@ -2156,23 +2159,28 @@ static void CALLBACK topmost_event(HWINEVENTHOOK hook, DWORD event, HWND wnd, LO
 static void watch_topmost(BOOL on)
 {
     int i;
-    for (i = 0; i < 3; ++i)
+    for (i = 0; i < 4; ++i)
         if (raise_hooks[i]) UnhookWinEvent(raise_hooks[i]);
     ZeroMemory(raise_hooks, sizeof(raise_hooks));
     if (!on) return;
     // SHOW, HIDE, REORDER; LOCATIONCHANGE (the bubble moves aside from the
     // pointer); FOREGROUND (an activated topmost window comes to the front).
     // A bare SetWindowPos z-order change raises none of these: the frame
-    // check catches it within 100 ms.
+    // check catches it on the next frame.
     raise_hooks[2] = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
                                      topmost_event, 0, 0,
                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     raise_hooks[0] = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_REORDER, NULL, topmost_event,
                                      0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    // A virtual desktop switch uncloaks that desktop's windows (a topmost
+    // Chrome among them) without SHOW; FOREGROUND comes while still cloaked.
+    raise_hooks[3] = SetWinEventHook(EVENT_OBJECT_CLOAKED_ID, EVENT_OBJECT_UNCLOAKED_ID, NULL,
+                                     topmost_event, 0, 0,
+                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     raise_hooks[1] = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, NULL,
                                      topmost_event, 0, 0,
                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    if (!raise_hooks[0] || !raise_hooks[1] || !raise_hooks[2])
+    if (!raise_hooks[0] || !raise_hooks[1] || !raise_hooks[2] || !raise_hooks[3])
         app_log(L"secretary: topmost event hook failed (%lu)", GetLastError());
 }
 
@@ -2217,10 +2225,10 @@ static void frame(void)
     }
     finish_launch(now);
     render_bubble(now);
-    if (!hints && now - last_raise_check >= 100) {
-        last_raise_check = now;
-        keep_above_foreign_topmost();
-    }
+    // Every frame (8-16 ms): Chrome re-raises its topmost window with a bare
+    // z-order change that fires no event, 16-90 ms of hidden cat at the old
+    // 100 ms check. The walk covers only the few windows above her.
+    if (!hints) keep_above_foreign_topmost();
     if (hints) last_hint = now;
     pinned = !dragging && now - last_hint < 400 && (hints || now - pulse > now - last_hint);
     if (pinned) {

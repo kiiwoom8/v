@@ -1654,6 +1654,24 @@ Invariants stated in `common.h` and enforced by history:
   for 3 s. With a 5 ms coverage probe on Chrome during four navigations the
   bubble showed and the pet was never covered (before: covered ~500 ms per
   navigation). vim.exe used 0.33 s CPU over 5 s with the hooks running.
+- Same day, Kim: still flickers "sometimes when i shift+g or gg", then
+  "between desktop shift (ctrl+win+< >)", "especially to the screen of
+  chrome". A 6 ms monitor during Kim's real use (keys, covering windows, the
+  pet's style and painted pixels) showed Chrome's main window above the pet
+  for 16-90 ms about a dozen times a minute, also with no input: Chrome
+  re-raises its topmost window by itself (seen about every 3 s with the log
+  on) through a bare z-order change that fires no WinEvent, and switching to
+  its desktop uncloaks it, which fires no SHOW and comes after FOREGROUND, while
+  it is still cloaked. Not the scroll gesture: g g / Shift+G play reaction cels
+  52-55, every edge of which is baked (the scroll sheet is not bundled).
+- `watch_topmost` also hooks EVENT_OBJECT_CLOAKED..UNCLOAKED (0x8017-0x8018,
+  defined locally for MinGW.org), and `frame()` runs
+  `keep_above_foreign_topmost` every frame (8-16 ms) instead of every
+  100 ms; it walks only the windows above the pet.
+- Verified: with the rebuilt exe and six Ctrl+Win+Left/Right desktop
+  switches the monitor never saw the pet covered (before: Chrome over her for
+  1.6 s during the same switches with the 100 ms check); vim.exe used 0.52-0.70
+  s CPU per 10 s, as before.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2788,7 +2806,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 | The detailed walk loops forward over walk.png cels 13,14,15,0..5 (`walk_detail_cycle`), not all sixteen in order, and never reversed | 2026-11-23 | Cels 6..12 draw an inconsistent number of ground contacts (2/3/4), so cycling all sixteen flickered the hind legs; a ping-pong closed the loop but ran the gait backwards, so forward only |
 | Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
-| Tailmon moves back above another program's overlapping topmost window that is unowned or click-through (Chrome's main window, its status bubble) on its show/move/activation event, else within 100 ms (`keep_above_foreign_topmost`, `watch_topmost`); clickable owned popups (menus) stay above her | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window covered her, and Chrome's status bubble hid her on every navigation |
+| Tailmon moves back above another program's overlapping topmost window that is unowned or click-through (Chrome's main window, its status bubble) on its show/move/activation/uncloak event, else on the next frame (`keep_above_foreign_topmost`, `watch_topmost`); clickable owned popups (menus) stay above her | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window covered her, and Chrome's status bubble hid her on every navigation |
 
 ## 7. Open threads
 
