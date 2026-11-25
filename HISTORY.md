@@ -1812,6 +1812,38 @@ Invariants stated in `common.h` and enforced by history:
   shortcut switched back on (flags 0x1FE) was off again (0x1F2, registry 498)
   after vim.exe started.
 
+### `>>` / `<<` move the browser tab (2026-11-26)
+
+- Kim: "impelement >> and << for browser tab shifting to the right and left
+  (move current tab to the right or left)". New `tab_move_tap_ms` (default
+  1000, 0-3000; 0 = off; needs `bare_keys`). `input.c`
+  `tab_move_key_down`, on `handle_down` right after the pinch zoom: Shift +
+  `.` or `,` (no other modifier), a browser in front (`hold_window_ok`), no
+  menu (`popup_open`) and the focus answer `FOCUS_OTHER` (the bare keys'
+  100 ms wait) swallow the press; the same key again within the window
+  posts `WM_INPUT_TAB_MOVE` with the foreground window. Any other key in
+  between drops the first tap (`s_tabmv_vk`, also cleared in
+  `reset_key_state`). Otherwise `>` and `<` type as before.
+- The move is the browser's own Ctrl+Shift+PageDown / PageUp. Section 5
+  forbids injecting modifiers next to held ones, so the input thread
+  (`tab_move_start`, `tab_move_step`, the power window's `TAB_MOVE_TIMER`
+  every 10 ms) waits until no modifier is down (`GetAsyncKeyState` and
+  `input_modifier_held`, as `touchpad.c` does), then sends all six keys in
+  one `SendInput` call. It gives up after 3 s with a modifier held, or as
+  soon as another window comes to the front. `log = 1` writes a
+  "tab move:" line for each step.
+- Not done in z: a web page cannot move a browser tab, so this lives in
+  vim mouse, which already owns the bare keys in browsers. The same day z's
+  own `f` labels dropped the letters vim mouse takes bare (`f h j k l u d
+  g`): a z label holding one made vim mouse scroll or go back, which closed
+  z's labels with nothing clicked ("button not pressed ... have to activate
+  f again"). A theory that `click_return`'s `SetCursorPos` overtook the
+  hint click's button events was tested and dropped: 900 clicks into a test
+  window, old and stamped-absolute methods, all landed on the point.
+- Built with MinGW.org GCC 6.3 and `-Werror`. Not yet tried on the user's
+  Chrome (the running vim.exe was left alone): update from the tray, then
+  `>>` / `<<` on a page.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)

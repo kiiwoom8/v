@@ -205,6 +205,10 @@ typedef struct {
     int    center_tap_ms;      // key_center twice within this many ms puts the pointer in
                                // the middle of the active window's screen, default 300
                                // (0 = off)
+    int    tab_move_tap_ms;    // > > / < < (Shift + . / , twice within this many ms)
+                               // outside text fields in a web browser move the tab
+                               // right / left (Ctrl+Shift+PageDown / PageUp), default
+                               // 1000 (0 = off; needs bare_keys)
     int    esc_unfocus;        // Esc in a text field moves the focus to the page, so the
                                // keys without Alt work: 1 = in web browsers (and their
                                // address bar), default; 2 = also apps built on web

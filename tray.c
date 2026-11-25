@@ -900,6 +900,9 @@ static void build_help_rows(void)
         buf[127] = L'\0';
         help_add_row(buf, L"The same anywhere, text fields included (both taps swallowed)");
     }
+    if (g_cfg.tab_move_tap_ms > 0 && g_cfg.bare_keys)
+        help_add_row(L"> > / < <",
+                     L"Move the browser tab right / left (outside text fields)");
     if (g_cfg.esc_unfocus)
         help_add_row(L"Esc in a text field",
                      g_cfg.esc_unfocus >= 2

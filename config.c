@@ -597,6 +597,7 @@ void config_set_defaults(Config *c)
     c->fast_scroll_lines = 5;
     c->scroll_end_tap_ms = 500;
     c->center_tap_ms = 300;
+    c->tab_move_tap_ms = 1000;
     c->esc_unfocus = 1;
     c->hold_unfocus = 300;
     c->alt_unfocus = 1;
@@ -1033,6 +1034,8 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_int_range(&c->scroll_end_tap_ms, line, key, val, 0, 1000);
     else if (_wcsicmp(key, L"center_tap_ms") == 0)
         apply_int_range(&c->center_tap_ms, line, key, val, 0, 1000);
+    else if (_wcsicmp(key, L"tab_move_tap_ms") == 0)
+        apply_int_range(&c->tab_move_tap_ms, line, key, val, 0, 3000);
     else if (_wcsicmp(key, L"esc_unfocus") == 0)
         apply_int_range(&c->esc_unfocus, line, key, val, 0, 2);
     else if (_wcsicmp(key, L"hold_unfocus") == 0)
@@ -1796,6 +1799,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; In mouse mode, and outside it where the focus is not in a text field\r\n");
     appendf(buf, cch, L"; (needs bare_keys). 0 = off.\r\n");
     appendf(buf, cch, L"center_tap_ms = %d\r\n", d.center_tap_ms);
+    appendf(buf, cch, L"; > > / < < (two taps within this many ms) move the browser tab right /\r\n");
+    appendf(buf, cch, L"; left, like Vimium, where the focus is not in a text field (in a text\r\n");
+    appendf(buf, cch, L"; field > types as usual). Sent as Ctrl+Shift+PageDown / PageUp once\r\n");
+    appendf(buf, cch, L"; Shift is up. Needs bare_keys. 0 = off.\r\n");
+    appendf(buf, cch, L"tab_move_tap_ms = %d\r\n", d.tab_move_tap_ms);
     appendf(buf, cch, L"; Esc in a text field leaves it: the keyboard focus goes to the page, so\r\n");
     appendf(buf, cch, L"; j k f and the other keys without Alt work at once (click or Tab to type\r\n");
     appendf(buf, cch, L"; again). Esc still reaches the app first, so the same press also closes\r\n");

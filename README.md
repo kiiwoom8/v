@@ -119,6 +119,14 @@ answer arrives (within a second, unless another key or a focus change comes
 first).
 Text shortcuts always need Alt. `bare_keys = 0` turns this off.
 
+**`>>` and `<<` move the browser tab** right and left, as in Vimium: two
+taps of `>` (or `<`) within `tab_move_tap_ms` (default 1000 ms) in a web
+browser, where the keyboard focus is not in a text field. vim mouse takes
+both presses there and, once you let go of Shift, presses the browser's own
+Ctrl+Shift+PageDown / PageUp (Chrome, Edge, Firefox). In a text field, with
+a menu open or while vim mouse is still asking where the focus is, `>` and
+`<` type as usual. `tab_move_tap_ms = 0` turns it off.
+
 **0 twice.** Two quick taps of `0` (within `center_tap_ms`, default
 300 ms) put the pointer in the middle of the screen that holds the active
 window: in mouse mode, and outside it wherever the keyboard focus is not in
@@ -658,7 +666,9 @@ ones:
   `scroll_end_tap_ms` (two `g` taps within this many ms scroll to the top,
   0-1000, default 500; 0 = `g g` and `Shift+g` off), `center_tap_ms` (two
   `0` taps within this many ms move the pointer to the middle of the
-  screen, 0-1000, default 300; 0 = off), `esc_unfocus` (`Esc` in a
+  screen, 0-1000, default 300; 0 = off), `tab_move_tap_ms` (two `>` or
+  `<` taps within this many ms outside text fields in a browser move the
+  tab right / left, 0-3000, default 1000; 0 = off), `esc_unfocus` (`Esc` in a
   text field moves the focus to the page: 1 = in web browsers, default;
   2 = also in apps built on web content; 0 = off), `hold_unfocus` (`j`
   `k` `u` `d` held this many ms in such a text field leave it and scroll,
