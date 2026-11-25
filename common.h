@@ -79,6 +79,7 @@
 #define WM_APP_TOUCHPAD_TOGGLE  (WM_APP + 18) // touchpad_hotkey pressed; -> touchpad_toggle
 #define WM_APP_SECRETARY_MENU   (WM_APP + 19) // mascot right-click; -> tray_show_menu
 #define WM_APP_SECRETARY_TAB    (WM_APP + 20) // wParam = browser request, lParam = window showing the tab, or NULL
+#define WM_APP_SECRETARY_TOGGLE (WM_APP + 32) // [secretary] shift_tap; -> secretary_toggle_bubble
 #define WM_APP_SECRETARY_PAGE   (WM_APP + 31) // wParam = browser request, lParam = malloc'd BrowserPage* or NULL;
                                               // -> secretary_page_result (frees it)
 #define SECRETARY_FAREWELL_TIMER  201 // on g_main_wnd, for user-requested quit
@@ -164,6 +165,7 @@ typedef struct {
     int secretary_roam;       // walk between resting places when idle
     int secretary_react;      // play reactions when Vim runs a command
     int secretary_play;       // occasional exploring and playful scampers
+    int secretary_shift_tap;  // Shift twice (Alt + Shift twice in a text field) opens the bubble
     WCHAR secretary_image[MAX_PATH];
     WCHAR secretary_sprite_sheet[MAX_PATH]; // custom 4x4 atlas, empty with image for bundled Tailmon
     WCHAR secretary_extra[SECRETARY_EXTRA_SHEETS][MAX_PATH];
@@ -507,6 +509,7 @@ typedef struct {
 } BrowserPage;
 void secretary_browser_result(UINT request, HWND browser);
 void secretary_page_result(UINT request, BrowserPage *page);
+void secretary_toggle_bubble(void);   // UI thread: open the bubble, or close it
 BOOL uia_find_browser_tab(const HWND *windows, int count, const WCHAR *url, UINT request);
 BOOL uia_read_browser_page(HWND window, UINT request);
 BOOL uia_learn_browser_tab(HWND window, const WCHAR *url, UINT request);

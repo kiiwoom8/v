@@ -2773,12 +2773,64 @@ static void react_to_command(UINT vk, BOOL captured)
     secretary_command(command);
 }
 
+// [secretary] shift_tap: Shift tapped twice opens or closes Tailmon's bubble.
+// A tap is Shift down and up alone, in under SHIFT_TAP_MS; the second must
+// come up within SHIFT_TAP_MS of the first. In a text field, where a lone
+// double Shift may be typing, Alt must be held through both taps. Any other
+// key or a mouse button in between starts over. It only watches: the keys
+// still reach the app and nothing is injected.
+#define SHIFT_TAP_MS 400
+static BOOL  s_tap_shift_down, s_tap_alone, s_tap_first, s_tap_alt;
+static DWORD s_tap_down_time, s_tap_up_time;
+static volatile LONG s_tap_clicked; // mouse hook: a button went down
+
+static void shift_tap_watch(UINT vk, BOOL down, DWORD time)
+{
+    BOOL shift = vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT;
+
+    if (InterlockedExchange(&s_tap_clicked, 0)) s_tap_first = s_tap_alone = FALSE;
+    if (vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU) {
+        s_tap_alt = down;
+        return;
+    }
+    if (!shift) {
+        if (down) s_tap_alone = s_tap_first = FALSE;
+        return;
+    }
+    if (down) {
+        if (!s_tap_shift_down) {
+            s_tap_shift_down = TRUE;
+            s_tap_alone = TRUE;
+            s_tap_down_time = time;
+        }
+        return;
+    }
+    s_tap_shift_down = FALSE;
+    if (!s_tap_alone || time - s_tap_down_time > SHIFT_TAP_MS ||
+        !g_cfg.secretary_enabled || !g_cfg.secretary_shift_tap ||
+        flag_get(&s_paused) || flag_get(&s_locked) || flag_get(&s_capture) ||
+        (!s_tap_alt && uia_focus_state() == FOCUS_TEXT)) {
+        s_tap_first = FALSE;
+        return;
+    }
+    s_tap_alone = FALSE;
+    if (s_tap_first && time - s_tap_up_time <= SHIFT_TAP_MS) {
+        s_tap_first = FALSE;
+        PostMessageW(g_main_wnd, WM_APP_SECRETARY_TOGGLE, 0, 0);
+    } else {
+        s_tap_first = TRUE;
+        s_tap_up_time = time;
+    }
+}
+
 static LRESULT CALLBACK kb_proc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
 
         InterlockedIncrement(&s_kb_calls);
+        if (!(k->flags & LLKHF_INJECTED))
+            shift_tap_watch(k->vkCode, wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN, k->time);
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
             UINT vk = k->vkCode;
             BOOL fresh = vk <= 255 && !s_down[vk];
@@ -3010,6 +3062,9 @@ static LRESULT CALLBACK mouse_proc(int nCode, WPARAM wParam, LPARAM lParam)
             if (wParam == WM_MOUSEMOVE) {
                 s_rest_pt = m->pt;
                 s_rest_ok = TRUE;
+            } else if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN ||
+                       wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN) {
+                InterlockedExchange(&s_tap_clicked, 1);
             }
         } else if ((m->dwExtraInfo & MI_WP_TOUCH) &&
                    !(m->flags & LLMHF_INJECTED)) {

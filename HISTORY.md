@@ -1747,6 +1747,25 @@ Invariants stated in `common.h` and enforced by history:
   scanned) mixed in other work and are not a fair comparison.
 - Checked: `-Werror` build of every file and of the CI probe targets with
   MinGW.org GCC 6.3; the rebuilt exe running with Kim's settings.
+- Kim (2026-11-26): "texts should not be transparent". One alpha for the
+  whole colour-keyed window faded the letters with the fill. The overlay now
+  uses per-pixel alpha (`UpdateLayeredWindow`, no `SetLayeredWindowAttributes`,
+  which would block it): the drawing code is unchanged and draws into the
+  same 32-bit buffers; `present_frame` converts the changed part into a third
+  buffer (key colour clear, the label fill and the two status-bar fills at
+  `opacity`, everything else opaque) and pushes it; `paint_blank` pushes a
+  clear frame. Checked on a screen capture with the hints open: an address
+  bar's letters show through a label's fill while the label's letters are
+  solid.
+- Kim: "designate tailmon shortcut for shift+shift (when on text input,
+  alt+shift+shift)". `input.c` `shift_tap_watch` (in `kb_proc`, real keys
+  only, nothing swallowed or injected): Shift down and up alone in under
+  400 ms, twice, the second up within 400 ms of the first, posts
+  `WM_APP_SECRETARY_TOGGLE`; in a text field (`uia_focus_state`) Alt must be
+  held through both; any other key or a mouse button starts over; off while
+  paused, locked or capturing. `secretary_toggle_bubble` opens the bubble as a
+  click does, or closes it. New `[secretary] shift_tap` (default 1). Not
+  testable by injection (the watch skips injected keys): Kim tests.
 
 ## 4. Complete commit log (non-merge, oldest first)
 
@@ -2902,7 +2921,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
 | A maximized topmost Chrome or Edge window of another process becomes an ordinary window (`demote_maximized`) | 2026-11-25 | Tailmon re-raised above it after every one of its raises, a blink each time |
 | A web shortcut switches tabs by reading the address bar and tab names and selecting the tab; nothing is typed into the browser | 2026-11-25 | Typed `@tabs` and the URL into the address bar and picked the suggestion |
-| `opacity` default 150: the screen shows through the labels | 2026-11-25 | 235, labels nearly solid |
+| `opacity` default 150 is the alpha of the label and status-bar fills only; letters and borders are opaque (per-pixel alpha) | 2026-11-25, 2026-11-26 | 235 for the whole overlay, letters included |
+| Shift tapped twice (Alt + Shift twice in a text field) opens or closes Tailmon's bubble (`[secretary] shift_tap = 0` restores) | 2026-11-26 | Only a click on her |
 | Tailmon draws one frame per display refresh (DWM timing) | 2026-11-25 | A frame every 8 ms, twice per 60 Hz refresh |
 | The bubble shows only buttons that apply; no Claude prompt helper, no single-monitor hint button | 2026-11-25 | Five fixed buttons including **Claude 질문 준비** and **Vim 힌트** |
 | Tailmon moves back above another program's overlapping topmost window that is unowned or click-through (Chrome's main window, its status bubble) on its show/move/activation/uncloak event, else on the next frame (`keep_above_foreign_topmost`, `watch_topmost`); clickable owned popups (menus) stay above her | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window covered her, and Chrome's status bubble hid her on every navigation |

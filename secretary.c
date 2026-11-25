@@ -1119,6 +1119,21 @@ static void render_bubble(DWORD now)
     }
 }
 
+static void react(int action);
+static void open_bubble(void);
+
+// Shift twice (input.c): the same as clicking her.
+void secretary_toggle_bubble(void)
+{
+    if (!pet || !IsWindowVisible(pet) || pressed || dragging) return;
+    if (opened) {
+        secretary_dismiss();
+        return;
+    }
+    react(REACT_CLICK);
+    open_bubble();
+}
+
 void secretary_dismiss(void)
 {
     if (!opened) return;

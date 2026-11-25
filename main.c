@@ -856,6 +856,9 @@ static LRESULT CALLBACK main_wnd_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_APP_SECRETARY_TAB:
         secretary_browser_result((UINT)wp, (HWND)lp);
         return 0;
+    case WM_APP_SECRETARY_TOGGLE:
+        secretary_toggle_bubble();
+        return 0;
     case WM_APP_SECRETARY_PAGE:
         secretary_page_result((UINT)wp, (BrowserPage *)lp);
         return 0;

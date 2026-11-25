@@ -234,6 +234,7 @@ static ResKey    g_res_key;
 // Persistent back buffer (one memory DC + DIB sized to the monitor).
 static HDC       g_mem_dc;
 static HBITMAP   g_mem_bmp;
+static DWORD    *g_mem_bits;
 static HGDIOBJ   g_mem_old;
 static int       g_mem_w, g_mem_h;
 static BOOL      g_mem_blank;  // back buffer is known to be plain key colour
@@ -241,6 +242,13 @@ static BOOL      g_mem_blank;  // back buffer is known to be plain key colour
 // Ready-to-show frame for the initial grid (labels + status); it only depends
 // on the monitor geometry and the cached resources.
 static HDC       g_grid_dc;
+static DWORD    *g_grid_bits;
+// What the window shows: per-pixel alpha, premultiplied (present_frame).
+static HDC       g_ulw_dc;
+static HBITMAP   g_ulw_bmp;
+static HGDIOBJ   g_ulw_old;
+static DWORD    *g_ulw_bits;
+static int       g_ulw_w, g_ulw_h;
 static HBITMAP   g_grid_bmp;
 static HGDIOBJ   g_grid_old;
 static int       g_grid_w, g_grid_h;
@@ -1934,6 +1942,7 @@ static BOOL ensure_back_buffer(int w, int h)
         return FALSE;
     }
     g_mem_old = SelectObject(g_mem_dc, g_mem_bmp);
+    g_mem_bits = (DWORD *)bits;
     g_mem_w = w;
     g_mem_h = h;
     g_mem_blank = FALSE;
@@ -1985,10 +1994,112 @@ static BOOL ensure_grid_cache(int w, int h)
         return FALSE;
     }
     g_grid_old = SelectObject(g_grid_dc, g_grid_bmp);
+    g_grid_bits = (DWORD *)bits;
     g_grid_w = w;
     g_grid_h = h;
     g_grid_valid = FALSE;
     return TRUE;
+}
+
+// The overlay is a layered window with per-pixel alpha. Everything is drawn
+// as before, on the key colour, into a 32-bit buffer; present_frame turns the
+// changed part into what the window shows: the key colour clear, the label
+// and status-bar fills at `opacity`, everything else (letters, borders,
+// outlines) opaque. The screen shows through the fills and the letters stay
+// solid; with one alpha for the whole window the letters faded too.
+static void free_present(void)
+{
+    if (g_ulw_dc && g_ulw_old) SelectObject(g_ulw_dc, g_ulw_old);
+    if (g_ulw_bmp) DeleteObject(g_ulw_bmp);
+    if (g_ulw_dc) DeleteDC(g_ulw_dc);
+    g_ulw_dc = NULL;
+    g_ulw_bmp = NULL;
+    g_ulw_old = NULL;
+    g_ulw_bits = NULL;
+    g_ulw_w = g_ulw_h = 0;
+}
+
+static BOOL ensure_present(int w, int h)
+{
+    BITMAPINFO bmi;
+    void *bits = NULL;
+
+    if (w <= 0 || h <= 0) return FALSE;
+    if (g_ulw_dc && g_ulw_bits && g_ulw_w == w && g_ulw_h == h) return TRUE;
+    free_present();
+    g_ulw_dc = CreateCompatibleDC(NULL);
+    if (!g_ulw_dc) return FALSE;
+    ZeroMemory(&bmi, sizeof(bmi));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;  // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    g_ulw_bmp = CreateDIBSection(g_ulw_dc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!g_ulw_bmp) {
+        free_present();
+        return FALSE;
+    }
+    g_ulw_old = SelectObject(g_ulw_dc, g_ulw_bmp);
+    g_ulw_bits = (DWORD *)bits;
+    g_ulw_w = w;
+    g_ulw_h = h;
+    ZeroMemory(bits, (size_t)w * h * sizeof(DWORD));
+    return TRUE;
+}
+
+// A COLORREF as a 32-bit DIB pixel (0x00RRGGBB).
+static DWORD dib_pixel(COLORREF c)
+{
+    return ((DWORD)GetRValue(c) << 16) | ((DWORD)GetGValue(c) << 8) | GetBValue(c);
+}
+
+static DWORD premultiplied(DWORD pixel, DWORD alpha)
+{
+    return (alpha << 24) | ((((pixel >> 16) & 255) * alpha / 255) << 16) |
+           ((((pixel >> 8) & 255) * alpha / 255) << 8) | ((pixel & 255) * alpha / 255);
+}
+
+static BOOL push_frame(HWND hwnd)
+{
+    RECT wr;
+    POINT at, origin = {0, 0};
+    SIZE size;
+    BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    if (!g_ulw_dc || !GetWindowRect(hwnd, &wr)) return FALSE;
+    at.x = wr.left;
+    at.y = wr.top;
+    size.cx = g_ulw_w;
+    size.cy = g_ulw_h;
+    return UpdateLayeredWindow(hwnd, NULL, &at, &size, g_ulw_dc, &origin, 0, &blend, ULW_ALPHA);
+}
+
+static void present_frame(HWND hwnd, const DWORD *src, int w, int h, RECT dirty)
+{
+    DWORD key = dib_pixel(KEY_COLOR), alpha = g_cfg.opacity;
+    DWORD fills[3], clear[3];
+    int x, y, i;
+
+    if (!src || !ensure_present(w, h)) return;
+    fills[0] = dib_pixel(safe_color(g_cfg.label_bg, RGB(255, 255, 255)));
+    fills[1] = dib_pixel(RGB(0x1E, 0x1E, 0x1E));   // status bar (g_br_status)
+    fills[2] = dib_pixel(RGB(0xC0, 0x39, 0x2B));   // its flash (g_br_status_red)
+    for (i = 0; i < 3; ++i) clear[i] = premultiplied(fills[i], alpha);
+    if (!IntersectRect(&dirty, &dirty, &(RECT){0, 0, w, h})) return;
+    for (y = dirty.top; y < dirty.bottom; ++y) {
+        const DWORD *in = src + (size_t)y * w;
+        DWORD *out = g_ulw_bits + (size_t)y * w;
+        for (x = dirty.left; x < dirty.right; ++x) {
+            DWORD p = in[x] & 0x00FFFFFF;
+            if (p == key) out[x] = 0;
+            else if (p == fills[0]) out[x] = clear[0];
+            else if (p == fills[1]) out[x] = clear[1];
+            else if (p == fills[2]) out[x] = clear[2];
+            else out[x] = p | 0xFF000000;
+        }
+    }
+    push_frame(hwnd);
 }
 
 // Draw the initial grid into dc (also used to fill the cached frame).
@@ -2045,9 +2156,7 @@ static void paint_overlay(HWND hwnd)
         dirty = ps.rcPaint;
         if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
             dirty = rc;
-        BitBlt(hdc, dirty.left, dirty.top,
-               dirty.right - dirty.left, dirty.bottom - dirty.top,
-               g_grid_dc, dirty.left, dirty.top, SRCCOPY);
+        present_frame(hwnd, g_grid_bits, w, h, dirty);
         // Leave the normal back buffer ready to draw the next state without a
         // full clear.
         if (dc == g_mem_dc && !g_mem_blank) {
@@ -2145,9 +2254,7 @@ static void paint_overlay(HWND hwnd)
         dirty = ps.rcPaint;
         if (dirty.right <= dirty.left || dirty.bottom <= dirty.top)
             dirty = rc;
-        BitBlt(hdc, dirty.left, dirty.top,
-               dirty.right - dirty.left, dirty.bottom - dirty.top,
-               dc, dirty.left, dirty.top, SRCCOPY);
+        present_frame(hwnd, g_mem_bits, w, h, dirty);
     }
 
     EndPaint(hwnd, &ps);
@@ -3961,8 +4068,6 @@ static void cycle_monitor(UINT mods)
         hint_close();
         return;
     }
-    SetLayeredWindowAttributes(g_hint_wnd, KEY_COLOR, g_cfg.opacity,
-                               LWA_COLORKEY | LWA_ALPHA);
     if (g_mode == HINT_MODE_ELEMENTS) start_scan(FALSE);
     InvalidateRect(g_hint_wnd, NULL, TRUE);
     UpdateWindow(g_hint_wnd);
@@ -4030,9 +4135,6 @@ void hint_init(HINSTANCE inst)
         app_log(L"hint: CreateWindowExW failed (%lu)", GetLastError());
         return;
     }
-
-    SetLayeredWindowAttributes(g_hint_wnd, KEY_COLOR, g_cfg.opacity,
-                               LWA_COLORKEY | LWA_ALPHA);
 }
 
 void hint_shutdown(void)
@@ -4069,6 +4171,7 @@ void hint_shutdown(void)
     destroy_resources();
     free_back_buffer();
     free_grid_cache();
+    free_present();
 }
 
 static HMONITOR cursor_monitor(void)
@@ -4105,9 +4208,6 @@ static BOOL open_overlay(HMONITOR mon, int mode, BOOL paint)
         g_scanning = FALSE;
         return FALSE;
     }
-
-    SetLayeredWindowAttributes(g_hint_wnd, KEY_COLOR, g_cfg.opacity,
-                               LWA_COLORKEY | LWA_ALPHA);
 
     g_open = TRUE;
     if (!show_on_monitor()) {
@@ -4242,27 +4342,17 @@ void hint_page_acted(void)
         ahead_schedule(AHEAD_DELAY_MS);
 }
 
-// Paints the window plain key colour (fully transparent) right now, outside
-// WM_PAINT. A window shown again composes what it last painted until its
-// first paint, and an open that adopts a finished scan paints only once its
-// labels are built and drawn, long enough for a frame of the old labels to
-// show: the hints seemed to open twice, the first time flickering.
+// Shows a fully transparent frame right now, outside WM_PAINT. A window shown
+// again composes what it last showed until its first paint, and an open that
+// adopts a finished scan paints only once its labels are built and drawn,
+// long enough for a frame of the old labels to show: the hints seemed to open
+// twice, the first time flickering.
 static void paint_blank(void)
 {
-    HDC dc;
-    RECT rc;
-    HBRUSH br;
-
     if (!g_hint_wnd) return;
-    dc = GetDC(g_hint_wnd);
-    if (!dc) return;
-    GetClientRect(g_hint_wnd, &rc);
-    br = g_br_key ? g_br_key : CreateSolidBrush(KEY_COLOR);
-    if (br) {
-        FillRect(dc, &rc, br);
-        if (br != g_br_key) DeleteObject(br);
-    }
-    ReleaseDC(g_hint_wnd, dc);
+    if (g_ulw_bits)
+        ZeroMemory(g_ulw_bits, (size_t)g_ulw_w * g_ulw_h * sizeof(DWORD));
+    push_frame(g_hint_wnd);
     g_mem_blank = FALSE;   // the back buffer may differ from the window now
 }
 

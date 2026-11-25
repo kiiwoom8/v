@@ -501,7 +501,10 @@ between resting spots at different speeds, and some walks stop when you reach fo
 also explores now and then — a short walk that ends by looking around the new spot — and
 has the odd playful scamper; set `play = 0` to turn those extras off. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
-menu. Drag the picture with the mouse or with mouse mode's left button (`a`
+menu. Tapping Shift twice also opens the bubble (and closes it again). Each
+tap is Shift alone, and the second comes within 0.4 s. In a text field, where
+a double Shift may be typing, hold Alt and tap Shift twice. Set
+`shift_tap = 0` to turn this off. Drag the picture with the mouse or with mouse mode's left button (`a`
 held down, or `v` to grab and release). The grabbed pose keeps the character
 at its idle size. Click hints (`Alt+F` by default) also
 label the picture. Use `1`–`9` for a numbered shortcut. `Tab` and `Shift+Tab`
@@ -581,6 +584,7 @@ interaction_detail_sheet = secretary-interaction-detail.png
 roam = 1
 react = 1
 play = 1
+shift_tap = 1
 1 = Claude | claude
 2 = Wiki | https://example.org/wiki
 ```
@@ -739,8 +743,9 @@ ones:
   go first; `g`, `i` and `y` are left out because they look like `q`, `j`
   and `v` in the label font. The grid's rows and columns use the same
   letters in this order)
-- `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `opacity` (labels and
-  status bar, 30-255, default 150: the screen shows through the labels)
+- `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `opacity` (the fill
+  of the labels and the status bar, 30-255, default 150: the screen shows
+  through the fill; letters and borders stay solid)
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,

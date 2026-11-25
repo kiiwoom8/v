@@ -1035,6 +1035,8 @@ static void build_help_rows(void)
     if (g_cfg.secretary_enabled) {
         help_add_header(L"Desktop secretary");
         help_add_row(L"Click / drag", L"Open shortcuts / move the secretary");
+        if (g_cfg.secretary_shift_tap)
+            help_add_row(L"Shift twice", L"Open or close the shortcuts (in a text field: Alt + Shift twice)");
         help_add_row(L"1-9 / Esc", L"Open a full-screen shortcut / close the bubble");
         help_add_row(L"Tab / Shift+Tab", L"Move between bubble actions and use Enter to select");
         help_add_row(L"Right-click", L"Open this same Vim tray menu");
