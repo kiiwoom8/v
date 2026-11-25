@@ -170,6 +170,10 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // touch_top: while the touchscreen sends raw input (and TOUCH_QUIET_MS
 // after), the power window looks at the pointer this often.
 #define TOUCH_TIMER      4
+// raw_keyboard_follow: the foreground event can be missed (a bubble shown
+// again), so the power window also looks at the foreground this often.
+#define RAW_FG_TIMER     5
+#define RAW_FG_CHECK_MS  250
 #define TOUCH_POLL_MS    15
 #define TOUCH_QUIET_MS   300
 
@@ -189,6 +193,7 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 #define WM_INPUT_CENTER      (WM_APP + 28)  // key_center twice: pointer to the middle
 #define WM_INPUT_FOCUS_ANSWER (WM_APP + 29) // uia_focus_notify: a focus answer arrived
 #define WM_INPUT_TOUCH_EDGE  (WM_APP + 30)  // mouse_proc: a touch at the top was blocked
+#define WM_INPUT_FG_CHECK    (WM_APP + 34)  // input_own_window_front: look at the foreground now
                                             // (wParam 1) or one began elsewhere (0, log);
                                             // lParam = its point (MAKELPARAM)
 
@@ -420,6 +425,8 @@ static LONG  s_kb_calls_seen = 0;
 static int   s_hook_misses = 0;
 static DWORD s_hook_replace_tick = 0;
 static BOOL  s_raw_kb_on = FALSE;
+static BOOL  s_raw_kb_wanted = FALSE;   // registered at start (raw_keyboard_follow)
+static HWINEVENTHOOK s_raw_fg_hook;
 // capslock_off, input thread only: our last tap that turned CapsLock off
 // (0 = none since it was last seen off), how many taps left it on, the
 // foreground window then, and whether the timer runs.
@@ -4718,6 +4725,50 @@ static BOOL register_raw_keyboard(HWND target, BOOL on)
     return RegisterRawInputDevices(&device, 1, sizeof(device));
 }
 
+// Raw keyboard input (the hook check, raw_input_check) stops the keyboard
+// hook's calls while a window of this process is in front: Windows then calls
+// the low-level hook of a process that takes raw keyboard input for the first
+// key only. Measured 2026-11-26 with a standalone program (a hook on one
+// thread, its own window in front): 1 of 4 keys reached the hook with the
+// registration, on any thread, 4 of 4 without it. Tailmon's bubble and Vim's
+// dialogs got no Vim keys, and the check took the silence for a dead hook. So
+// the registration is dropped while our own window is in front and made again
+// when another program's window is.
+static void raw_keyboard_follow(HWND fg)
+{
+    DWORD pid = 0;
+    BOOL own;
+
+    if (!s_raw_kb_wanted || !s_power_wnd)
+        return;
+    if (fg)
+        GetWindowThreadProcessId(fg, &pid);
+    own = fg && pid == GetCurrentProcessId();
+    if (own && s_raw_kb_on) {
+        if (register_raw_keyboard(NULL, FALSE))
+            s_raw_kb_on = FALSE;
+    } else if (!own && !s_raw_kb_on) {
+        s_raw_kb_on = register_raw_keyboard(s_power_wnd, TRUE);
+        s_hook_misses = 0;
+        s_kb_calls_seen = InterlockedCompareExchange(&s_kb_calls, 0, 0);
+    }
+}
+
+// Every foreground change, our own windows' included (no SKIPOWNPROCESS).
+static void CALLBACK raw_fg_event(HWINEVENTHOOK hook, DWORD event, HWND hwnd,
+                                  LONG id_object, LONG id_child, DWORD thread,
+                                  DWORD time)
+{
+    (void)hook;
+    (void)event;
+    (void)id_object;
+    (void)id_child;
+    (void)thread;
+    (void)time;
+    // The event's window: GetForegroundWindow can still name the one before.
+    raw_keyboard_follow(hwnd ? hwnd : GetForegroundWindow());
+}
+
 // The touchscreen (HID digitizer page, touch screen usage) as raw input:
 // every touch report, whichever app the finger is on.
 static BOOL register_raw_touch(HWND target, BOOL on)
@@ -4909,6 +4960,10 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             caps_check(0);
             return 0;
         }
+        if (wp == RAW_FG_TIMER) {
+            raw_keyboard_follow(GetForegroundWindow());
+            return 0;
+        }
         if (wp == PTR_TIMER) {
             ptr_update();
             return 0;
@@ -5003,6 +5058,13 @@ static void cleanup_input(void)
         DestroyWindow(s_ind_wnd);
         s_ind_wnd = NULL;
     }
+    s_raw_kb_wanted = FALSE;
+    if (s_power_wnd)
+        KillTimer(s_power_wnd, RAW_FG_TIMER);
+    if (s_raw_fg_hook) {
+        UnhookWinEvent(s_raw_fg_hook);
+        s_raw_fg_hook = NULL;
+    }
     if (s_raw_kb_on) {
         register_raw_keyboard(NULL, FALSE);
         s_raw_kb_on = FALSE;
@@ -5063,6 +5125,17 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
         s_raw_kb_on = register_raw_keyboard(s_power_wnd, TRUE);
         if (!s_raw_kb_on)
             app_log(L"input: raw input registration failed");
+        s_raw_kb_wanted = s_raw_kb_on;
+        if (s_raw_kb_on) {
+            s_raw_fg_hook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND,
+                                            EVENT_SYSTEM_FOREGROUND, NULL,
+                                            raw_fg_event, 0, 0,
+                                            WINEVENT_OUTOFCONTEXT);
+            if (!s_raw_fg_hook)
+                app_log(L"input: foreground event hook failed (%lu)", GetLastError());
+            SetTimer(s_power_wnd, RAW_FG_TIMER, RAW_FG_CHECK_MS, NULL);
+            raw_keyboard_follow(GetForegroundWindow());
+        }
         s_raw_touch_on = register_raw_touch(s_power_wnd, TRUE);
         if (!s_raw_touch_on)
             app_log(L"input: raw touch registration failed (%lu)", GetLastError());
@@ -5096,6 +5169,10 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                     prescan_cancel();
                     leave_mouse_mode();
                 }
+                continue;
+            }
+            if (msg.message == WM_INPUT_FG_CHECK) {
+                raw_keyboard_follow(GetForegroundWindow());
                 continue;
             }
             if (msg.message == WM_INPUT_CONFIG) {
@@ -5349,6 +5426,13 @@ void input_type_text(const WCHAR *text)
 void input_pointer_refresh(void)
 {
     ptr_schedule();
+}
+
+// UI thread, right after one of our windows took the foreground (the bubble).
+void input_own_window_front(void)
+{
+    if (s_input_tid)
+        PostThreadMessageW(s_input_tid, WM_INPUT_FG_CHECK, 0, 0);
 }
 
 void input_config_changed(void)

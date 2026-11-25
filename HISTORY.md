@@ -1785,6 +1785,25 @@ Invariants stated in `common.h` and enforced by history:
   Shift down the hook saw without its release made the next real tap count
   from that old press; a down more than 600 ms after the last one is now a
   new press.
+- Cause found (same day, Kim: "investigate"). A standalone program (the
+  hook on one thread, its own window in front, F24 taps) got 4 of 4 keys,
+  and still 4 of 4 with a mouse hook, HIGHEST priority, focus WinEvents or a
+  layered topmost tool window; with the raw keyboard registration
+  (`RIDEV_INPUTSINK`, the hook check) on any thread, 1 of 4, every run.
+  Windows calls the low-level hook of a process that takes raw keyboard
+  input only for the first key while that process's own window is in front.
+  So Tailmon's bubble, the help window and Vim's dialogs got no Vim keys, and
+  `raw_input_check` took the silence for a dead hook. `raw_keyboard_follow`
+  drops the registration while one of our windows is in front and makes it
+  again when another program's is: on EVENT_SYSTEM_FOREGROUND (own process
+  included, using the event's window, since GetForegroundWindow can still
+  name the previous one), on `input_own_window_front` (posted by the bubble
+  as it opens: the event did not come when a bubble was shown again) and
+  every 250 ms (`RAW_FG_TIMER`). Verified in vim mouse with logging: four
+  open/close rounds by Shift taps, the hook saw 8 of 8 Shift releases with
+  the bubble in front and no hook was reported removed (before: 0 of 8 and
+  a removal each round). The bubble's own Shift handling stays as a
+  second line.
 - Kim: "always disable sticky keys". New `sticky_keys_off` (default 1):
   `main.c` turns off Sticky Keys and their shortcut (Shift five times, which
   asks to turn them on) at start and on every reload, saved in the profile
@@ -2744,9 +2763,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   suggestion list; UI Automation already exposes the tab names, the active
   address and a Select action.
 
-- **Vim mouse's keyboard hook gets no keys while Tailmon's bubble is in front**
-  (2026-11-26, cause not found; a standalone hook does get them). Handle a
-  key the bubble needs in the bubble's own window procedure.
+- **Raw keyboard input silences the process's own low-level keyboard hook
+  while one of its windows is in front** (only the first key reaches it;
+  2026-11-26). Keep the registration off while our window is in front
+  (`raw_keyboard_follow`), and test hook delivery with our own window in
+  front after any raw input change.
 
 - **Fix the state of a window that keeps re-raising itself; do not race it.**
   Answering each raise a frame later still shows as a blink. A maximized

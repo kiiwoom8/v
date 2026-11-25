@@ -1212,6 +1212,7 @@ static void open_bubble(void)
     ShowWindow(bubble, SW_SHOW);
     take_foreground(bubble);
     activating_bubble = FALSE;
+    input_own_window_front();
 }
 
 // Free to start a reaction now without cutting another animation short.

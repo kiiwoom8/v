@@ -424,6 +424,7 @@ void input_forward_wheel(POINT point, UINT message, WPARAM keys_and_delta);
 // and off when it closes.
 void input_set_key_capture(BOOL on);
 void input_config_changed(void);
+void input_own_window_front(void);    // UI thread: one of our windows took the foreground
 void input_pointer_refresh(void);      // any thread: decide again whether the pointer hides        // g_cfg was reloaded
 // Types text into the focused window (KEYEVENTF_UNICODE; \n = Enter, \t = Tab).
 // Text shortcuts use it only with shortcut_method = type (see snippet_insert).
