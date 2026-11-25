@@ -122,8 +122,9 @@ Text shortcuts always need Alt. `bare_keys = 0` turns this off.
 **`>>` and `<<` move the browser tab** right and left, as in Vimium: two
 taps of `>` (or `<`) within `tab_move_tap_ms` (default 1000 ms) in a web
 browser, where the keyboard focus is not in a text field. vim mouse takes
-both presses there and, once you let go of Shift, presses the browser's own
-Ctrl+Shift+PageDown / PageUp (Chrome, Edge, Firefox). In a text field, with
+both presses there and, on the second press, adds Ctrl and PageDown /
+PageUp to the Shift you are holding: the browser's own Ctrl+Shift+PageDown
+/ PageUp (Chrome, Edge, Firefox). In a text field, with
 a menu open or while vim mouse is still asking where the focus is, `>` and
 `<` type as usual. `tab_move_tap_ms = 0` turns it off.
 

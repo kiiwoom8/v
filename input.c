@@ -173,11 +173,6 @@ UINT WINAPI timeEndPeriod(UINT uPeriod);
 // raw_keyboard_follow: the foreground event can be missed (a bubble shown
 // again), so the power window also looks at the foreground this often.
 #define RAW_FG_TIMER     5
-// tab_move_tap_ms: the power window looks this often whether the modifiers
-// are up, so the tab move can go out, and gives up after TAB_MOVE_WAIT_MS.
-#define TAB_MOVE_TIMER   6
-#define TAB_MOVE_POLL_MS 10
-#define TAB_MOVE_WAIT_MS 3000
 #define RAW_FG_CHECK_MS  250
 #define TOUCH_POLL_MS    15
 #define TOUCH_QUIET_MS   300
@@ -2047,15 +2042,14 @@ static BOOL hold_window_ok(void)
 // field. Both presses are swallowed there (a > typed on a page does nothing);
 // in a text field, with a menu open or while the focus is not known, > and <
 // type as usual. The move is the browser's own Ctrl+Shift+PageDown /
-// PageUp (Chrome, Edge, Firefox), injected from the input thread once no
-// modifier is physically down, never mixed with the Shift still held for
-// the second >, like touchpad.c's shortcut. Hook thread for the keys.
+// PageUp (Chrome, Edge, Firefox) and goes out on the second press, never on
+// a release (Kim, 2026-11-26: "i haven't preferred such mechanism ever").
+// The Shift for it is the one the user is holding for the >: only Ctrl and
+// the page key are injected, so no injected Shift races the physical one
+// (section 5 of HISTORY.md); Ctrl is injected only while no Ctrl, Alt or Win
+// is down. Hook thread for the keys.
 static UINT  s_tabmv_vk = 0;     // the first tap's key while it is armed
 static DWORD s_tabmv_tick = 0;
-// Input thread: the move waiting for the modifiers to come up.
-static int   s_tabmv_dir = 0;    // +1 right, -1 left, 0 none
-static HWND  s_tabmv_fg = NULL;
-static DWORD s_tabmv_t0 = 0;
 
 static BOOL tab_move_key_down(UINT vk, UINT mods, UINT armed_vk)
 {
@@ -2092,78 +2086,59 @@ static BOOL tab_move_key_down(UINT vk, UINT mods, UINT armed_vk)
     return TRUE;
 }
 
-static void tab_move_stop(void)
+// Input thread (WM_INPUT_TAB_MOVE), right after the hook took the second
+// press. The keys go out in one SendInput call, so no real key lands
+// between them; our hook passes injected keys untouched. s_down is the
+// hook's own key state, kept on this thread.
+static void tab_move_now(BOOL right, HWND fg)
 {
-    s_tabmv_dir = 0;
-    if (s_power_wnd)
-        KillTimer(s_power_wnd, TAB_MOVE_TIMER);
-}
-
-// Input thread (WM_INPUT_TAB_MOVE and the power window's timer). The keys go
-// out in one SendInput call, so no real key lands between them; our hook
-// passes injected keys untouched.
-static void tab_move_step(void)
-{
-    static const int mods[] = {
-        VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN
+    static const UINT others[] = {
+        VK_LCONTROL, VK_RCONTROL, VK_CONTROL, VK_LMENU, VK_RMENU, VK_MENU,
+        VK_LWIN, VK_RWIN
     };
     INPUT in[6];
-    WORD page;
+    WORD page = right ? VK_NEXT : VK_PRIOR;
+    BOOL shift = s_down[VK_LSHIFT] || s_down[VK_RSHIFT] || s_down[VK_SHIFT];
     size_t i;
-    BOOL held = input_modifier_held();
+    int n = 0;
 
-    if (!s_tabmv_dir)
-        return;
-    if (GetForegroundWindow() != s_tabmv_fg) {
+    if (GetForegroundWindow() != fg) {
         if (g_cfg.log)
             app_log(L"tab move: dropped, another window came to the front");
-        tab_move_stop();
         return;
     }
-    for (i = 0; !held && i < sizeof(mods) / sizeof(mods[0]); i++)
-        if (GetAsyncKeyState(mods[i]) & 0x8000)
-            held = TRUE;
-    if (held) {
-        if (GetTickCount() - s_tabmv_t0 > TAB_MOVE_WAIT_MS) {
+    for (i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
+        if (s_down[others[i]]) {
             if (g_cfg.log)
-                app_log(L"tab move: dropped, a modifier was still held after %d ms",
-                        TAB_MOVE_WAIT_MS);
-            tab_move_stop();
+                app_log(L"tab move: dropped, Ctrl, Alt or Win is down");
+            return;
         }
-        return;
     }
-    page = s_tabmv_dir > 0 ? VK_NEXT : VK_PRIOR;
     ZeroMemory(in, sizeof(in));
-    for (i = 0; i < 6; i++)
+    in[n++].ki.wVk = VK_LCONTROL;
+    // The Shift released already (a very quick tap): the whole chord.
+    if (!shift)
+        in[n++].ki.wVk = VK_LSHIFT;
+    in[n].ki.wVk = page;
+    in[n++].ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+    in[n].ki.wVk = page;
+    in[n++].ki.dwFlags = KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP;
+    if (!shift) {
+        in[n].ki.wVk = VK_LSHIFT;
+        in[n++].ki.dwFlags = KEYEVENTF_KEYUP;
+    }
+    in[n].ki.wVk = VK_LCONTROL;
+    in[n++].ki.dwFlags = KEYEVENTF_KEYUP;
+    for (i = 0; i < (size_t)n; i++) {
         in[i].type = INPUT_KEYBOARD;
-    in[0].ki.wVk = VK_LCONTROL;
-    in[1].ki.wVk = VK_LSHIFT;
-    in[2].ki.wVk = page;
-    in[2].ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
-    in[3].ki.wVk = page;
-    in[3].ki.dwFlags = KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP;
-    in[4].ki.wVk = VK_LSHIFT;
-    in[4].ki.dwFlags = KEYEVENTF_KEYUP;
-    in[5].ki.wVk = VK_LCONTROL;
-    in[5].ki.dwFlags = KEYEVENTF_KEYUP;
-    for (i = 0; i < 6; i++)
         in[i].ki.wScan = (WORD)MapVirtualKeyW(in[i].ki.wVk, MAPVK_VK_TO_VSC);
-    if (SendInput(6, in, sizeof(INPUT)) != 6)
+    }
+    if (SendInput((UINT)n, in, sizeof(INPUT)) != (UINT)n)
         app_log(L"tab move: SendInput failed (%lu)", GetLastError());
     else if (g_cfg.log)
-        app_log(L"tab move: Ctrl+Shift+%ls sent",
-                s_tabmv_dir > 0 ? L"PageDown" : L"PageUp");
-    tab_move_stop();
-}
-
-static void tab_move_start(BOOL right, HWND fg)
-{
-    s_tabmv_dir = right ? 1 : -1;
-    s_tabmv_fg = fg;
-    s_tabmv_t0 = GetTickCount();
-    tab_move_step();
-    if (s_tabmv_dir && s_power_wnd)
-        SetTimer(s_power_wnd, TAB_MOVE_TIMER, TAB_MOVE_POLL_MS, NULL);
+        app_log(L"tab move: Ctrl+Shift+%ls sent%ls",
+                right ? L"PageDown" : L"PageUp",
+                shift ? L" (the held Shift)" : L"");
 }
 
 // On the pass-through path of handle_down: the key has typed.
@@ -5108,10 +5083,6 @@ static LRESULT CALLBACK power_wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
             touch_raw_check();
             return 0;
         }
-        if (wp == TAB_MOVE_TIMER) {
-            tab_move_step();
-            return 0;
-        }
         break;
     case WM_INPUT_CAPS_CHECK:
         caps_check((UINT)wp);
@@ -5336,7 +5307,7 @@ static DWORD WINAPI input_thread_proc(LPVOID param)
                 continue;
             }
             if (msg.message == WM_INPUT_TAB_MOVE) {
-                tab_move_start(msg.wParam != 0, (HWND)msg.lParam);
+                tab_move_now(msg.wParam != 0, (HWND)msg.lParam);
                 continue;
             }
             if (msg.message == WM_INPUT_TOUCH_EDGE) {

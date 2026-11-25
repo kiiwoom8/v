@@ -1824,14 +1824,19 @@ Invariants stated in `common.h` and enforced by history:
   posts `WM_INPUT_TAB_MOVE` with the foreground window. Any other key in
   between drops the first tap (`s_tabmv_vk`, also cleared in
   `reset_key_state`). Otherwise `>` and `<` type as before.
-- The move is the browser's own Ctrl+Shift+PageDown / PageUp. Section 5
-  forbids injecting modifiers next to held ones, so the input thread
-  (`tab_move_start`, `tab_move_step`, the power window's `TAB_MOVE_TIMER`
-  every 10 ms) waits until no modifier is down (`GetAsyncKeyState` and
-  `input_modifier_held`, as `touchpad.c` does), then sends all six keys in
-  one `SendInput` call. It gives up after 3 s with a modifier held, or as
-  soon as another window comes to the front. `log = 1` writes a
-  "tab move:" line for each step.
+- The move is the browser's own Ctrl+Shift+PageDown / PageUp, sent on the
+  second press. The first version (`9199a50`) waited until Shift was up, to
+  keep section 5's rule against injecting modifiers next to held ones; Kim:
+  "why << and >> activate on release instead of pressing? i haven't
+  preferred such mechanism ever". Now the input thread (`tab_move_now`, on
+  `WM_INPUT_TAB_MOVE` right after the hook) uses the Shift the user is
+  holding for the `>` and injects only Ctrl and the page key in one
+  `SendInput` call: no injected Shift, so nothing races the physical one,
+  and Ctrl only while the hook's key state (`s_down`) has no Ctrl, Alt or
+  Win down (else dropped). If Shift is already up (a very quick tap) the
+  whole chord goes out. Dropped too when another window came to the front.
+  `log = 1` writes a "tab move:" line for each step. Rule for later keys:
+  act on the press, never on a release, unless the user asks otherwise.
 - Not done in z: a web page cannot move a browser tab, so this lives in
   vim mouse, which already owns the bare keys in browsers. The same day z's
   own `f` labels dropped the letters vim mouse takes bare (`f h j k l u d

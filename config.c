@@ -1801,8 +1801,8 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"center_tap_ms = %d\r\n", d.center_tap_ms);
     appendf(buf, cch, L"; > > / < < (two taps within this many ms) move the browser tab right /\r\n");
     appendf(buf, cch, L"; left, like Vimium, where the focus is not in a text field (in a text\r\n");
-    appendf(buf, cch, L"; field > types as usual). Sent as Ctrl+Shift+PageDown / PageUp once\r\n");
-    appendf(buf, cch, L"; Shift is up. Needs bare_keys. 0 = off.\r\n");
+    appendf(buf, cch, L"; field > types as usual). Sent as Ctrl+Shift+PageDown / PageUp on the\r\n");
+    appendf(buf, cch, L"; second press. Needs bare_keys. 0 = off.\r\n");
     appendf(buf, cch, L"tab_move_tap_ms = %d\r\n", d.tab_move_tap_ms);
     appendf(buf, cch, L"; Esc in a text field leaves it: the keyboard focus goes to the page, so\r\n");
     appendf(buf, cch, L"; j k f and the other keys without Alt work at once (click or Tab to type\r\n");
