@@ -292,7 +292,8 @@ typedef struct IUIAutomationElementVtbl {
     void *GetRuntimeId;
     HRESULT (STDMETHODCALLTYPE *FindFirst)(IUIAutomationElement *This,
         int scope, IUIAutomationCondition *condition, IUIAutomationElement **found);
-    void *FindAll;
+    HRESULT (STDMETHODCALLTYPE *FindAll)(IUIAutomationElement *This,
+        int scope, IUIAutomationCondition *condition, IUIAutomationElementArray **found);
     // esc_unfocus: a page Document without a page window.
     HRESULT (STDMETHODCALLTYPE *FindFirstBuildCache)(IUIAutomationElement *This,
         int scope, IUIAutomationCondition *condition,
@@ -4603,55 +4604,52 @@ static BOOL uia_engine_init(UiaEngine *engine, BOOL with_names)
     return ok;
 }
 
-// Chromium's @tabs mode searches live tabs in the current browser profile.
-// Keep this on its own UIA worker, and act only on a confirmed shortcut URL.
+// Shortcut tabs (secretary.c). Chrome and Edge list every tab in the tab
+// strip as a TabItem of class "Tab" named after its title, sometimes with a
+// state after it (" - Audio playing", " - Memory usage - 80 MB"), and their
+// address bar (OmniboxViewViews) holds the active tab's address. These
+// workers only read them and select a tab through UI Automation: nothing is
+// typed into the browser. A tab is recognised by its address while it is
+// active; otherwise by its name: the title it showed the last time a
+// shortcut opened it (remembered per URL), or the address a page without a
+// title shows instead.
+#define BROWSER_TITLES_KEY L"Software\\vim mouse\\Secretary\\Tabs"
+#define BROWSER_TITLE_MAX 256
+#ifndef UIA_SelectionItemPatternId
+#define UIA_SelectionItemPatternId 10010
+#endif
+#ifndef UIA_ValueValuePropertyId
+#define UIA_ValueValuePropertyId 30045
+#endif
+#ifndef UIA_SelectionItemIsSelectedPropertyId
+#define UIA_SelectionItemIsSelectedPropertyId 30079
+#endif
+enum { BROWSER_FIND, BROWSER_READ, BROWSER_LEARN };
+
 typedef struct {
-    HWND window;
     UINT id;
+    int kind, count;
+    HWND windows[SECRETARY_BROWSER_WINDOWS];
     WCHAR url[SECRETARY_TARGET_MAX];
 } BrowserTabRequest;
 
-typedef struct BrowserValue BrowserValue;
-typedef struct BrowserInvoke BrowserInvoke;
-struct BrowserValue {
+typedef struct BrowserSelect BrowserSelect;
+struct BrowserSelect {
     struct {
         void *query, *addref;
-        ULONG (STDMETHODCALLTYPE *release)(BrowserValue *);
-        HRESULT (STDMETHODCALLTYPE *set)(BrowserValue *, LPCWSTR);
-    } *vt;
-};
-struct BrowserInvoke {
-    struct {
-        void *query, *addref;
-        ULONG (STDMETHODCALLTYPE *release)(BrowserInvoke *);
-        HRESULT (STDMETHODCALLTYPE *invoke)(BrowserInvoke *);
+        ULONG (STDMETHODCALLTYPE *release)(BrowserSelect *);
+        HRESULT (STDMETHODCALLTYPE *select)(BrowserSelect *);
     } *vt;
 };
 
-static const GUID browser_value_iid = {0xa94cd8b1, 0x0844, 0x4cd6,
-                                        {0x9d,0x2d,0x64,0x05,0x37,0xab,0x39,0xe9}};
-static const GUID browser_invoke_iid = {0xfb377fbe, 0x8ea6, 0x46d5,
-                                         {0x9c,0x73,0x64,0x99,0x64,0x2d,0x30,0x59}};
+// IUIAutomationSelectionItemPattern
+static const GUID browser_select_iid = {0xa8efa66a, 0x0fda, 0x421a,
+                                         {0x91,0x94,0x38,0x02,0x1f,0x35,0x78,0xea}};
 static volatile LONG browser_tab_request;
 
 static BOOL browser_request_current(const BrowserTabRequest *job)
 {
     return (UINT)InterlockedCompareExchange(&browser_tab_request, 0, 0) == job->id;
-}
-
-static BOOL browser_in_front(const BrowserTabRequest *job)
-{
-    return browser_request_current(job) && GetForegroundWindow() == job->window &&
-           !secretary_modifiers_down();
-}
-
-static void browser_key(WORD vk)
-{
-    INPUT events[2] = {{0}, {0}};
-    events[0].type = events[1].type = INPUT_KEYBOARD;
-    events[0].ki.wVk = events[1].ki.wVk = vk;
-    events[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, events, sizeof(INPUT));
 }
 
 static IUIAutomationElement *browser_find(UiaEngine *engine, IUIAutomationElement *root,
@@ -4672,6 +4670,18 @@ static IUIAutomationElement *browser_find(UiaEngine *engine, IUIAutomationElemen
     return found;
 }
 
+static BOOL element_text(IUIAutomationElement *el, int property, WCHAR *out, int cch)
+{
+    VARIANT v;
+    BOOL ok;
+    VariantInit(&v);
+    ok = SUCCEEDED(el->lpVtbl->GetCurrentPropertyValue(el, property, &v)) &&
+         V_VT(&v) == VT_BSTR && V_BSTR(&v) && V_BSTR(&v)[0];
+    if (ok) lstrcpynW(out, V_BSTR(&v), cch);
+    VariantClear(&v);
+    return ok;
+}
+
 static const WCHAR *without_scheme(const WCHAR *url)
 {
     if (!_wcsnicmp(url, L"https://", 8)) return url + 8;
@@ -4679,52 +4689,47 @@ static const WCHAR *without_scheme(const WCHAR *url)
     return url;
 }
 
+static const WCHAR *without_www(const WCHAR *address)
+{
+    return _wcsnicmp(address, L"www.", 4) ? address : address + 4;
+}
+
+// The address bar elides the scheme (and may show or drop a final slash).
 static BOOL open_address_matches(const WCHAR *value, const WCHAR *url)
 {
     const WCHAR *actual = without_scheme(value), *wanted = without_scheme(url);
-    size_t host = wcscspn(wanted, L"/?#");
+    size_t host, a, w;
     if (actual != value && (size_t)(actual - value) != (size_t)(wanted - url)) return FALSE;
+    actual = without_www(actual);
+    wanted = without_www(wanted);
+    host = wcscspn(wanted, L"/?#");
     if (wcscspn(actual, L"/?#") != host || _wcsnicmp(actual, wanted, host)) return FALSE;
     actual += host;
     wanted += host;
-    return !wcscmp(actual, wanted) || (!*actual && !wcscmp(wanted, L"/")) ||
-           (!*wanted && !wcscmp(actual, L"/"));
+    a = wcslen(actual);
+    w = wcslen(wanted);
+    if (a && actual[a - 1] == L'/') --a;
+    if (w && wanted[w - 1] == L'/') --w;
+    return a == w && !wcsncmp(actual, wanted, a);
 }
 
-static BOOL result_mentions_address(const WCHAR *name, const WCHAR *url)
+static BOOL same_host(const WCHAR *a, const WCHAR *b)
 {
-    const WCHAR *address = without_scheme(url), *hit;
-    // Chrome elides the scheme and sometimes the leading www in the label.
-    int attempt;
-    for (attempt = 0; attempt < 2; ++attempt) {
-        size_t len = wcslen(address);
-        BOOL root_slash = len > 1 && address[len - 1] == L'/' && wcscspn(address, L"/?#") == len - 1;
-        if (root_slash) --len;
-        for (hit = name; *hit; ++hit) {
-            BOOL boundary = hit == name || wcschr(L" \t,(", hit[-1]) != NULL;
-            const WCHAR *end;
-            if (!boundary && hit - name >= address - url && address > url)
-                boundary = !_wcsnicmp(hit - (address - url), url, (size_t)(address - url));
-            if (!boundary || wcsncmp(hit, address, len)) continue;
-            end = hit + len;
-            if (root_slash && *end == L'/') ++end;
-            if (!*end || wcschr(L" \t,)", *end)) return TRUE;
-        }
-        if (_wcsnicmp(address, L"www.", 4) != 0) break;
-        address += 4;
-    }
-    return FALSE;
+    size_t host;
+    a = without_www(without_scheme(a));
+    b = without_www(without_scheme(b));
+    host = wcscspn(a, L"/?#");
+    return host && wcscspn(b, L"/?#") == host && !_wcsnicmp(a, b, host);
 }
 
-// Chrome can render the address popup as a browser-owned WebUI document.
-// Accept that one document only when it is inside the native result frame.
+// Browser UI, not a page: a page's element can carry any class name, but it
+// sits inside a Document.
 static BOOL is_browser_chrome(UiaEngine *engine, IUIAutomationElement *root,
-                             IUIAutomationElement *el, BOOL results)
+                              IUIAutomationElement *el)
 {
     IUIAutomationTreeWalker *walker = NULL;
     IUIAutomationElement *parent = NULL;
     BOOL known = FALSE;
-    BOOL document_seen = FALSE, popup_seen = FALSE;
     int depth;
     if (FAILED(engine->automation->lpVtbl->get_RawViewWalker(engine->automation, &walker)) || !walker)
         return FALSE;
@@ -4741,136 +4746,413 @@ static BOOL is_browser_chrome(UiaEngine *engine, IUIAutomationElement *root,
         document = FAILED(parent->lpVtbl->GetCurrentPropertyValue(parent, UIA_ControlTypePropertyId, &prop)) ||
                    (V_VT(&prop) == VT_I4 && V_I4(&prop) == UIA_DocumentControlTypeId);
         VariantClear(&prop);
-        if (document) {
-            if (!results || document_seen || popup_seen) break;
-            document_seen = TRUE;
-        } else if (document_seen && !popup_seen) {
-            VariantInit(&prop);
-            if (SUCCEEDED(parent->lpVtbl->GetCurrentPropertyValue(parent, UIA_ClassNamePropertyId, &prop)) &&
-                V_VT(&prop) == VT_BSTR && V_BSTR(&prop) &&
-                !wcscmp(V_BSTR(&prop), L"RoundedOmniboxResultsFrame"))
-                popup_seen = TRUE;
-            VariantClear(&prop);
-        }
+        if (document) break;
     }
     if (parent) parent->lpVtbl->Release(parent);
     walker->lpVtbl->Release(walker);
-    return known && (!document_seen || popup_seen);
+    return known;
 }
 
-static HWND choose_tab_suggestion(UiaEngine *engine, IUIAutomationElement *root,
-                                   const BrowserTabRequest *job)
+// The active tab's address, as the address bar shows it.
+static BOOL browser_address(UiaEngine *engine, IUIAutomationElement *root, WCHAR *out, int cch)
 {
-    int i;
-    for (i = 0; i < 8 && browser_in_front(job); ++i) {
-        WCHAR id[20];
-        IUIAutomationElement *item;
-        BrowserInvoke *action = NULL;
-        VARIANT text;
-        BOOL selected;
-        _snwprintf(id, 20, L"match-%d", i);
-        item = browser_find(engine, root, 30011, id);
-        if (!item) break;
-        VariantInit(&text);
-        selected = SUCCEEDED(item->lpVtbl->GetCurrentPropertyValue(item, UIA_NamePropertyId, &text)) &&
-            V_VT(&text) == VT_BSTR && V_BSTR(&text) && result_mentions_address(V_BSTR(&text), job->url) &&
-            is_browser_chrome(engine, root, item, TRUE) &&
-            SUCCEEDED(item->lpVtbl->GetCurrentPatternAs(item, 10000, &browser_invoke_iid, (void **)&action)) &&
-            action && browser_in_front(job) && SUCCEEDED(action->vt->invoke(action));
-        if (action) action->vt->release(action);
-        VariantClear(&text);
-        item->lpVtbl->Release(item);
-        if (selected) {
-            Sleep(140);
-            return GetForegroundWindow();
+    IUIAutomationElement *bar = browser_find(engine, root, UIA_ClassNamePropertyId, L"OmniboxViewViews");
+    BOOL ok = bar && is_browser_chrome(engine, root, bar) &&
+              element_text(bar, UIA_ValueValuePropertyId, out, cch);
+    if (bar) bar->lpVtbl->Release(bar);
+    return ok;
+}
+
+// The tab strip's tabs; NULL for a window without one (an installed web app).
+static IUIAutomationElementArray *browser_tabs(UiaEngine *engine, IUIAutomationElement *root)
+{
+    IUIAutomation *automation = engine->automation;
+    IUIAutomationElement *strip = browser_find(engine, root, UIA_ClassNamePropertyId, L"TabStrip");
+    IUIAutomationCondition *parts[2] = {NULL, NULL}, *both = NULL;
+    IUIAutomationElementArray *tabs = NULL;
+    VARIANT v;
+
+    VariantInit(&v);
+    V_VT(&v) = VT_I4;
+    V_I4(&v) = UIA_TabItemControlTypeId;
+    if (FAILED(automation->lpVtbl->CreatePropertyCondition(automation, UIA_ControlTypePropertyId, v, &parts[0])))
+        parts[0] = NULL;
+    V_VT(&v) = VT_BSTR;
+    V_BSTR(&v) = SysAllocString(L"Tab");
+    if (!V_BSTR(&v) || FAILED(automation->lpVtbl->CreatePropertyCondition(automation, UIA_ClassNamePropertyId, v, &parts[1])))
+        parts[1] = NULL;
+    VariantClear(&v);
+    if (parts[0] && parts[1] &&
+        SUCCEEDED(automation->lpVtbl->CreateAndConditionFromNativeArray(automation, parts, 2, &both)) && both) {
+        // Without a "TabStrip" (another Chromium layout) the whole window is
+        // searched; a tab is then checked to be browser UI before it is used.
+        IUIAutomationElement *scope = strip ? strip : root;
+        if (FAILED(scope->lpVtbl->FindAll(scope, UIA_TREESCOPE_DESCENDANTS, both, &tabs))) tabs = NULL;
+        both->lpVtbl->Release(both);
+    }
+    if (parts[0]) parts[0]->lpVtbl->Release(parts[0]);
+    if (parts[1]) parts[1]->lpVtbl->Release(parts[1]);
+    if (strip) strip->lpVtbl->Release(strip);
+    return tabs;
+}
+
+static BOOL tab_selected(IUIAutomationElement *tab)
+{
+    VARIANT v;
+    BOOL on;
+    VariantInit(&v);
+    on = SUCCEEDED(tab->lpVtbl->GetCurrentPropertyValue(tab, UIA_SelectionItemIsSelectedPropertyId, &v)) &&
+         V_VT(&v) == VT_BOOL && V_BOOL(&v);
+    VariantClear(&v);
+    return on;
+}
+
+static BOOL select_tab(IUIAutomationElement *tab)
+{
+    BrowserSelect *pattern = NULL;
+    BOOL ok = SUCCEEDED(tab->lpVtbl->GetCurrentPatternAs(tab, UIA_SelectionItemPatternId,
+                                                         &browser_select_iid, (void **)&pattern)) &&
+              pattern && SUCCEEDED(pattern->vt->select(pattern));
+    if (pattern) pattern->vt->release(pattern);
+    return ok;
+}
+
+// "(3) Inbox": the count changes, the page does not.
+static const WCHAR *without_count(const WCHAR *title)
+{
+    const WCHAR *p = title;
+    if (*p != L'(') return title;
+    for (++p; (*p >= L'0' && *p <= L'9') || *p == L'+' || *p == L','; ++p) {}
+    return p > title + 1 && p[0] == L')' && p[1] == L' ' ? p + 2 : title;
+}
+
+// A tab's name is its title, sometimes followed by " - " and a state.
+static BOOL tab_name_is(const WCHAR *name, const WCHAR *title)
+{
+    size_t len;
+    name = without_count(name);
+    title = without_count(title);
+    len = wcslen(title);
+    return len && !wcsncmp(name, title, len) && (!name[len] || !wcsncmp(name + len, L" - ", 3));
+}
+
+// A page without a title is named after its address, without the scheme
+// (and www.).
+static BOOL tab_name_is_address(const WCHAR *name, const WCHAR *url)
+{
+    const WCHAR *address = without_www(without_scheme(url));
+    size_t len = wcslen(address);
+    name = without_www(name);
+    if (len && address[len - 1] == L'/') --len;
+    if (!len || wcsncmp(name, address, len)) return FALSE;
+    name += len;
+    if (*name == L'/') ++name;
+    return !*name || !wcsncmp(name, L" - ", 3);
+}
+
+static WCHAR *last_dash(WCHAR *text)
+{
+    WCHAR *hit = NULL, *p;
+    for (p = text; (p = wcsstr(p, L" - ")) != NULL; ++p) hit = p;
+    return hit;
+}
+
+// The active tab's title. The window's caption starts with it (Chrome adds
+// " - Google Chrome", Edge its profile and name); the tab's name may add
+// states after it, which are cut off until the caption starts with the rest.
+static BOOL active_title(UiaEngine *engine, IUIAutomationElement *root, HWND window,
+                         WCHAR *out, int cch)
+{
+    WCHAR caption[512];
+    IUIAutomationElementArray *tabs;
+    int i, n = 0;
+    BOOL found = FALSE, selected = FALSE;
+
+    out[0] = 0;
+    if (!GetWindowTextW(window, caption, 512) || !(tabs = browser_tabs(engine, root))) return FALSE;
+    tabs->lpVtbl->get_Length(tabs, &n);
+    for (i = 0; i < n && !selected; ++i) {
+        IUIAutomationElement *tab = NULL;
+        if (FAILED(tabs->lpVtbl->GetElement(tabs, i, &tab)) || !tab) continue;
+        selected = tab_selected(tab);
+        if (selected && element_text(tab, UIA_NamePropertyId, out, cch)) {
+            for (;;) {
+                size_t len = wcslen(out);
+                WCHAR *cut;
+                if (!wcsncmp(caption, out, len) && (!caption[len] || caption[len] == L' ')) {
+                    found = TRUE;
+                    break;
+                }
+                if (!(cut = last_dash(out))) break;
+                *cut = 0;
+            }
+        }
+        tab->lpVtbl->Release(tab);
+    }
+    tabs->lpVtbl->Release(tabs);
+    if (!found) out[0] = 0;
+    return found;
+}
+
+static BOOL remembered_title(const WCHAR *url, WCHAR *title, DWORD cch)
+{
+    HKEY key;
+    DWORD type, size = (cch - 1) * sizeof(WCHAR);
+    BOOL ok;
+    ZeroMemory(title, cch * sizeof(WCHAR));
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, BROWSER_TITLES_KEY, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+        return FALSE;
+    ok = RegQueryValueExW(key, url, NULL, &type, (BYTE *)title, &size) == ERROR_SUCCESS &&
+         type == REG_SZ && title[0];
+    RegCloseKey(key);
+    if (!ok) title[0] = 0;
+    return ok;
+}
+
+static void remember_title(const WCHAR *url, const WCHAR *title)
+{
+    HKEY key;
+    if (!url[0] || !title[0] ||
+        RegCreateKeyExW(HKEY_CURRENT_USER, BROWSER_TITLES_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL,
+                        &key, NULL) != ERROR_SUCCESS)
+        return;
+    RegSetValueExW(key, url, 0, REG_SZ, (const BYTE *)title, (DWORD)((wcslen(title) + 1) * sizeof(WCHAR)));
+    RegCloseKey(key);
+}
+
+// Selects a tab named after the page and keeps it when the address bar then
+// shows the page (or, for a remembered title, its site); otherwise the tab
+// that was active is selected again.
+static BOOL select_named_tab(UiaEngine *engine, IUIAutomationElement *root,
+                             const BrowserTabRequest *job, const WCHAR *title)
+{
+    IUIAutomationElementArray *tabs = browser_tabs(engine, root);
+    IUIAutomationElement *previous = NULL;
+    WCHAR name[512], before[SECRETARY_TARGET_MAX], address[SECRETARY_TARGET_MAX];
+    int i, n = 0;
+    BOOL kept = FALSE;
+
+    if (!tabs) return FALSE;
+    tabs->lpVtbl->get_Length(tabs, &n);
+    for (i = 0; i < n && !previous; ++i) {
+        IUIAutomationElement *tab = NULL;
+        if (FAILED(tabs->lpVtbl->GetElement(tabs, i, &tab)) || !tab) continue;
+        if (tab_selected(tab)) previous = tab;
+        else tab->lpVtbl->Release(tab);
+    }
+    for (i = 0; i < n && !kept && browser_request_current(job); ++i) {
+        IUIAutomationElement *tab = NULL;
+        BOOL by_address, by_title;
+        int poll;
+        if (FAILED(tabs->lpVtbl->GetElement(tabs, i, &tab)) || !tab) continue;
+        if (tab_selected(tab) || !element_text(tab, UIA_NamePropertyId, name, 512)) {
+            tab->lpVtbl->Release(tab);
+            continue;
+        }
+        by_address = tab_name_is_address(name, job->url);
+        by_title = !by_address && title && tab_name_is(name, title);
+        if ((by_address || by_title) && is_browser_chrome(engine, root, tab)) {
+            if (!browser_address(engine, root, before, SECRETARY_TARGET_MAX)) before[0] = 0;
+            if (select_tab(tab)) {
+                // The address bar follows the selection within a few frames.
+                for (poll = 0; poll < 12 && browser_request_current(job); ++poll) {
+                    Sleep(25);
+                    if (!browser_address(engine, root, address, SECRETARY_TARGET_MAX) ||
+                        !wcscmp(address, before))
+                        continue;
+                    kept = open_address_matches(address, job->url) ||
+                           (by_title && same_host(address, job->url));
+                    break;
+                }
+                if (!kept && previous) select_tab(previous);
+            }
+        }
+        tab->lpVtbl->Release(tab);
+    }
+    if (previous) previous->lpVtbl->Release(previous);
+    tabs->lpVtbl->Release(tabs);
+    return kept;
+}
+
+// First a window whose active tab shows the page, then a tab named after it.
+static HWND find_open_tab(UiaEngine *engine, const BrowserTabRequest *job)
+{
+    WCHAR address[SECRETARY_TARGET_MAX], title[BROWSER_TITLE_MAX], shown[BROWSER_TITLE_MAX];
+    BOOL titled = remembered_title(job->url, title, BROWSER_TITLE_MAX);
+    HWND found = NULL;
+    int pass, w;
+    for (pass = 0; pass < 2 && !found; ++pass) {
+        for (w = 0; w < job->count && !found && browser_request_current(job); ++w) {
+            IUIAutomationElement *root = NULL;
+            BOOL hit;
+            if (FAILED(engine->automation->lpVtbl->ElementFromHandle(
+                    engine->automation, (UIA_HWND)job->windows[w], &root)) || !root)
+                continue;
+            if (pass == 0)
+                hit = browser_address(engine, root, address, SECRETARY_TARGET_MAX) &&
+                      open_address_matches(address, job->url);
+            else
+                hit = select_named_tab(engine, root, job, titled ? title : NULL);
+            if (hit) {
+                found = job->windows[w];
+                if (active_title(engine, root, found, shown, BROWSER_TITLE_MAX))
+                    remember_title(job->url, shown);
+            }
+            root->lpVtbl->Release(root);
         }
     }
-    return NULL;
+    return found;
 }
 
-static HWND reuse_open_browser_tab(UiaEngine *engine, const BrowserTabRequest *job)
+// A host a shortcut can open: a name with a dot, or localhost. A bare word in
+// the address bar is a search or an internal page (about:blank).
+static BOOL web_host(const WCHAR *address, size_t host)
 {
-    IUIAutomationElement *root = NULL, *bar = NULL, *scope = NULL;
-    BrowserValue *value = NULL;
-    HWND used = NULL;
-    VARIANT text;
-    BOOL in_edit = FALSE;
-    int poll;
+    size_t i;
+    if (!host) return FALSE;
+    if (!_wcsnicmp(address, L"localhost", 9) && (host == 9 || address[9] == L':')) return TRUE;
+    for (i = 0; i < host; ++i)
+        if (address[i] == L'.') return TRUE;
+    return FALSE;
+}
 
-    if (!browser_in_front(job) || FAILED(engine->automation->lpVtbl->ElementFromHandle(
-        engine->automation, (UIA_HWND)job->window, &root)) || !root) goto done;
-    bar = browser_find(engine, root, UIA_ClassNamePropertyId, L"OmniboxViewViews");
-    if (!bar || !is_browser_chrome(engine, root, bar, FALSE)) goto done;
-    VariantInit(&text);
-    if (SUCCEEDED(bar->lpVtbl->GetCurrentPropertyValue(bar, 30045, &text)) &&
-        V_VT(&text) == VT_BSTR && V_BSTR(&text) && open_address_matches(V_BSTR(&text), job->url))
-        used = job->window;
-    VariantClear(&text);
-    if (used || !browser_in_front(job) || FAILED(bar->lpVtbl->GetCurrentPatternAs(
-        bar, 10002, &browser_value_iid, (void **)&value)) || !value) goto done;
-    if (FAILED(bar->lpVtbl->SetFocus(bar)) || !browser_in_front(job) ||
-        FAILED(value->vt->set(value, L""))) goto done;
-    in_edit = TRUE;
-    if (!browser_in_front(job)) goto done;
-    input_type_text(L"@tabs");
-    Sleep(140);
-    if (!browser_in_front(job)) goto done;
-    browser_key(VK_SPACE);
-    Sleep(130);
-    for (poll = 0; poll < 3 && !scope && browser_in_front(job); ++poll) {
-        scope = browser_find(engine, root, UIA_ClassNamePropertyId, L"SelectedKeywordView");
-        if (!scope) Sleep(85);
+// The active tab as a shortcut: its address with a scheme (the address bar
+// drops https://) and its title. Only web pages qualify.
+static BrowserPage *read_page(UiaEngine *engine, const BrowserTabRequest *job)
+{
+    IUIAutomationElement *root = NULL;
+    BrowserPage *page = (BrowserPage *)calloc(1, sizeof(*page));
+    WCHAR address[SECRETARY_TARGET_MAX];
+    BOOL ok = FALSE;
+
+    if (page && SUCCEEDED(engine->automation->lpVtbl->ElementFromHandle(
+            engine->automation, (UIA_HWND)job->windows[0], &root)) && root &&
+        browser_address(engine, root, address, SECRETARY_TARGET_MAX)) {
+        const WCHAR *rest = without_scheme(address), *p;
+        size_t at;
+        if (rest != address) {
+            lstrcpynW(page->url, address, (int)(rest - address) + 1);
+            ok = TRUE;
+        } else if (!wcsstr(address, L"://")) {
+            lstrcpyW(page->url, L"https://");
+            ok = TRUE;
+        }
+        ok = ok && web_host(rest, wcscspn(rest, L"/?#"));
+        at = wcslen(page->url);
+        // The browser receives the address as one quoted argument.
+        for (p = rest; ok && *p; ++p) {
+            if (*p <= L' ' || *p == L'"' || *p == L'\\') {
+                if (at + 4 >= SECRETARY_TARGET_MAX) ok = FALSE;
+                else at += (size_t)_snwprintf(page->url + at, 4, L"%%%02X", (unsigned)(*p & 0xFF));
+            } else if (at + 1 >= SECRETARY_TARGET_MAX) {
+                ok = FALSE;
+            } else {
+                page->url[at++] = *p;
+            }
+        }
+        if (ok) {
+            page->url[at] = 0;
+            if (active_title(engine, root, job->windows[0], page->title, 256))
+                remember_title(page->url, page->title);
+        }
     }
-    if (!scope || !is_browser_chrome(engine, root, scope, FALSE) || !browser_in_front(job)) goto done;
-    input_type_text(without_scheme(job->url));
-    Sleep(235);
-    // Chromium rebuilds the suggestion popup asynchronously after a window
-    // transition. Allow a few refreshes before treating a result as absent.
-    for (poll = 0; poll < 3 && !used && browser_in_front(job); ++poll) {
-        used = choose_tab_suggestion(engine, root, job);
-        if (used) in_edit = FALSE;
-        else if (poll < 2) Sleep(125);
-    }
-done:
-    if (in_edit && browser_in_front(job)) { browser_key(VK_ESCAPE); browser_key(VK_ESCAPE); }
-    if (value) value->vt->release(value);
-    if (scope) scope->lpVtbl->Release(scope);
-    if (bar) bar->lpVtbl->Release(bar);
     if (root) root->lpVtbl->Release(root);
-    return used;
+    if (!ok) {
+        free(page);
+        page = NULL;
+    }
+    return page;
+}
+
+// A tab a shortcut opened: once it shows the page with the same title twice
+// in a row, that title is how the shortcut finds the tab next time.
+static void learn_title(UiaEngine *engine, const BrowserTabRequest *job)
+{
+    WCHAR address[SECRETARY_TARGET_MAX], title[BROWSER_TITLE_MAX], last[BROWSER_TITLE_MAX] = L"";
+    int poll;
+    for (poll = 0; poll < 24 && browser_request_current(job); ++poll) {
+        IUIAutomationElement *root = NULL;
+        BOOL stable = FALSE;
+        Sleep(500);
+        if (!IsWindow(job->windows[0]) || !browser_request_current(job) ||
+            FAILED(engine->automation->lpVtbl->ElementFromHandle(
+                engine->automation, (UIA_HWND)job->windows[0], &root)) || !root)
+            break;
+        if (browser_address(engine, root, address, SECRETARY_TARGET_MAX) &&
+            open_address_matches(address, job->url) &&
+            active_title(engine, root, job->windows[0], title, BROWSER_TITLE_MAX)) {
+            stable = !wcscmp(title, last);
+            lstrcpynW(last, title, BROWSER_TITLE_MAX);
+        } else {
+            last[0] = 0;
+        }
+        root->lpVtbl->Release(root);
+        if (stable) {
+            remember_title(job->url, title);
+            break;
+        }
+    }
 }
 
 static DWORD WINAPI browser_tab_worker(void *parameter)
 {
     BrowserTabRequest *job = (BrowserTabRequest *)parameter;
     UiaEngine engine;
-    HWND used = NULL;
+    HWND found = NULL;
+    BrowserPage *page = NULL;
     if (SUCCEEDED(CoInitializeEx(NULL, COINIT_MULTITHREADED))) {
         if (browser_request_current(job) && uia_engine_init(&engine, FALSE)) {
-            used = reuse_open_browser_tab(&engine, job);
+            if (job->kind == BROWSER_FIND) found = find_open_tab(&engine, job);
+            else if (job->kind == BROWSER_READ) page = read_page(&engine, job);
+            else learn_title(&engine, job);
             uia_engine_cleanup(&engine);
         }
         CoUninitialize();
     }
-    if (browser_request_current(job))
-        PostMessageW(g_main_wnd, WM_APP_SECRETARY_TAB, job->id, (LPARAM)used);
+    if (job->kind == BROWSER_FIND && browser_request_current(job))
+        PostMessageW(g_main_wnd, WM_APP_SECRETARY_TAB, job->id, (LPARAM)found);
+    else if (job->kind == BROWSER_READ && (!browser_request_current(job) ||
+             !PostMessageW(g_main_wnd, WM_APP_SECRETARY_PAGE, job->id, (LPARAM)page)))
+        free(page);
     free(job);
     return 0;
 }
 
-BOOL uia_find_browser_tab(HWND browser, const WCHAR *url, UINT request)
+static BOOL start_browser_job(int kind, const HWND *windows, int count, const WCHAR *url, UINT request)
 {
-    BrowserTabRequest *job = (BrowserTabRequest *)malloc(sizeof(*job));
+    BrowserTabRequest *job;
     HANDLE worker;
+    if (count <= 0 || !request) return FALSE;
+    job = (BrowserTabRequest *)calloc(1, sizeof(*job));
     if (!job) return FALSE;
-    job->window = browser;
     job->id = request;
-    lstrcpynW(job->url, url, SECRETARY_TARGET_MAX);
+    job->kind = kind;
+    job->count = count < SECRETARY_BROWSER_WINDOWS ? count : SECRETARY_BROWSER_WINDOWS;
+    memcpy(job->windows, windows, (size_t)job->count * sizeof(HWND));
+    if (url) lstrcpynW(job->url, url, SECRETARY_TARGET_MAX);
     InterlockedExchange(&browser_tab_request, (LONG)request);
     worker = CreateThread(NULL, 0, browser_tab_worker, job, 0, NULL);
-    if (!worker) { free(job); return FALSE; }
+    if (!worker) {
+        free(job);
+        return FALSE;
+    }
     CloseHandle(worker);
     return TRUE;
+}
+
+BOOL uia_find_browser_tab(const HWND *windows, int count, const WCHAR *url, UINT request)
+{
+    return start_browser_job(BROWSER_FIND, windows, count, url, request);
+}
+
+BOOL uia_read_browser_page(HWND window, UINT request)
+{
+    return start_browser_job(BROWSER_READ, &window, 1, NULL, request);
+}
+
+BOOL uia_learn_browser_tab(HWND window, const WCHAR *url, UINT request)
+{
+    return start_browser_job(BROWSER_LEARN, &window, 1, url, request);
 }
 
 void uia_cancel_browser_tab(void) { InterlockedExchange(&browser_tab_request, 0); }

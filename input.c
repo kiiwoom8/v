@@ -2158,7 +2158,7 @@ static BOOL alt_should_withhold(void)
     // and the overlay still needs Alt hidden so its keys arrive intact.
     if (flag_get(&s_capture))
         return TRUE;
-    if (secretary_editor_has_focus() || secretary_prompt_has_focus()) return FALSE;
+    if (secretary_editor_has_focus()) return FALSE;
     return !flag_get(&s_paused) && popup_open(FALSE, NULL);
 }
 
@@ -2309,7 +2309,7 @@ static BOOL handle_down(UINT vk)
     if (!flag_get(&s_capture) && !flag_get(&s_mouse_mode) &&
         !(g_cfg.mouse_mode_key != 0 && vk == g_cfg.mouse_mode_key &&
           !(mods & (KMOD_CTRL | KMOD_ALT | KMOD_WIN | KMOD_SHIFT))) &&
-        (secretary_editor_has_focus() || secretary_prompt_has_focus())) {
+        (secretary_editor_has_focus())) {
         s_owner[vk] = OWN_PASS;
         return FALSE;
     }

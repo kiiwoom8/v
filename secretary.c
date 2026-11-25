@@ -64,7 +64,10 @@ enum { PET_WAIT, PET_TURN, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH
 // What an idle cat does next; weights depend on context (pick_behaviour).
 enum { DO_WALK, DO_GROOM, DO_REST, DO_NAP, DO_LOOK, DO_STRETCH, DO_YAWN, DO_STILL,
        DO_EXPLORE, DO_SCAMPER, DO_COUNT };
-enum { BUBBLE_EDIT, BUBBLE_SCREEN, BUBBLE_ROAM, BUBBLE_HOME, BUBBLE_PROMPT, BUBBLE_ACTIONS };
+// Bubble buttons. open_bubble lists only the ones that apply: adding the
+// page needs a browser in front and a free slot, the next screen a second
+// monitor.
+enum { BUBBLE_ADD_PAGE, BUBBLE_EDIT, BUBBLE_ROAM, BUBBLE_HOME, BUBBLE_SCREEN, BUBBLE_KINDS };
 
 static const PoseStep idle[] = {
     {0, 1150}, {1, 260}, {0, 450}, {2, 100}, {0, 675}, {3, 310}, {0, 820}
@@ -217,6 +220,12 @@ static BOOL bubble_dirty;
 static BYTE bubble_opacity;
 static POINT bubble_painted_at;
 static int rows[SECRETARY_SLOTS], row_count, armed_key, focus_item, selected = -1;
+static int actions[BUBBLE_KINDS], action_count;
+static HWND page_browser; // the browser in front when the bubble opened
+static UINT page_request;
+// click_pixel and sprite_bounds describe the painted sprite. A blended frame
+// leaves them stale; ensure_measured measures it only when they are used.
+static BOOL measured;
 static int pending_slot = -1;
 static volatile LONG pending_command;
 static int command_pose;
@@ -246,18 +255,20 @@ static DWORD ignore_until, last_reacted, last_nap_end;
 static int interest = 80, last_behaviour = -1;
 static BOOL (WINAPI *process_path)(HANDLE, DWORD, LPWSTR, PDWORD);
 
-// A web shortcut works in the open browser and checks for an existing tab.
+// A web shortcut switches to the open browser's tab that shows its page
+// (uia.c reads the tabs and selects one; nothing is typed), or opens the page
+// in a new tab of that browser.
 static struct {
     const WCHAR *exe;
     HWND target;
-    DWORD began, sent, browser_ready;
+    DWORD began, sent;
     UINT request;
-    int lookup;
-    BOOL maximizing;
+    BOOL looking, maximizing;
     WCHAR browser_path[MAX_PATH];
     WCHAR url[SECRETARY_TARGET_MAX];
 } launch;
 static UINT next_browser_request;
+static BOOL app_window(HWND wnd, const WCHAR *exe);
 
 static int px(int n) { return MulDiv(n, dpi, 96); }
 
@@ -268,13 +279,67 @@ static DWORD animation_now(void)
     return (DWORD)(now.QuadPart * 1000 / animation_frequency.QuadPart);
 }
 
+// One frame per display refresh, FRAME_LEAD_MS before the vertical blank at
+// which the compositor shows it. DWM gives the refresh period and the time of
+// a recent blank (read again every second); when it cannot, 60 Hz. A frame
+// every 8 ms painted twice per 60 Hz refresh, and the compositor showed only
+// the second. The timer callback arms the one-shot timer for the next blank.
+#define DWM_TIMING_INFO_SIZE 292 // sizeof(DWM_TIMING_INFO), packed
+#define FRAME_LEAD_MS 4
+static HRESULT (WINAPI *dwm_timing)(HWND, void *);
+static LONGLONG refresh_qpc, vblank_qpc, last_frame_qpc; // timer callback only
+static DWORD timing_read;
+static volatile LONG frame_interval = FALLBACK_FRAME_MS; // ms, read by the UI thread
+
+static void read_refresh(LONGLONG now)
+{
+    BYTE info[DWM_TIMING_INFO_SIZE];
+    LONGLONG period = 0, vblank = 0, second = animation_frequency.QuadPart;
+    UINT32 size = sizeof(info);
+    ZeroMemory(info, sizeof(info));
+    CopyMemory(info, &size, sizeof(size));
+    if (dwm_timing && SUCCEEDED(dwm_timing(NULL, info))) {
+        CopyMemory(&period, info + 12, sizeof(period));
+        CopyMemory(&vblank, info + 28, sizeof(vblank));
+    }
+    if (period < second / 250 || period > second / 20) {
+        period = second / 60;
+        vblank = vblank_qpc ? vblank_qpc : now;
+    }
+    refresh_qpc = period;
+    vblank_qpc = vblank;
+    InterlockedExchange(&frame_interval, (LONG)(period * 1000 / second));
+}
+
+static BOOL arm_frame_timer(void)
+{
+    LARGE_INTEGER now, due;
+    LONGLONG second = animation_frequency.QuadPart, lead = second * FRAME_LEAD_MS / 1000;
+    LONGLONG target, ahead;
+    QueryPerformanceCounter(&now);
+    if (!refresh_qpc || GetTickCount() - timing_read >= 1000) {
+        read_refresh(now.QuadPart);
+        timing_read = GetTickCount();
+    }
+    // The first blank at least a millisecond after the lead, never two
+    // frames for one blank.
+    ahead = now.QuadPart + lead + second / 1000 - vblank_qpc;
+    target = vblank_qpc + (ahead > 0 ? ahead / refresh_qpc + 1 : 0) * refresh_qpc - lead;
+    if (target - last_frame_qpc < refresh_qpc / 2) target += refresh_qpc;
+    last_frame_qpc = target;
+    due.QuadPart = -((target - now.QuadPart) * 10000000 / second);
+    if (due.QuadPart > -10000) due.QuadPart = -10000;
+    return SetWaitableTimer(frame_timer, &due, 0, NULL, NULL, FALSE);
+}
+
 static VOID CALLBACK request_frame(PVOID context, BOOLEAN timed_out)
 {
     (void)timed_out;
-    // The timer can run ahead of painting. Keep at most one frame queued.
+    // Painting can fall behind the timer. Keep at most one frame queued.
     if (InterlockedExchange(&frame_posted, 1) == 0 &&
         !PostMessageW((HWND)context, WM_SECRETARY_FRAME, 0, 0))
         InterlockedExchange(&frame_posted, 0);
+    arm_frame_timer();
 }
 
 static void stop_frame_timer(void)
@@ -292,18 +357,17 @@ static void stop_frame_timer(void)
 
 static void start_frame_timer(void)
 {
-    LARGE_INTEGER due;
     stop_frame_timer();
     if (animate) {
-        due.QuadPart = -FRAME_MS * 10000;
         frame_timer = create_high_res_timer();
-        if (frame_timer &&
-            SetWaitableTimer(frame_timer, &due, FRAME_MS, NULL, NULL, FALSE) &&
+        refresh_qpc = last_frame_qpc = 0;
+        if (frame_timer && arm_frame_timer() &&
             RegisterWaitForSingleObject(&frame_wait, frame_timer, request_frame, pet,
                                         INFINITE, WT_EXECUTEDEFAULT))
             return;
         stop_frame_timer();
     }
+    InterlockedExchange(&frame_interval, FALLBACK_FRAME_MS);
     SetTimer(pet, 1, FALLBACK_FRAME_MS, NULL);
 }
 
@@ -375,8 +439,15 @@ static void publish_hit_map(void)
         next->mask = mask;
         next->capacity = bytes;
     }
-    ZeroMemory(next->mask, bytes);
-    for (i = 0; i < count; ++i)
+    for (i = 0; i + 8 <= count; i += 8) {
+        const DWORD *q = sprite.pixels + i;
+        next->mask[i / 8] = (BYTE)((q[0] >> 24 ? 1 : 0) | (q[1] >> 24 ? 2 : 0) |
+                                   (q[2] >> 24 ? 4 : 0) | (q[3] >> 24 ? 8 : 0) |
+                                   (q[4] >> 24 ? 16 : 0) | (q[5] >> 24 ? 32 : 0) |
+                                   (q[6] >> 24 ? 64 : 0) | (q[7] >> 24 ? 128 : 0));
+    }
+    if (i < count) next->mask[i / 8] = 0;
+    for (; i < count; ++i)
         if (sprite.pixels[i] >> 24)
             next->mask[i / 8] |= (BYTE)(1u << (i % 8));
     next->window = pet;
@@ -574,6 +645,26 @@ static void clear_backdrop(Canvas *c, RECT art)
         }
     }
     free(queue);
+}
+
+static int measure_sprite(POINT *click, RECT *bounds);
+
+static void ensure_measured(void)
+{
+    if (!measured && sprite.pixels) measure_sprite(&click_pixel, &sprite_bounds);
+    measured = TRUE;
+}
+
+// A blended frame is shown only with some ink in it. The body sits in the
+// lower half, so look there first.
+static BOOL sprite_has_ink(size_t count)
+{
+    size_t i;
+    for (i = count / 2; i < count; ++i)
+        if (sprite.pixels[i] >> 24 >= 128) return TRUE;
+    for (i = 0; i < count / 2; ++i)
+        if (sprite.pixels[i] >> 24 >= 128) return TRUE;
+    return FALSE;
 }
 
 static int measure_sprite(POINT *click, RECT *bounds)
@@ -788,6 +879,7 @@ static BOOL draw_sprite(void)
     secretary_motion_close();
     blend_ms = 0;
     painted_pose = -1;
+    measured = FALSE;
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
         !w || !h || w > INT_MAX || h > INT_MAX)
         return FALSE;
@@ -846,6 +938,7 @@ static BOOL draw_sprite(void)
     }
     GdipFlush(sprite.graphics, FlushIntentionSync);
     clear_backdrop(&sprite, (RECT){0, 0, width, height});
+    measured = TRUE;
     return measure_sprite(&click_pixel, &sprite_bounds) != 0;
 }
 
@@ -903,14 +996,26 @@ static void write_text(GpSolidFill *brush, GpFont *font, GpStringFormat *format,
 }
 
 static int actions_y(void) { return 49 + 37 * (row_count ? row_count : 1); }
-static int footer_y(void) { return actions_y() + 109; }
+static int footer_y(void) { return actions_y() + (action_count + 1) / 2 * 34 + 7; }
 static int bubble_height(void) { return footer_y() + 33; }
 
-static RECT action_rect(int action)
+// The i-th listed button, two to a row.
+static RECT action_rect(int i)
 {
-    int x = (bubble_left ? 16 : 30) + (action % 2) * 106;
-    int y = actions_y() + (action / 2) * 34;
-    return (RECT){x, y, x + (action == BUBBLE_PROMPT ? 206 : 100), y + 29};
+    int x = (bubble_left ? 16 : 30) + (i % 2) * 106;
+    int y = actions_y() + (i / 2) * 34;
+    return (RECT){x, y, x + 100, y + 29};
+}
+
+static const WCHAR *action_label(int kind)
+{
+    switch (kind) {
+    case BUBBLE_ADD_PAGE: return L"이 페이지 추가";
+    case BUBBLE_EDIT: return L"바로가기 편집";
+    case BUBBLE_ROAM: return g_cfg.secretary_roam ? L"이동 멈춤" : L"자유 이동";
+    case BUBBLE_HOME: return L"제자리로";
+    default: return L"다음 화면";
+    }
 }
 
 static void bubble_focus_box(GpGraphics *g, GpSolidFill *brush, RECT r, BOOL focused, ARGB fill)
@@ -972,14 +1077,10 @@ static void draw_bubble(void)
     if (!row_count)
         write_text(brush, regular, format, L"\xc124\xc815\xc5d0\xc11c \xbc14\xb85c\xac00\xae30\xb97c \xcd94\xac00\xd558\xc138\xc694",
                    x + 13, 50, 200, 24, 0xff554765);
-    for (i = 0; i < BUBBLE_ACTIONS; ++i) {
-        const WCHAR *labels[] = {
-            L"바로가기 편집", GetSystemMetrics(SM_CMONITORS) > 1 ? L"다음 화면" : L"Vim 힌트",
-            g_cfg.secretary_roam ? L"이동 멈춤" : L"자유 이동", L"제자리로", L"Claude 질문 준비"
-        };
+    for (i = 0; i < action_count; ++i) {
         RECT box = action_rect(i);
         bubble_focus_box(g, brush, box, row_count + i == focus_item, 0xffece1f6);
-        write_text(brush, footer_font, format, labels[i], box.left + 7, box.top + 6,
+        write_text(brush, footer_font, format, action_label(actions[i]), box.left + 7, box.top + 6,
                    box.right - box.left - 7, 20, 0xff47305c);
     }
     write_text(brush, footer_font, format, L"Tab 이동   Enter 선택   Esc 닫기",
@@ -1027,14 +1128,49 @@ void secretary_dismiss(void)
     if (!animate) ShowWindow(bubble, SW_HIDE);
 }
 
+static int free_slot(void)
+{
+    int i;
+    for (i = 0; i < SECRETARY_SLOTS; ++i)
+        if (!g_cfg.secretary_shortcuts[i].target[0]) return i;
+    return -1;
+}
+
+// A button the mouse hook handled never reached this thread as native input,
+// so the switch may need to borrow the foreground thread's input queue.
+static void take_foreground(HWND wnd)
+{
+    if (!SetForegroundWindow(wnd)) {
+        DWORD current = GetCurrentThreadId();
+        DWORD foreground = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+        if (foreground && foreground != current && AttachThreadInput(current, foreground, TRUE)) {
+            SetForegroundWindow(wnd);
+            AttachThreadInput(current, foreground, FALSE);
+        }
+    }
+}
+
 static void open_bubble(void)
 {
-    int i, width, height, left = pet_at.x + sprite_bounds.left;
-    int right = pet_at.x + sprite_bounds.right;
+    int i, width, height, left, right;
+    HWND front = GetForegroundWindow();
     if (input_is_locked() || hint_is_open() || pending_slot >= 0) return;
+    ensure_measured();
+    left = pet_at.x + sprite_bounds.left;
+    right = pet_at.x + sprite_bounds.right;
     row_count = 0;
     for (i = 0; i < SECRETARY_SLOTS; ++i)
         if (g_cfg.secretary_shortcuts[i].target[0]) rows[row_count++] = i;
+    action_count = 0;
+    page_browser = NULL;
+    if (free_slot() >= 0 && (app_window(front, L"chrome.exe") || app_window(front, L"msedge.exe"))) {
+        page_browser = front;
+        actions[action_count++] = BUBBLE_ADD_PAGE;
+    }
+    actions[action_count++] = BUBBLE_EDIT;
+    actions[action_count++] = BUBBLE_ROAM;
+    actions[action_count++] = BUBBLE_HOME;
+    if (GetSystemMetrics(SM_CMONITORS) > 1) actions[action_count++] = BUBBLE_SCREEN;
     width = px(252);
     height = px(bubble_height());
     if (!make_canvas(&speech, width, height)) return;
@@ -1049,18 +1185,9 @@ static void open_bubble(void)
     opened = TRUE;
     bubble_tick = animation_now();
     present(bubble, &speech, bubble_at, animate ? 75 : 255);
-    // A button handled by the mouse hook never reaches this thread as
-    // native input, so it may need to borrow the foreground input queue.
     activating_bubble = TRUE;
     ShowWindow(bubble, SW_SHOW);
-    if (!SetForegroundWindow(bubble)) {
-        DWORD current = GetCurrentThreadId();
-        DWORD foreground = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
-        if (foreground && foreground != current && AttachThreadInput(current, foreground, TRUE)) {
-            SetForegroundWindow(bubble);
-            AttachThreadInput(current, foreground, FALSE);
-        }
-    }
+    take_foreground(bubble);
     activating_bubble = FALSE;
 }
 
@@ -1139,16 +1266,27 @@ static BOOL next_screen(void)
     return TRUE;
 }
 
+static void add_current_page(void)
+{
+    if (!page_browser || !IsWindow(page_browser)) return;
+    page_request = ++next_browser_request;
+    if (!uia_read_browser_page(page_browser, page_request))
+        tray_balloon(L"Desktop secretary", L"Could not read the page.");
+}
+
 static void run_bubble_action(int action)
 {
     secretary_dismiss();
     react(REACT_CLICK);
     switch (action) {
+    case BUBBLE_ADD_PAGE:
+        add_current_page();
+        break;
     case BUBBLE_EDIT:
         secretary_editor_open();
         break;
     case BUBBLE_SCREEN:
-        if (!next_screen()) PostMessageW(g_main_wnd, WM_APP_HINT_OPEN, 0, 0);
+        next_screen();
         break;
     case BUBBLE_ROAM:
         if (secretary_save_setting(-1, NULL, !g_cfg.secretary_roam)) app_config_written();
@@ -1158,9 +1296,6 @@ static void run_bubble_action(int action)
         anchor = home;
         update_monitor(anchor);
         clamp_anchor();
-        break;
-    case BUBBLE_PROMPT:
-        secretary_prompt_open();
         break;
     }
 }
@@ -1198,13 +1333,30 @@ static BOOL app_window(HWND wnd, const WCHAR *exe)
     return match;
 }
 
-static BOOL CALLBACK find_browser_window(HWND wnd, LPARAM lp)
+typedef struct {
+    const WCHAR *exe;
+    HWND front, items[SECRETARY_BROWSER_WINDOWS];
+    int count;
+} BrowserWindows;
+
+static BOOL CALLBACK collect_browser_window(HWND wnd, LPARAM lp)
 {
-    if (app_window(wnd, launch.exe)) {
-        *(HWND *)lp = wnd;
-        return FALSE;
+    BrowserWindows *list = (BrowserWindows *)lp;
+    if (wnd != list->front && app_window(wnd, list->exe))
+        list->items[list->count++] = wnd;
+    return list->count < SECRETARY_BROWSER_WINDOWS;
+}
+
+// The browser's windows, the one in front first, then in z-order.
+static void list_browser_windows(BrowserWindows *list, const WCHAR *exe, HWND front)
+{
+    ZeroMemory(list, sizeof(*list));
+    list->exe = exe;
+    if (app_window(front, exe)) {
+        list->front = front;
+        list->items[list->count++] = front;
     }
-    return TRUE;
+    EnumWindows(collect_browser_window, (LPARAM)list);
 }
 
 static BOOL in_fullscreen(HWND wnd)
@@ -1221,7 +1373,7 @@ static void launch_error(const WCHAR *message)
 {
     uia_cancel_browser_tab();
     launch.exe = NULL;
-    launch.lookup = 0;
+    launch.looking = FALSE;
     app_log(L"secretary: %ls", message);
     tray_balloon(L"Desktop secretary", message);
 }
@@ -1271,7 +1423,7 @@ static void open_browser_url(DWORD now)
     WCHAR command[SECRETARY_TARGET_MAX + 32];
     HINSTANCE result;
     uia_cancel_browser_tab();
-    launch.lookup = 0;
+    launch.looking = FALSE;
     launch.target = NULL;
     launch.began = now;
     launch.sent = 0;
@@ -1284,8 +1436,9 @@ static void open_browser_url(DWORD now)
 
 static void start_target(const WCHAR *target, DWORD now)
 {
-    HWND foreground = GetForegroundWindow(), existing = NULL;
+    HWND foreground = GetForegroundWindow();
     HINSTANCE result;
+    BrowserWindows open;
 
     uia_cancel_browser_tab();
     ZeroMemory(&launch, sizeof(launch));
@@ -1307,25 +1460,24 @@ static void start_target(const WCHAR *target, DWORD now)
         }
     }
     lstrcpynW(launch.url, target, SECRETARY_TARGET_MAX);
-    if (app_window(foreground, launch.exe)) existing = foreground;
-    else EnumWindows(find_browser_window, (LPARAM)&existing);
-    if (!existing && _wcsicmp(launch.exe, L"chrome.exe") == 0) {
-        launch.exe = L"msedge.exe";
-        EnumWindows(find_browser_window, (LPARAM)&existing);
-        if (!existing || !browser_path(launch.exe, launch.browser_path)) {
-            launch.exe = L"chrome.exe";
-            browser_path(launch.exe, launch.browser_path);
-            existing = NULL;
+    list_browser_windows(&open, launch.exe, foreground);
+    if (!open.count && _wcsicmp(launch.exe, L"chrome.exe") == 0) {
+        // No Chrome window: an open Edge takes the shortcut instead.
+        BrowserWindows edge;
+        WCHAR path[MAX_PATH];
+        list_browser_windows(&edge, L"msedge.exe", foreground);
+        if (edge.count && browser_path(L"msedge.exe", path)) {
+            open = edge;
+            launch.exe = L"msedge.exe";
+            lstrcpynW(launch.browser_path, path, MAX_PATH);
         }
     }
-    if (!existing) {
+    launch.request = ++next_browser_request;
+    if (!open.count || !uia_find_browser_tab(open.items, open.count, launch.url, launch.request)) {
         open_browser_url(now);
         return;
     }
-    if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
-    SetForegroundWindow(existing);
-    launch.target = existing;
-    launch.lookup = 1;
+    launch.looking = TRUE;
 }
 
 static void start_shortcut(int slot, DWORD now)
@@ -1333,22 +1485,83 @@ static void start_shortcut(int slot, DWORD now)
     start_target(g_cfg.secretary_shortcuts[slot].target, now);
 }
 
-void secretary_open_claude(void) { start_target(L"claude", animation_now()); }
-
 void secretary_browser_result(UINT request, HWND browser)
 {
     DWORD now = animation_now();
-    if (launch.lookup != 2 || request != launch.request) return;
-    if (!app_window(browser, launch.exe)) {
+    if (!launch.exe || !launch.looking || request != launch.request) return;
+    launch.looking = FALSE;
+    if (!browser || !app_window(browser, launch.exe)) {
         open_browser_url(now);
         return;
     }
+    app_log(L"secretary: switched to the open tab");
+    if (IsIconic(browser)) ShowWindow(browser, SW_RESTORE);
+    take_foreground(browser);
     launch.target = browser;
-    app_log(L"secretary: reused a browser tab");
-    launch.lookup = 0;
     launch.began = now;
     launch.sent = 0;
     launch.maximizing = FALSE;
+}
+
+// A short name for a page: its title before " - " or " | ", where sites
+// usually put their own name; else the host.
+static void page_label(const BrowserPage *page, WCHAR *label, int cch)
+{
+    const WCHAR *title = page->title, *cut;
+    WCHAR *p;
+    size_t len = wcslen(title);
+    cut = wcsstr(title, L" - ");
+    if (cut && (size_t)(cut - title) >= 2) len = (size_t)(cut - title);
+    cut = wcsstr(title, L" | ");
+    if (cut && (size_t)(cut - title) >= 2 && (size_t)(cut - title) < len) len = (size_t)(cut - title);
+    if (!len) {
+        title = wcsstr(page->url, L"://");
+        title = title ? title + 3 : page->url;
+        if (!_wcsnicmp(title, L"www.", 4)) title += 4;
+        len = wcscspn(title, L"/?#");
+    }
+    if (len >= (size_t)cch) len = (size_t)cch - 1;
+    lstrcpynW(label, title, (int)len + 1);
+    for (p = label; *p; ++p)
+        if (*p == L'|' || *p == L'\r' || *p == L'\n') *p = L' ';
+}
+
+void secretary_page_result(UINT request, BrowserPage *page)
+{
+    SecretaryShortcut entry;
+    WCHAR message[200];
+    int i, slot;
+    if (!request || request != page_request) {
+        free(page);
+        return;
+    }
+    page_request = 0;
+    if (!page) {
+        tray_balloon(L"Desktop secretary", L"This page cannot be a shortcut.");
+        return;
+    }
+    for (i = 0; i < SECRETARY_SLOTS; ++i) {
+        if (_wcsicmp(g_cfg.secretary_shortcuts[i].target, page->url) == 0) {
+            _snwprintf(message, 200, L"This page is already shortcut %d.", i + 1);
+            message[199] = 0;
+            tray_balloon(L"Desktop secretary", message);
+            free(page);
+            return;
+        }
+    }
+    ZeroMemory(&entry, sizeof(entry));
+    page_label(page, entry.label, (int)(sizeof(entry.label) / sizeof(entry.label[0])));
+    lstrcpynW(entry.target, page->url, SECRETARY_TARGET_MAX);
+    slot = free_slot();
+    if (slot < 0 || !secretary_save_setting(slot, &entry, 0)) {
+        tray_balloon(L"Desktop secretary", L"Could not add the shortcut.");
+    } else {
+        app_config_written();
+        _snwprintf(message, 200, L"Added \"%ls\" as shortcut %d.", entry.label, slot + 1);
+        message[199] = 0;
+        tray_balloon(L"Desktop secretary", message);
+    }
+    free(page);
 }
 
 static void finish_launch(DWORD now)
@@ -1356,27 +1569,11 @@ static void finish_launch(DWORD now)
     HWND foreground;
     BOOL web = launch.url[0] != 0;
     if (!launch.exe) return;
-    foreground = GetForegroundWindow();
-    if (launch.lookup) {
-        if (now - launch.began >= (launch.lookup == 1 ? 2500u : 4200u)) {
-            open_browser_url(now);
-        } else if (launch.lookup == 1 && foreground == launch.target && !secretary_modifiers_down()) {
-            if (in_fullscreen(foreground)) {
-                if (!launch.sent && send_fullscreen_key()) launch.sent = now;
-            } else if (!IsZoomed(foreground)) {
-                if (!launch.maximizing) launch.maximizing = ShowWindowAsync(foreground, SW_MAXIMIZE);
-            } else if (!launch.browser_ready) {
-                launch.browser_ready = now;
-            } else if (now - launch.browser_ready >= 350) {
-                launch.request = ++next_browser_request;
-                if (uia_find_browser_tab(foreground, launch.url, launch.request)) {
-                    launch.lookup = 2;
-                    launch.began = now;
-                } else open_browser_url(now);
-            }
-        }
+    if (launch.looking) {
+        if (now - launch.began >= 4000) open_browser_url(now);
         return;
     }
+    foreground = GetForegroundWindow();
     if (now - launch.began >= 10000 || (launch.sent && now - launch.sent >= 2500)) {
         launch_error(web ? L"The browser window did not maximize."
                          : L"The shortcut did not enter full screen. Try F11 in the opened window.");
@@ -1393,6 +1590,8 @@ static void finish_launch(DWORD now)
             if (!launch.sent && !secretary_modifiers_down() && send_fullscreen_key()) launch.sent = now;
         } else if (IsZoomed(launch.target)) {
             launch.exe = NULL;
+            // Remember the title the tab settles on, to find it next time.
+            uia_learn_browser_tab(launch.target, launch.url, ++next_browser_request);
         } else if (!launch.maximizing) {
             launch.maximizing = ShowWindowAsync(launch.target, SW_MAXIMIZE);
         }
@@ -1757,8 +1956,7 @@ static void advance_pet(DWORD now, POINT pointer)
         if (elapsed >= pet_motion.look_ms) wait_to_roam(now, idle_pause());
         return;
     }
-    if (pressed || opened || secretary_editor_visible() || secretary_prompt_has_focus() ||
-        reaction || command_pose) {
+    if (pressed || opened || secretary_editor_visible() || reaction || command_pose) {
         if ((LONG)(now - pet_motion.next) >= 0) pet_motion.next = now + 1500;
         return;
     }
@@ -2017,7 +2215,7 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
     }
     if (painted_pose != key) {
         BOOL can_blend = painted_pose >= 0 && animate;
-        BOOL interrupted = blend_ms && now - blend_started + FRAME_MS < blend_ms;
+        BOOL interrupted = blend_ms && now - blend_started + (DWORD)frame_interval < blend_ms;
         blend_ms = 0;
         blend_sample = 0;
         bridge_ms = 0;
@@ -2026,7 +2224,7 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
             tailmon_art[(painted_pose % POSE_COUNT) / POSES_PER_SHEET])
             prepared_motion = secretary_motion_find(painted_pose, key, POSE_COUNT);
         if (interrupted && prepared_motion.count) {
-            bridge_ms = 16;
+            bridge_ms = 2 * (DWORD)frame_interval;
             blend_sample = -1;
             CopyMemory(blend_entry, blend_to, count * sizeof(DWORD));
         }
@@ -2076,7 +2274,10 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
             size_t pixel = hint_hit.y * w + hint_hit.x;
             if (sprite.pixels[pixel] >> 24 < 128) sprite.pixels[pixel] = blend_to[pixel];
         }
-        if (measure_sprite(&click_pixel, &sprite_bounds)) return TRUE;
+        if (sprite_has_ink(count)) {
+            measured = FALSE;
+            return TRUE;
+        }
     }
 finished:
     blend_ms = 0;
@@ -2084,51 +2285,98 @@ finished:
     click_pixel = pose_clicks[pose];
     if (flip) click_pixel.x = w - 1 - click_pixel.x;
     sprite_bounds = bounds;
+    measured = TRUE;
     return TRUE;
 }
 
 // Another program's topmost window shown after Tailmon covers her: Chrome's
 // main window can turn topmost, Chrome's status bubble ("Loading...", link
 // URLs) is a topmost popup shown on every navigation, and Windows stacks the
-// newest topmost window first. Lift her just above the highest such window
-// over her: a main window (unowned, not a tool window) or a click-through
-// overlay (WS_EX_TRANSPARENT, which nobody clicks anyway). Clickable popups
-// (menus, dropdowns), tool windows (the taskbar), cloaked windows (other
-// virtual desktops) and Vim's own windows (hints, dialogs) stay where they are.
+// newest topmost window first. A maximized browser window has no use for
+// being topmost (it would cover every other window too), and Chrome raises
+// its own again and again, each time hiding her until the next check: such a
+// window becomes an ordinary window once, so it stays below her. Otherwise lift her
+// just above the highest such window over her: a main window (unowned, not a
+// tool window) or a click-through overlay (WS_EX_TRANSPARENT, which nobody
+// clicks anyway). Clickable popups (menus, dropdowns), tool windows (the
+// taskbar), cloaked windows (other virtual desktops) and Vim's own windows
+// (hints, dialogs) stay where they are.
 static HWINEVENTHOOK raise_hooks[4];
 // winuser.h has these only for Windows 8 and later; MinGW.org lacks them.
 #define EVENT_OBJECT_CLOAKED_ID 0x8017
 #define EVENT_OBJECT_UNCLOAKED_ID 0x8018
 
+// Another program that also forces itself back on top would answer every
+// change with its own: at most 20 a second.
+static BOOL may_restack(void)
+{
+    static DWORD second_start, changes;
+    DWORD now = GetTickCount();
+    if (now - second_start >= 1000) second_start = now, changes = 0;
+    return ++changes <= 20;
+}
+
+// A window of another process that can cover her: topmost, shown, on this
+// virtual desktop and overlapping her; a main window or a click-through
+// overlay.
+static BOOL foreign_topmost(HWND w, const RECT *mine, LONG ex)
+{
+    RECT theirs, overlap;
+    DWORD pid;
+    if (!(ex & WS_EX_TOPMOST) || !IsWindowVisible(w) || IsIconic(w) ||
+        (!(ex & WS_EX_TRANSPARENT) && ((ex & WS_EX_TOOLWINDOW) || GetWindow(w, GW_OWNER))))
+        return FALSE;
+    GetWindowThreadProcessId(w, &pid);
+    return pid != GetCurrentProcessId() && GetWindowRect(w, &theirs) &&
+           IntersectRect(&overlap, mine, &theirs) && !input_window_cloaked(w);
+}
+
+// A maximized Chromium window (Chrome, Edge) that is always on top becomes an
+// ordinary window. Asynchronous: a hung browser never blocks this thread.
+static BOOL demote_maximized(HWND w, LONG ex)
+{
+    static HWND last_demoted;
+    WCHAR cls[32];
+    DWORD pid;
+    if ((ex & WS_EX_TRANSPARENT) || !IsZoomed(w) || !GetClassNameW(w, cls, 32) ||
+        wcscmp(cls, L"Chrome_WidgetWin_1") != 0)
+        return FALSE;
+    if (may_restack() &&
+        SetWindowPos(w, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                     SWP_ASYNCWINDOWPOS) && w != last_demoted) {
+        last_demoted = w;
+        GetWindowThreadProcessId(w, &pid);
+        app_log(L"secretary: a maximized browser window of process %lu was always on top; "
+                L"made it an ordinary window", pid);
+    }
+    return TRUE;
+}
+
 static void keep_above_foreign_topmost(void)
 {
     static HWND last_cover;
-    RECT mine, theirs, overlap;
+    static DWORD below_checked;
+    RECT mine;
     HWND w, cover = NULL, after;
-    DWORD self = GetCurrentProcessId(), pid;
+    DWORD pid, tick = GetTickCount();
     LONG ex;
 
     if (!pet || !GetWindowRect(pet, &mine)) return;
+    // Below her, to the end of the topmost band (four times a second): such
+    // a browser is demoted before it ever covers her.
+    if (tick - below_checked >= 250) {
+        below_checked = tick;
+        for (w = GetWindow(pet, GW_HWNDNEXT); w; w = GetWindow(w, GW_HWNDNEXT)) {
+            ex = GetWindowLongW(w, GWL_EXSTYLE);
+            if (!(ex & WS_EX_TOPMOST)) break;
+            if (foreign_topmost(w, &mine, ex)) demote_maximized(w, ex);
+        }
+    }
     for (w = GetWindow(pet, GW_HWNDPREV); w; w = GetWindow(w, GW_HWNDPREV)) {
         ex = GetWindowLongW(w, GWL_EXSTYLE);
-        if (!(ex & WS_EX_TOPMOST) || !IsWindowVisible(w) || IsIconic(w) ||
-            (!(ex & WS_EX_TRANSPARENT) && ((ex & WS_EX_TOOLWINDOW) || GetWindow(w, GW_OWNER))))
-            continue;
-        GetWindowThreadProcessId(w, &pid);
-        if (pid == self || !GetWindowRect(w, &theirs) ||
-            !IntersectRect(&overlap, &mine, &theirs) || input_window_cloaked(w))
-            continue;
-        cover = w;
+        if (foreign_topmost(w, &mine, ex) && !demote_maximized(w, ex)) cover = w;
     }
-    if (!cover) return;
-    {
-        // Another program that also forces itself back on top would answer
-        // every raise with its own: at most 20 raises a second.
-        static DWORD second_start, raises;
-        DWORD now = GetTickCount();
-        if (now - second_start >= 1000) second_start = now, raises = 0;
-        if (++raises > 20) return;
-    }
+    if (!cover || !may_restack()) return;
     after = GetWindow(cover, GW_HWNDPREV);
     if (!after) after = HWND_TOPMOST;
     if (cover != last_cover) {
@@ -2163,10 +2411,12 @@ static void watch_topmost(BOOL on)
         if (raise_hooks[i]) UnhookWinEvent(raise_hooks[i]);
     ZeroMemory(raise_hooks, sizeof(raise_hooks));
     if (!on) return;
-    // SHOW, HIDE, REORDER; LOCATIONCHANGE (the bubble moves aside from the
-    // pointer); FOREGROUND (an activated topmost window comes to the front).
-    // A bare SetWindowPos z-order change raises none of these: the frame
-    // check catches it on the next frame.
+    // SHOW, HIDE, REORDER; FOREGROUND (an activated topmost window comes to
+    // the front). A bare SetWindowPos z-order change raises none of these: the
+    // frame check catches it on the next frame. Not LOCATIONCHANGE: it comes
+    // for every pointer and caret move in the system (a stream of messages
+    // to this thread while Vim moves the pointer), and a move alone never
+    // changes the z-order.
     raise_hooks[2] = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL,
                                      topmost_event, 0, 0,
                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
@@ -2177,10 +2427,7 @@ static void watch_topmost(BOOL on)
     raise_hooks[3] = SetWinEventHook(EVENT_OBJECT_CLOAKED_ID, EVENT_OBJECT_UNCLOAKED_ID, NULL,
                                      topmost_event, 0, 0,
                                      WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    raise_hooks[1] = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, NULL,
-                                     topmost_event, 0, 0,
-                                     WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    if (!raise_hooks[0] || !raise_hooks[1] || !raise_hooks[2] || !raise_hooks[3])
+    if (!raise_hooks[0] || !raise_hooks[2] || !raise_hooks[3])
         app_log(L"secretary: topmost event hook failed (%lu)", GetLastError());
 }
 
@@ -2288,6 +2535,7 @@ void secretary_hint_reaction(void)
         }
     }
     last_hint = now - 400;
+    ensure_measured();
     // Grooming, stretching and yawning pause under the hints rather than
     // jumping to the attention loop; they finish once the hints close.
     hint_animate = use_atlas && animate && pet_motion.state != PET_GROOM &&
@@ -2356,7 +2604,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case WM_KEYDOWN:
             if (wp == VK_TAB && !(lp & (1L << 30))) {
-                int count = row_count + BUBBLE_ACTIONS;
+                int count = row_count + action_count;
                 int offset = GetKeyState(VK_SHIFT) < 0 ? -1 : 1;
                 focus_item = (focus_item + count + offset) % count;
                 armed_key = 0;
@@ -2372,7 +2620,7 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             if (wp == VK_ESCAPE) secretary_dismiss();
             else if (wp == VK_RETURN || wp == VK_SPACE) {
                 if (focus_item < row_count) select_slot(rows[focus_item]);
-                else run_bubble_action(focus_item - row_count);
+                else if (focus_item - row_count < action_count) run_bubble_action(actions[focus_item - row_count]);
             }
             else if (wp >= '1' && wp <= '9') select_slot((int)wp - '1');
             else if (wp >= VK_NUMPAD1 && wp <= VK_NUMPAD9) select_slot((int)wp - VK_NUMPAD1);
@@ -2384,10 +2632,10 @@ static LRESULT CALLBACK secretary_proc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp)
             int index = row / px(37);
             int action;
             if (!opened) return 0;
-            for (action = 0; action < BUBBLE_ACTIONS; ++action) {
+            for (action = 0; action < action_count; ++action) {
                 RECT box = action_rect(action);
                 if (PtInRect(&box, logical)) {
-                    run_bubble_action(action);
+                    run_bubble_action(actions[action]);
                     return 0;
                 }
             }
@@ -2458,8 +2706,10 @@ BOOL secretary_has_focus(void)
 
 BOOL secretary_hint_target(const RECT *monitor, ClickTarget *target)
 {
-    POINT hit = hint_is_open() ? hint_hit : click_pixel;
-    POINT point = {pet_at.x + hit.x, pet_at.y + hit.y};
+    POINT hit, point;
+    ensure_measured();
+    hit = hint_is_open() ? hint_hit : click_pixel;
+    point = (POINT){pet_at.x + hit.x, pet_at.y + hit.y};
     if (!pet || !IsWindowVisible(pet) || !PtInRect(monitor, point) || dragging)
         return FALSE;
     target->click = point;
@@ -2654,7 +2904,10 @@ void secretary_init(void)
 {
     WNDCLASSW cls = {0};
     FARPROC fn = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "QueryFullProcessImageNameW");
+    HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
     CopyMemory(&process_path, &fn, sizeof(process_path));
+    fn = dwm ? GetProcAddress(dwm, "DwmGetCompositionTimingInfo") : NULL;
+    CopyMemory(&dwm_timing, &fn, sizeof(dwm_timing));
     cls.hInstance = g_hinst;
     cls.lpfnWndProc = secretary_proc;
     QueryPerformanceFrequency(&animation_frequency);

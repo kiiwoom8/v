@@ -1673,6 +1673,81 @@ Invariants stated in `common.h` and enforced by history:
   1.6 s during the same switches with the 100 ms check); vim.exe used 0.52-0.70
   s CPU per 10 s, as before.
 
+### Tailmon: bubble, shortcut tabs, staying on top, frame pacing (2026-11-25)
+
+- Kim: "remove vim 힌트, claude 질문준비 from tailmon". The bubble lists only
+  the buttons that apply (`actions`, `action_count`, `action_label`):
+  **다음 화면** only with two or more monitors (its single-monitor stand-in
+  **Vim 힌트** is gone; `Alt+F` does that), and the Claude prompt helper is
+  removed with `secretary_prompt.c` (`SECRETARY_DIALOG_PROMPT`,
+  `secretary_open_claude` gone; the shortcut editor is the only Vim dialog).
+- Kim: "implement useful function for tailmon. no useless function". New
+  **이 페이지 추가**: when Chrome or Edge was in front as the bubble opened and
+  a slot is free, `uia_read_browser_page` reads the address bar (https:// put
+  back: the bar drops it, and www.) and the active tab's title;
+  `secretary_page_result` saves "title up to ` - ` or ` | `" | URL in the
+  first free slot (`secretary_save_setting`) and confirms in a balloon. A page
+  already in a slot is reported instead; a search or an internal page
+  (no dotted host) is refused.
+- Kim: "when 바로가기, instead of manually typing url to the search bar,
+  directly open the tab from existing opened browser". The lookup typed
+  `@tabs` and the URL into the address bar and picked Chromium's "switch to
+  this tab" suggestion. `uia.c` now only reads and selects (`find_open_tab`):
+  first a window whose address bar shows the page; then, per window, a tab
+  (class `Tab` in the `TabStrip`) named after the title remembered for that
+  URL (`HKCU\Software\vim mouse\Secretary\Tabs`, written by `learn_title`
+  once a shortcut's tab shows the same title twice, 500 ms apart) or after the
+  page's address (a page without a title), selected with
+  `SelectionItem.Select` and kept only when the address bar then shows the
+  page (or, matched by title, its site); otherwise the previous tab is
+  selected again. Only then does the window come to the front and maximize;
+  with no match the page opens in a new tab of the open browser. The lookup
+  starts at once instead of after the old 350 ms wait for the maximize.
+- Verified with a harness on an isolated Chrome (temporary profile, minimized
+  window, three tabs; nothing typed): the active tab found in 140 ms; a tab by
+  its remembered title, named "Example Domain - Memory usage - 18.2 MB",
+  selected and confirmed in 200 ms; an untitled page by its address; an
+  unknown page reported missing in 60-110 ms. The untitled tab was named
+  `google.com/robots.txt` (www. elided, like the address bar), which the first
+  version missed.
+- Kim: "add transparency to navigator (currently solid yellow) so no
+  interruption of seeing screen". `opacity` default 235 -> 150. The overlay is
+  one colour-keyed layered window, so the letters fade with the fill; 150 keeps
+  them readable. Kim's own `vim.ini` set from 235 to 150.
+- Kim: "make tailmon visible instead of intermittent flickering". Chrome's
+  maximized main window was topmost again (ex 0x200108) and kept re-raising
+  itself; every raise hid her until the next frame. `keep_above_foreign_topmost`
+  now makes a maximized topmost `Chrome_WidgetWin_1` window of another process
+  an ordinary window (`demote_maximized`: `HWND_NOTOPMOST` with
+  `SWP_ASYNCWINDOWPOS`, so a hung browser cannot block the UI thread): above
+  her on every frame, and below her in the topmost band four times a second,
+  before it can cover her. Raises and demotions share the 20-a-second limit
+  (`may_restack`). Other topmost windows and click-through overlays are still
+  passed as before. Verified: after the restart Chrome's ex style was 0x200100
+  (not topmost) and the taskbar was untouched.
+- Kim: "improve code efficiency for less lag". The pet drew a frame every
+  8 ms, twice per refresh of the 59 Hz screen, and the compositor showed only
+  the second. It now draws one frame per display refresh, 4 ms before the
+  vertical blank (`arm_frame_timer`: `DwmGetCompositionTimingInfo`, a 292-byte
+  packed `DWM_TIMING_INFO` checked on this machine, period and blank re-read
+  every second, 60 Hz without DWM; the one-shot high-resolution timer is
+  re-armed by its own callback). Blended frames no longer measure the sprite
+  (`ensure_measured` measures on demand for the bubble and the hints;
+  `sprite_has_ink` still keeps an empty frame off screen), the hit mask is
+  built eight pixels per byte, and the EVENT_OBJECT_LOCATIONCHANGE hook is gone:
+  it brought every pointer and caret move in the system to the UI thread.
+  `frame_interval` replaces `FRAME_MS` where a frame's length matters (the
+  interrupted-blend test, the bridge).
+- Measured with temporary frame counters (not committed), each build with a
+  fresh settings file on this 60 Hz screen: the old loop ran 1201-1208 frames
+  per 10 s, the new one 598-600. An idle frame costs 30-35 us; a drawn frame
+  (pose, blend, `UpdateLayeredWindow`, hit mask) about 0.8 ms, and during
+  movement and blends the old loop drew up to twice as many of them for the
+  same picture. Total CPU samples during Kim's own use (hints open, pages
+  scanned) mixed in other work and are not a fair comparison.
+- Checked: `-Werror` build of every file and of the CI probe targets with
+  MinGW.org GCC 6.3; the rebuilt exe running with Kim's settings.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2613,6 +2688,25 @@ last ten are all `worktree-agent-*` into `element-hints`.
   whole grab clip using its opaque area and let those frames extend below
   the normal square layout.
 
+- **Chrome elides https:// and www.** in the address bar and in the name of
+  a tab whose page has no title, and adds states to tab names
+  (" - Memory usage - 18.2 MB", " - Audio playing"). Compare addresses without
+  scheme and www., titles up to a " - ". The window caption starts with the
+  active tab's clean title.
+
+- **Never type into another program to find something it can tell you.**
+  The `@tabs` lookup worked but showed the typing and depended on the
+  suggestion list; UI Automation already exposes the tab names, the active
+  address and a Select action.
+
+- **Fix the state of a window that keeps re-raising itself; do not race it.**
+  Answering each raise a frame later still shows as a blink. A maximized
+  browser has no reason to be topmost, so it is made an ordinary window once.
+
+- **EVENT_OBJECT_LOCATIONCHANGE is a firehose.** Hooked out of context it
+  posts every pointer and caret move in the system to the hooking thread.
+  Do not hook it on the UI thread for a z-order check.
+
 - **A process that vanished did not necessarily crash: ask Windows first.**
   Phase 27. A fault in a MinGW program always leaves an Application Error
   event (checked with five test crashes); none for `vim.exe` means it quit
@@ -2806,6 +2900,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The label alphabet is `asdfhjklqwertuopzxcvbnm`: home row, top row, bottom row (`alphabet = abcdefhjklmnopqrstuvwxz` restores) | phase 12 | Alphabetical minus `g`, `i`, `y`, from the old program: `b` and `c` were among the two-letter prefixes |
 | The detailed walk loops forward over walk.png cels 13,14,15,0..5 (`walk_detail_cycle`), not all sixteen in order, and never reversed | 2026-11-23 | Cels 6..12 draw an inconsistent number of ground contacts (2/3/4), so cycling all sixteen flickered the hind legs; a ping-pong closed the loop but ran the gait backwards, so forward only |
 | Idle Tailmon sometimes explores (a short walk that ends looking around) and scampers (a short dash); `[secretary] play = 0` restores the earlier idle set | 2026-11-23 | Kim asked for more variety; both reuse existing cels, no new art |
+| A maximized topmost Chrome or Edge window of another process becomes an ordinary window (`demote_maximized`) | 2026-11-25 | Tailmon re-raised above it after every one of its raises, a blink each time |
+| A web shortcut switches tabs by reading the address bar and tab names and selecting the tab; nothing is typed into the browser | 2026-11-25 | Typed `@tabs` and the URL into the address bar and picked the suggestion |
+| `opacity` default 150: the screen shows through the labels | 2026-11-25 | 235, labels nearly solid |
+| Tailmon draws one frame per display refresh (DWM timing) | 2026-11-25 | A frame every 8 ms, twice per 60 Hz refresh |
+| The bubble shows only buttons that apply; no Claude prompt helper, no single-monitor hint button | 2026-11-25 | Five fixed buttons including **Claude 질문 준비** and **Vim 힌트** |
 | Tailmon moves back above another program's overlapping topmost window that is unowned or click-through (Chrome's main window, its status bubble) on its show/move/activation/uncloak event, else on the next frame (`keep_above_foreign_topmost`, `watch_topmost`); clickable owned popups (menus) stay above her | 2026-11-25 | Set `WS_EX_TOPMOST` once at creation; a later topmost window covered her, and Chrome's status bubble hid her on every navigation |
 
 ## 7. Open threads

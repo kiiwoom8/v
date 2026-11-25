@@ -78,7 +78,9 @@
 #define WM_APP_TOUCHPAD_WAKE    (WM_APP + 17) // the session came back (wake, unlock, display on); -> touchpad_wake
 #define WM_APP_TOUCHPAD_TOGGLE  (WM_APP + 18) // touchpad_hotkey pressed; -> touchpad_toggle
 #define WM_APP_SECRETARY_MENU   (WM_APP + 19) // mascot right-click; -> tray_show_menu
-#define WM_APP_SECRETARY_TAB    (WM_APP + 20) // wParam = browser request, lParam = reused HWND or NULL
+#define WM_APP_SECRETARY_TAB    (WM_APP + 20) // wParam = browser request, lParam = window showing the tab, or NULL
+#define WM_APP_SECRETARY_PAGE   (WM_APP + 31) // wParam = browser request, lParam = malloc'd BrowserPage* or NULL;
+                                              // -> secretary_page_result (frees it)
 #define SECRETARY_FAREWELL_TIMER  201 // on g_main_wnd, for user-requested quit
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,7 @@ enum { SCAN_MONITOR = 0, SCAN_WINDOW = 1 };
 
 #define SECRETARY_SLOTS 9
 #define SECRETARY_TARGET_MAX 2048
+#define SECRETARY_BROWSER_WINDOWS 8 // browser windows a shortcut looks through for its tab
 enum { SECRETARY_MOVEMENT, SECRETARY_REST, SECRETARY_REACTIONS, SECRETARY_WALK_DETAIL,
        SECRETARY_ATTENTION, SECRETARY_SCROLL_DETAIL, SECRETARY_IDLE_DETAIL,
        SECRETARY_INTERACTION_DETAIL, SECRETARY_EXTRA_SHEETS };
@@ -486,20 +489,27 @@ void secretary_editor_close(void);
 BOOL secretary_editor_message(MSG *message);
 BOOL secretary_editor_visible(void);
 BOOL secretary_editor_has_focus(void);
-void secretary_prompt_open(void);
-void secretary_prompt_close(void);
-BOOL secretary_prompt_message(MSG *message);
-BOOL secretary_prompt_has_focus(void);
-// Vim's own dialogs (prompt, slot editor). Keep them reachable by mouse,
-// mouse mode and click hints. While a dialog is active, it stays above the
-// pet, the pet does not take clicks inside it, and the pointer stays visible.
-enum { SECRETARY_DIALOG_PROMPT = 0, SECRETARY_DIALOG_EDITOR = 1, SECRETARY_DIALOGS = 2 };
+// Vim's own dialogs (the slot editor). Keep them reachable by mouse, mouse
+// mode and click hints. While a dialog is active, it stays above the pet, the
+// pet does not take clicks inside it, and the pointer stays visible.
+enum { SECRETARY_DIALOG_EDITOR = 0, SECRETARY_DIALOGS = 1 };
 void secretary_dialog_state(int which, HWND dialog, BOOL active); // UI thread
 BOOL secretary_dialog_foreground(void);   // any thread, no messages
 int secretary_dialog_targets(const RECT *monitor, ClickTarget *out, int room); // UI thread
-void secretary_open_claude(void);
+// Browser tabs for shortcuts (uia.c workers; nothing is typed into the
+// browser). The find job selects the tab showing url in one of the windows and
+// posts WM_APP_SECRETARY_TAB; the read job posts the active tab's address and
+// title as WM_APP_SECRETARY_PAGE; the learn job remembers the title a tab
+// shows for url once it has loaded. A new job cancels the running one.
+typedef struct {
+    WCHAR url[SECRETARY_TARGET_MAX];
+    WCHAR title[256];
+} BrowserPage;
 void secretary_browser_result(UINT request, HWND browser);
-BOOL uia_find_browser_tab(HWND browser, const WCHAR *url, UINT request);
+void secretary_page_result(UINT request, BrowserPage *page);
+BOOL uia_find_browser_tab(const HWND *windows, int count, const WCHAR *url, UINT request);
+BOOL uia_read_browser_page(HWND window, UINT request);
+BOOL uia_learn_browser_tab(HWND window, const WCHAR *url, UINT request);
 void uia_cancel_browser_tab(void);
 
 typedef struct ClickList {

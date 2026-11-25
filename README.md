@@ -490,10 +490,11 @@ set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and
 any extra sheet paths blank to use all the bundled poses. Add personal links
 to numbered slots in your own settings file.
 
-The secretary stays on top of other windows, including programs that make
-their own window always-on-top (Chrome can) and click-through overlays such as
-Chrome's "Loading..." / link status bubble: it moves back above them at once.
-Menus, dropdowns and the taskbar are left above it.
+The secretary stays on top of other windows. A maximized Chrome or Edge
+window that has made itself always-on-top (Chrome does) becomes an ordinary
+window again, so it can no longer cover the secretary. Other always-on-top
+windows and click-through overlays such as Chrome's "Loading..." / link status
+bubble are passed at once. Menus, dropdowns and the taskbar are left above it.
 
 The secretary remembers where you drop it. With a movement sheet, it wanders
 between resting spots at different speeds, and some walks stop when you reach for it. It
@@ -508,10 +509,12 @@ move the visible selection through every shortcut and button. `Enter` or
 `Space` activates the selection, and `Esc` closes the bubble. `F11` leaves
 full screen in Claude.
 
-The bubble can edit a numbered shortcut, pause or resume roaming, or bring
-the secretary back to the last place you dropped it. **Next screen** moves
-it to the next monitor. On a single monitor that button opens Vim's click
-hints. The character reacts to Vim commands such as scrolling, clicks,
+The bubble can add the page you are on as a shortcut, edit a numbered
+shortcut, pause or resume roaming, or bring the secretary back to the last
+place you dropped it. **이 페이지 추가** (add this page) appears when Chrome or
+Edge was in front and a slot is free: the page's address and the start of its
+title go into the first free slot. With more than one monitor, **다음 화면**
+moves the secretary to the next one. The character reacts to Vim commands such as scrolling, clicks,
 hints, and mode changes only when it is sitting free: a command that arrives
 while it is walking, grooming, resting or already reacting is dropped, never
 played later, and nothing you do cuts an animation short except picking the
@@ -528,14 +531,11 @@ gets up or curls up asleep. Sleep lasts minutes (usually 2–15, sometimes up to
 stretching. Clicks, hints and Vim activity do not wake it; picking it up does.
 It waves briefly when you quit Vim from the tray or the quit hotkey.
 
-**Claude 질문 준비** combines text you enter with a preset for summary,
-explanation, translation, or editing. It copies the result and opens Claude.
-Paste and send the prompt in Claude whenever you are ready. Its window and the
-shortcut editor take typing, but the mouse-mode key and the hint hotkey still
-work there: click hints label every control of both windows, so they can be
-reached with a hidden or keyboard-driven pointer. While one of them is active
-it stays above the character, a click inside it never lands on the character,
-and the pointer is not hidden.
+The shortcut editor takes typing, but the mouse-mode key and the hint hotkey
+still work there: click hints label every control, so it can be reached with
+a hidden or keyboard-driven pointer. While it is active it stays above the
+character, a click inside it never lands on the character, and the pointer is
+not hidden.
 
 Open **Edit settings** from the tray and add or edit this section in `vim.ini`.
 To supply custom art, use an absolute path or a path relative to the INI.
@@ -545,8 +545,8 @@ PNG transparency works directly. A JPEG can use a flat white background.
 equal columns and four equal rows. Draw each pose at the same scale and origin
 within its cell. Vim gives grounded poses a common floor. Tailmon plays prepared
 drawings during and between clips, on the same canvas as its key poses. Custom
-artwork uses a short blend at pose changes. On supported Windows versions the
-animation timer runs every 8 ms. Put idle poses (neutral,
+artwork uses a short blend at pose changes. The animation draws one frame per
+display refresh, just before the screen shows it. Put idle poses (neutral,
 breathe, blink, tail flick) in row 1,
 bored poses (droop, start yawn, yawn, recover) in row 2, dangling grab poses in
 row 3, and click poses (perk up, raise paw, celebrate, settle) in row 4. When
@@ -586,9 +586,12 @@ play = 1
 ```
 
 The slot number and label are editable. A target is `claude` for the Windows
-Claude app or an HTTP(S) URL. Vim reuses a matching open tab it can identify in
-Chrome or Edge. Otherwise it opens a tab in the existing browser profile. Web
-shortcuts maximize the browser window so its tab strip and controls stay visible.
+Claude app or an HTTP(S) URL. A web shortcut switches to the tab of the open
+Chrome or Edge that already shows its page, without typing into the browser:
+the active tab is recognised by its address, any other tab by the title it had
+the last time the shortcut opened it, or by its address when the page has no
+title. Otherwise the page opens in a new tab of the open browser. Web shortcuts
+maximize the browser window so its tab strip and controls stay visible.
 Set `enabled = 0` to hide the secretary. `animate = system` follows Windows'
 animation setting. `animate = 0` or `1` overrides it for the secretary.
 Set `roam = 0` to keep it in place, or `react = 0` to turn off Vim command reactions.
@@ -736,7 +739,8 @@ ones:
   go first; `g`, `i` and `y` are left out because they look like `q`, `j`
   and `v` in the label font. The grid's rows and columns use the same
   letters in this order)
-- `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `opacity`
+- `cell_size`, `subgrid`, `subgrid_keys`, `font_size`, `opacity` (labels and
+  status bar, 30-255, default 150: the screen shows through the labels)
 - `label_bg`, `label_fg`, `label_border`, `match_fg` colours (`#RRGGBB`)
 - `key_left`, `key_down`, `key_up`, `key_right`, `key_left_button`,
   `key_right_click`, `key_middle_click`, `key_drag_toggle`, `key_scroll_up`,
