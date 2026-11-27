@@ -1958,6 +1958,27 @@ Invariants stated in `common.h` and enforced by history:
   pixels to keep the release within the installed updater's size limit.
   External copies of the original sheets still use the bundled motions.
 
+### Tailmon: where the new routines still cut, and no sliding stills (2026-11-28)
+
+- Kim: "newly added motions are mostly awkward". Measured over the 24
+  routines: 40 of their 192 intervals (93 of 576 in-betweens) are pose
+  changes RIFE cannot follow (it ghosts): lying down, rolling, turning, the
+  pounce, the play bow. Ten routines have none (air swat, head tilt, ear
+  radar, face wash, giggle, paw shake, paw wave, peekaboo, stargaze, wink);
+  the pounce has six, the one-paw stretch five, the belly offer and play bow
+  four. Moving the second drawing onto the first before interpolating, then
+  halving the gap twice, rescued none of the 40: they need drawn in-betweens.
+- The fallback carried each still drawing toward the next by its bounding
+  box centre, so lying down or getting up slid a frozen cat sideways before
+  it snapped. It now carries the floor contact (what a hop or pounce really
+  moves), and an interval whose halfway frame is clean holds the neighbouring
+  drawing for a ghosted frame instead of mixing copies with interpolated
+  frames (a flicker). Clips with no ghosting are unchanged.
+- The image generator refused the first sheet of 40 halfway drawings (its
+  safety system, no reason given); they were not retried. With drawn halfway
+  poses for those intervals RIFE only has to cover the small steps around
+  them, which it does for every interval it already handles.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2147,6 +2168,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 149 | This commit | 11-28 | Tailmon | Restore the source stride spacing, animate the loaf and stretch recovery, and triple the packaged frames with shared-palette block compression | Kim reported a limp, a static pre-nap pose and a stray cel after stretching |
 | 150 | This commit | 11-28 | Tailmon | Add 24 newly drawn animation PNGs, source sheets, and playback between idle breaths | Kim specified new standalone animations drawn with GPT Image |
 | 151 | This commit | 11-28 | Tailmon | Add drawn entry, middle, and recovery poses and connect some adjacent idle routines | Kim requested more frames and smoother bridges between actions |
+| 152 | This commit | 11-28 | Tailmon | Carry the floor contact, not the box centre, through ghosted intervals; hold the neighbouring drawing when the halfway frame is clean | Kim found the new routines mostly awkward; 40 of 192 intervals cannot be interpolated |
 
 ## 5. Lessons learned: rules not to break
 

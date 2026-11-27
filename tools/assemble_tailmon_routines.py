@@ -117,18 +117,31 @@ def to_rgba(bgra):
     return Image.frombytes("RGBa", (width, height), rgba.tobytes()).convert("RGBA")
 
 
-def clean_inbetween(candidate, before, after, phase):
+def is_clean(candidate):
+    """False when the interpolator drew overlapping translucent bodies (a ghost)."""
     alpha = np.asarray(candidate.getchannel("A"))
     haze = np.count_nonzero((alpha > 23) & (alpha < 175))
     solid = np.count_nonzero(alpha >= 225)
-    if solid and haze * 100 <= (haze + solid) * 17:
+    return bool(solid) and haze * 100 <= (haze + solid) * 17
+
+
+def contact_point(image):
+    """Where the body meets the floor: what travels in a hop, a pounce or a backstep."""
+    box = alpha_box(image)
+    return box[0] + contact_x(image.crop(box)), box[3]
+
+
+def clean_inbetween(candidate, before, after, phase):
+    if is_clean(candidate):
         return candidate
     # Large pose changes can fool the interpolator into drawing overlapping
     # translucent bodies. Use a clean key drawing and carry its position
     # through those fast intervals, preserving the rendered silhouette.
+    # The carried position is the floor contact, not the box centre: lying
+    # down or rising moves the box while the body stays where it is, and
+    # carrying the box slid a still drawing sideways (2026-11-28).
     previous_box, next_box = alpha_box(before), alpha_box(after)
-    x0, y0 = (previous_box[0] + previous_box[2]) / 2, previous_box[3]
-    x1, y1 = (next_box[0] + next_box[2]) / 2, next_box[3]
+    (x0, y0), (x1, y1) = contact_point(before), contact_point(after)
     after_midpoint = phase >= .5
     fraction = phase - after_midpoint
     left, top, right, bottom = next_box if after_midpoint else previous_box
@@ -174,11 +187,21 @@ def assemble(base, sources, rife, model, work, output, bridges=None):
         sequence = [neutral]
         for position in range(first, last):
             before, after = frames[keys[position]], frames[keys[position + 1]]
+            candidates = []
             for j in range(1, INBETWEENS + 1):
                 at = position * (INBETWEENS + 1) + j + 1
                 filename = f"{at:06d}.png"
-                candidate = to_rgba(recover_frame(dark / filename, light / filename))
-                sequence.append(clean_inbetween(candidate, before, after, j / (INBETWEENS + 1)))
+                candidates.append(to_rgba(recover_frame(dark / filename, light / filename)))
+            # When the halfway frame is clean, a ghosted frame next to a drawing holds that
+            # drawing; only an interval whose middle ghosts cuts between the drawings. Mixing
+            # copies of the drawings with interpolated frames inside one interval flickered.
+            middle_clean = is_clean(candidates[INBETWEENS // 2])
+            for j, candidate in enumerate(candidates, 1):
+                phase = j / (INBETWEENS + 1)
+                if is_clean(candidate) or not middle_clean:
+                    sequence.append(clean_inbetween(candidate, before, after, phase))
+                else:
+                    sequence.append(after if phase > .5 else before)
             sequence.append(after)
         path = output / f"{name}.png"
         sequence[0].save(path, save_all=True, append_images=sequence[1:], duration=FRAME_MS if bridges else 50, loop=0)
