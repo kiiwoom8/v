@@ -1,5 +1,6 @@
 #include "common.h"
 #include "secretary_motion.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -7,7 +8,8 @@
 #define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
 #endif
 
-#define COMPRESS_XPRESS_HUFF 4
+#define COMPRESS_LZMS 5
+#define FRAMES_PER_BLOCK 12
 #define MAX_FRAME_SIDE 640
 #define PALETTE_BYTES (256 * sizeof(DWORD))
 
@@ -35,6 +37,8 @@ static struct {
     const DWORD *offsets;
     const BYTE *packets;
     BYTE *decoded;
+    unsigned block;
+    unsigned decoded_frames;
     int width, height;
     Sample x[MAX_FRAME_SIDE], y[MAX_FRAME_SIDE];
 } pack;
@@ -66,31 +70,34 @@ void secretary_motion_open(HINSTANCE instance, int width, int height)
     DWORD bytes = resource ? SizeofResource(instance, resource) : 0;
     BOOL (WINAPI *create)(DWORD, void *, HANDLE *);
     size_t data_at;
-    unsigned i;
+    unsigned i, blocks;
 
     secretary_motion_close();
-    if (!header || bytes < sizeof(*header) || memcmp(header->magic, "VTM2", 4) ||
+    if (!header || bytes < sizeof(*header) || memcmp(header->magic, "VTM3", 4) ||
         !header->width || header->width > MAX_FRAME_SIDE || !header->height || header->height > MAX_FRAME_SIDE ||
         !header->edges || !header->frames || width <= 0 || width > MAX_FRAME_SIDE || height <= 0 || height > MAX_FRAME_SIDE)
         return;
-    data_at = sizeof(*header) + header->edges * sizeof(MotionEntry) + (header->frames + 1) * sizeof(DWORD);
+    blocks = (header->frames + FRAMES_PER_BLOCK - 1) / FRAMES_PER_BLOCK;
+    data_at = sizeof(*header) + header->edges * sizeof(MotionEntry) + (blocks + 1) * sizeof(DWORD);
     if (data_at >= bytes) return;
     pack.entries = (const MotionEntry *)(header + 1);
     pack.offsets = (const DWORD *)(pack.entries + header->edges);
-    for (i = 0; i < header->frames; ++i) {
+    if (pack.offsets[0]) return;
+    for (i = 0; i < blocks; ++i) {
         if (pack.offsets[i] >= pack.offsets[i + 1]) return;
     }
-    if (pack.offsets[header->frames] != bytes - data_at) return;
-    pack.packets = (const BYTE *)(pack.offsets + header->frames + 1);
+    if (pack.offsets[blocks] != bytes - data_at) return;
+    pack.packets = (const BYTE *)(pack.offsets + blocks + 1);
     pack.cabinet = LoadLibraryExW(L"cabinet.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (pack.cabinet) {
         create = (void *)GetProcAddress(pack.cabinet, "CreateDecompressor");
         pack.decompress = (void *)GetProcAddress(pack.cabinet, "Decompress");
         pack.close = (void *)GetProcAddress(pack.cabinet, "CloseDecompressor");
-        if (create && pack.decompress && pack.close && create(COMPRESS_XPRESS_HUFF, NULL, &pack.decoder)) {
-            pack.decoded = malloc(PALETTE_BYTES + (size_t)header->width * header->height);
+        if (create && pack.decompress && pack.close && create(COMPRESS_LZMS, NULL, &pack.decoder)) {
+            pack.decoded = malloc(PALETTE_BYTES + (size_t)header->width * header->height * FRAMES_PER_BLOCK);
             if (pack.decoded) {
                 pack.header = header;
+                pack.block = UINT_MAX;
                 pack.width = width;
                 pack.height = height;
                 samples(pack.x, width, header->width);
@@ -141,21 +148,44 @@ static DWORD blend(DWORD a, DWORD b, DWORD fraction)
     return (rb & mask) | (ag & ~mask);
 }
 
+// Each block shares one palette. A frame stores the XOR against the previous
+// index plane. Restore only as far as the requested frame, then reuse the block
+// when the clock asks for another drawing in the same part of the motion.
+static const BYTE *frame_image(unsigned index)
+{
+    unsigned block = index / FRAMES_PER_BLOCK, frame = index % FRAMES_PER_BLOCK;
+    const MotionHeader *header = pack.header;
+    size_t area = (size_t)header->width * header->height;
+    BYTE *images = pack.decoded + PALETTE_BYTES;
+    if (block != pack.block) {
+        unsigned count = min(FRAMES_PER_BLOCK, header->frames - block * FRAMES_PER_BLOCK);
+        SIZE_T written, wanted = PALETTE_BYTES + area * count;
+        pack.block = UINT_MAX;
+        if (!pack.decompress(pack.decoder, pack.packets + pack.offsets[block],
+                             pack.offsets[block + 1] - pack.offsets[block], pack.decoded, wanted, &written) ||
+            written != wanted) return NULL;
+        pack.block = block;
+        pack.decoded_frames = 1;
+    }
+    while (pack.decoded_frames <= frame) {
+        BYTE *current = images + area * pack.decoded_frames++;
+        const BYTE *previous = current - area;
+        size_t pixel;
+        for (pixel = 0; pixel < area; ++pixel) current[pixel] ^= previous[pixel];
+    }
+    return images + area * frame;
+}
+
 BOOL secretary_motion_paint(SecretaryMotion motion, unsigned frame, DWORD *pixels)
 {
     const MotionHeader *header = pack.header;
-    SIZE_T written, wanted;
     unsigned index;
     int x, y;
     const DWORD *palette = (const DWORD *)pack.decoded;
-    const BYTE *image = pack.decoded ? pack.decoded + PALETTE_BYTES : NULL;
+    const BYTE *image;
     if (!header || frame >= motion.count) return FALSE;
     index = motion.first + (motion.reverse ? motion.count - 1 - frame : frame);
-    if (index >= header->frames) return FALSE;
-    wanted = PALETTE_BYTES + (size_t)header->width * header->height;
-    if (!pack.decompress(pack.decoder, pack.packets + pack.offsets[index],
-                         pack.offsets[index + 1] - pack.offsets[index], pack.decoded, wanted, &written) || written != wanted)
-        return FALSE;
+    if (index >= header->frames || !(image = frame_image(index))) return FALSE;
     if (pack.width == header->width && pack.height == header->height) {
         for (y = 0; y < pack.height; ++y) {
             for (x = 0; x < pack.width; ++x)

@@ -13,8 +13,10 @@ from PIL import Image
 
 
 POSES = 144
+FRAMES_PER_BLOCK = 12
+MOTION_WIDTH = 146
 SHEETS = dict(WALK_FIRST=16, REST_FIRST=32, COMMAND_FIRST=48, WALK_DETAIL_FIRST=64,
-              ATTENTION_FIRST=80, SCROLL_DETAIL_FIRST=96, IDLE_DETAIL_FIRST=112,
+              ATTENTION_FIRST=80, SCROLL_DETAIL_FIRST=96, ACCENT_FIRST=96, IDLE_DETAIL_FIRST=112,
               INTERACTION_FIRST=128)
 TIMELINE = Path(__file__).resolve().parents[1] / "secretary.c"
 
@@ -47,16 +49,19 @@ def transition_edges():
     # The player traverses these routes continuously over their authored time.
     # Pay for dense motion there and use shorter transitions for reactions,
     # which last only a handful of display refreshes.
-    density = dict(falling_asleep=23, curling_up=23, lying_down=23, getting_up=23,
+    density = dict(falling_asleep=15, curling_up=15, loaf_breath=23,
+                   falling_asleep_custom=23, curling_up_custom=23, lying_down=23, getting_up=23,
                    sleep_breath=47, sleep_shift=23, waking=23, idle_breath=23,
                    idle_blink=11, idle_slow_blink=11, idle_glance=15, idle_listen=11,
+                   idle_ear_flick=7, idle_tail_sweep=15, idle_head_tilt=11,
                    turning_detail=23, turning_run=15, turning_walk=11, settling=23,
-                   grooming=23, grooming_long=23, stretching=23, looking=11, looking_quick=11,
+                   grooming=23, grooming_long=23, stretching=15, stretching_short=15,
+                   stretching_custom=23, looking=11, looking_quick=11,
                    yawn_detail=11, grab_detail=7)
     for name, poses in clips.items():
         if name == "idle_custom":
             continue
-        run(poses, name in {"idle", "grabbed", "grab_detail", "sleep_breath"}, density.get(name, 3))
+        run(poses, name in {"idle", "grabbed", "grab_detail", "sleep_breath", "loaf_breath"}, density.get(name, 3))
 
     walk = re.search(r"walk_detail_cycle\[\] = \{([^}]+)\}", source)[1]
     walk_poses = [SHEETS["WALK_DETAIL_FIRST"] + int(cel) for cel in re.findall(r"\d+", walk)]
@@ -126,35 +131,79 @@ def arrange(edges):
     return keys, segments
 
 
-class FrameEncoder:
-    """An indexed premultiplied BGRA frame in a Windows XPRESS Huffman buffer."""
+class CabinetCodec:
+    """The Windows compression API used by the embedded motion pack."""
 
-    def __init__(self):
+    def __init__(self, algorithm, *, decode=False):
         lib = ct.WinDLL("cabinet.dll", use_last_error=True)
-        create = lib.CreateCompressor
+        create = lib.CreateDecompressor if decode else lib.CreateCompressor
         create.argtypes = [ct.c_ulong, ct.c_void_p, ct.POINTER(ct.c_void_p)]
-        self.compress = lib.Compress
-        self.compress.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_size_t, ct.c_void_p,
-                                  ct.c_size_t, ct.POINTER(ct.c_size_t)]
-        self.close = lib.CloseCompressor
+        self.process = lib.Decompress if decode else lib.Compress
+        self.process.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_size_t, ct.c_void_p,
+                                 ct.c_size_t, ct.POINTER(ct.c_size_t)]
+        self.close = lib.CloseDecompressor if decode else lib.CloseCompressor
         self.close.argtypes = [ct.c_void_p]
         self.handle = ct.c_void_p()
-        if not create(4, None, ct.byref(self.handle)):
+        if not create(algorithm, None, ct.byref(self.handle)):
             raise ct.WinError(ct.get_last_error())
 
-    def encode(self, bgra):
-        rgba = np.ascontiguousarray(bgra[..., [2, 1, 0, 3]])
-        indexed = Image.fromarray(rgba).quantize(colors=256, method=Image.Quantize.FASTOCTREE)
-        palette = bytearray(1024)
-        for index, (r, g, b, a) in enumerate(np.frombuffer(indexed.palette.palette, dtype=np.uint8).reshape(-1, 4)):
-            slot = index * 4
-            palette[slot:slot + 4] = bytes((min(b, a), min(g, a), min(r, a), a))
-        payload = bytes(palette) + indexed.tobytes()
-        output = ct.create_string_buffer(2 * len(payload))
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close(self.handle)
+
+    def convert(self, payload, capacity):
+        output = ct.create_string_buffer(capacity)
         length = ct.c_size_t()
-        if not self.compress(self.handle, payload, len(payload), output, len(output), ct.byref(length)):
+        if not self.process(self.handle, payload, len(payload), output, len(output), ct.byref(length)):
             raise ct.WinError(ct.get_last_error())
         return output.raw[:length.value]
+
+
+def indexed_frames(rgba):
+    indexed = Image.fromarray(rgba).quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+    colors = np.frombuffer(indexed.palette.palette, dtype=np.uint8).reshape(-1, 4)
+    palette = np.zeros((256, 4), dtype=np.uint8)
+    palette[:len(colors)] = np.minimum(colors[:, [2, 1, 0, 3]], colors[:, 3:4])
+    return palette.tobytes(), np.asarray(indexed)
+
+
+def accent_poses(poses):
+    """Shape nearby poses from the supplied sheets, with the contact floor pinned."""
+    # Each region is (center x/y, horizontal/vertical falloff, displacement x/y).
+    # Coordinates are fractions of the normalized 205 x 246 source canvas.
+    edits = [
+        (33, [(0.45, 0.40, 0.28, 0.26, 0.026, 0.028), (0.72, 0.54, 0.23, 0.17, 0.025, 0.039)]),
+        (34, [(0.44, 0.45, 0.29, 0.22, -0.010, 0.027), (0.72, 0.52, 0.20, 0.22, 0.017, 0.043)]),
+        (35, [(0.45, 0.55, 0.35, 0.20, 0.017, -0.017), (0.70, 0.62, 0.20, 0.15, -0.029, 0.010)]),
+        (36, [(0.44, 0.52, 0.28, 0.16, -0.013, -0.009), (0.74, 0.63, 0.18, 0.15, -0.013, 0.017)]),
+        (34, [(0.48, 0.50, 0.39, 0.23, 0.002, -0.013), (0.71, 0.53, 0.23, 0.20, 0.015, -0.012)]),
+        (112, [(0.63, 0.35, 0.27, 0.12, 0.036, -0.027)]),
+        (112, [(0.32, 0.30, 0.16, 0.13, 0.029, 0.018), (0.66, 0.35, 0.23, 0.10, -0.026, 0.014)]),
+        (112, [(0.77, 0.56, 0.23, 0.18, 0.039, -0.033)]),
+        (112, [(0.77, 0.55, 0.23, 0.19, -0.046, 0.024)]),
+        (112, [(0.43, 0.44, 0.31, 0.30, -0.032, 0.009), (0.59, 0.34, 0.18, 0.16, 0.004, 0.019)]),
+        (41, [(0.36, 0.53, 0.38, 0.21, 0.054, -0.045), (0.31, 0.68, 0.22, 0.07, 0.049, 0.001),
+              (0.73, 0.50, 0.23, 0.23, 0.008, 0.027)]),
+    ]
+    _, height, width, _ = poses.shape
+    grid_y, grid_x = np.indices((height, width), dtype=np.float32)
+    for index, (source, regions) in enumerate(edits, SHEETS["ACCENT_FIRST"]):
+        x, y = grid_x.copy(), grid_y.copy()
+        for cx, cy, rx, ry, dx, dy in regions:
+            radius = ((grid_x / width - cx) / rx)**2 + ((grid_y / height - cy) / ry)**2
+            weight = np.maximum(0, 1 - radius)**2
+            x -= dx * width * weight
+            y -= dy * height * weight
+        x = x.clip(0, width - 1)
+        y = y.clip(0, height - 1)
+        left, top = x.astype(int), y.astype(int)
+        right, bottom = np.minimum(left + 1, width - 1), np.minimum(top + 1, height - 1)
+        fx, fy = (x - left)[..., None], (y - top)[..., None]
+        cel = poses[source]
+        poses[index] = np.rint((cel[top, left] * (1 - fx) + cel[top, right] * fx) * (1 - fy)
+                              + (cel[bottom, left] * (1 - fx) + cel[bottom, right] * fx) * fy)
 
 
 def infer(exe, model, work, poses, keys, count, background):
@@ -208,6 +257,79 @@ def reuse_frames(path, width, height, endpoints, edges):
     return reused
 
 
+def unpack_frame(decoder, packet, width, height):
+    data = decoder.convert(packet, 1024 + width * height)
+    palette = np.frombuffer(data, dtype=np.uint8, count=1024).reshape(256, 4)
+    indices = np.frombuffer(data, dtype=np.uint8, offset=1024).reshape(height, width)
+    return palette[indices]
+
+
+def resize_frame(bgra, width, height):
+    rgba = np.ascontiguousarray(bgra[..., [2, 1, 0, 3]])
+    image = Image.frombytes("RGBa", (rgba.shape[1], rgba.shape[0]), rgba.tobytes())
+    return np.asarray(image.resize((width, height), Image.Resampling.LANCZOS))
+
+
+def write_pack(output, poses, edges, packets):
+    # Keep RIFE's motion estimates as anchors and fill the smaller gaps in
+    # premultiplied color. Only the source and destination cels are shared.
+    original_height, original_width = poses.shape[1:3]
+    width = MOTION_WIDTH
+    height = round(original_height * width / original_width)
+    prepared = [resize_frame(frame, width, height) for frame in poses]
+    starts, directory, blocks, current = [0], [], [], []
+    frame_count = 0
+    with CabinetCodec(4, decode=True) as reader, CabinetCodec(5) as writer:
+        def flush():
+            palette, planes = indexed_frames(np.concatenate(current))
+            planes = planes.reshape(len(current), width * height)
+            delta = np.concatenate((planes[:1], planes[1:] ^ planes[:-1]))
+            payload = palette + delta.tobytes()
+            packet = writer.convert(payload, 2 * len(payload))
+            blocks.append(packet)
+            starts.append(starts[-1] + len(packet))
+            current.clear()
+
+        def add(frame):
+            nonlocal frame_count
+            current.append(frame)
+            frame_count += 1
+            if len(current) == FRAMES_PER_BLOCK:
+                flush()
+
+        for endpoint in prepared:
+            add(endpoint)
+        for a, b in sorted(edges):
+            # Reactive handoffs have only a few display ticks. Give the extra
+            # samples to the continuous motions and the new built-in accents.
+            accent = any(96 <= key % POSES < 112 for key in (a, b))
+            subdivisions = 3 if edges[a, b] > 7 or accent else 2
+            count = (edges[a, b] + 1) * subdivisions - 1
+            directory.append(struct.pack("<HHHH", a, b, frame_count, count))
+            path = [prepared[a]]
+            for packet in packets[a, b]:
+                frame = unpack_frame(reader, packet, original_width, original_height)
+                path.append(resize_frame(frame, width, height))
+            path.append(prepared[b] if b < POSES else prepared[b - POSES][:, ::-1])
+            for index, (first, second) in enumerate(zip(path, path[1:])):
+                if index:
+                    add(first)
+                x, y = first.astype(np.uint16), second.astype(np.uint16)
+                for j in range(1, subdivisions):
+                    add((((subdivisions - j) * x + j * y + subdivisions // 2) // subdivisions).astype(np.uint8))
+        if current:
+            flush()
+    header = struct.pack("<4sHHHH", b"VTM3", width, height, len(edges), frame_count)
+    offsets = struct.pack(f"<{len(starts)}I", *starts)
+    size = len(header) + 8 * len(edges) + len(offsets) + starts[-1]
+    if size > 17_450_000:
+        raise ValueError(f"motion pack is {size:,} bytes and would exceed the app's update budget")
+    candidate = output.with_suffix(output.suffix + ".tmp")
+    candidate.write_bytes(b"".join([header, *directory, offsets, *blocks]))
+    candidate.replace(output)
+    print(f"{len(edges)} transitions, {frame_count} frames, {size:,} bytes")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("poses", type=Path, help="binary output from tailmon_pose_export")
@@ -215,16 +337,21 @@ def main():
     parser.add_argument("model", type=Path, help="rife-v4.6 model directory")
     parser.add_argument("work", type=Path, help="empty or resumable scratch directory")
     parser.add_argument("output", type=Path, help="motion.bin output")
-    parser.add_argument("--reuse", type=Path, help="reuse compatible frames from an earlier motion pack")
+    parser.add_argument("--reuse", type=Path, help="reuse compatible frames from a VTM2 motion pack")
     args = parser.parse_args()
     args.work.mkdir(parents=True, exist_ok=True)
     with args.poses.open("rb") as file:
         width, height = struct.unpack("<ii", file.read(8))
-    poses = np.memmap(args.poses, mode="r", dtype=np.uint8, offset=8, shape=(POSES, height, width, 4))
+    poses = np.memmap(args.poses, mode="c", dtype=np.uint8, offset=8, shape=(POSES, height, width, 4))
+    accent_poses(poses)
     edges = transition_edges()
-    encoder = FrameEncoder()
-    try:
-        endpoints = [encoder.encode(pose) for pose in poses]
+    with CabinetCodec(4) as encoder:
+        def encode(bgra):
+            palette, plane = indexed_frames(np.ascontiguousarray(bgra[..., [2, 1, 0, 3]]))
+            payload = palette + plane.tobytes()
+            return encoder.convert(payload, 2 * len(payload))
+
+        endpoints = [encode(pose) for pose in poses] if args.reuse else None
         packets = reuse_frames(args.reuse, width, height, endpoints, edges)
         print(f"Reusing {len(packets)} compatible transitions", flush=True)
         for count in sorted(set(edges.values())):
@@ -240,27 +367,10 @@ def main():
                 for i in range(1, count + 1):
                     at = first * (count + 1) + i + 1
                     path = f"{at:06d}.png"
-                    frames.append(encoder.encode(recover_frame(dark / path, light / path)))
+                    frames.append(encode(recover_frame(dark / path, light / path)))
                 packets[pair] = frames[::-1] if reverse else frames
-    finally:
-        encoder.close(encoder.handle)
-
-    frame_count = POSES + sum(edges.values())
-    starts, directory, frames = [], [], list(endpoints)
-    for key in sorted(edges):
-        directory.append(struct.pack("<HHHH", *key, len(frames), edges[key]))
-        frames.extend(packets[key])
-    cursor = 0
-    for frame in frames:
-        starts.append(struct.pack("<I", cursor))
-        cursor += len(frame)
-    starts.append(struct.pack("<I", cursor))
-    header = struct.pack("<4sHHHH", b"VTM2", width, height, len(edges), frame_count)
-    size = len(header) + 8 * len(edges) + 4 * (frame_count + 1) + cursor
-    if size > 17_450_000:
-        raise ValueError(f"motion pack is {size:,} bytes and would exceed the app's update budget")
-    args.output.write_bytes(b"".join([header, *directory, *starts, *frames]))
-    print(f"{len(edges)} transitions, {frame_count - POSES} new frames, {size:,} bytes")
+    print("Packing indexed motion blocks", flush=True)
+    write_pack(args.output, poses, edges, packets)
 
 
 if __name__ == "__main__":

@@ -546,11 +546,13 @@ grooming, stretching and yawning pause under them and finish afterwards. Vim's p
 character. Keyboard scrolling and the physical wheel reach the window behind
 the character at the pointer's location. The character follows upward and
 downward scrolls with different movements. Between larger actions, Tailmon
-breathes at a varying pace and mixes in quick blinks, slow blinks, glances and
-listening. It also chooses between short and long looks and grooming sessions
-alongside stretching, yawning, roaming and resting. Tailmon lowers its head
-and settles into a loaf before curling up. A rest holds the loaf for 15–90
-seconds and then gets up or curls up asleep. Sleep lasts minutes (usually
+breathes at a varying pace and mixes in quick and slow blinks, glances,
+listening, ear flicks, tail sweeps and head tilts. It chooses between short
+and long looks, grooming sessions and stretches. At the end of a stretch it
+draws its paws back and settles into the regular sitting pose. Before sleep
+it nods, lowers into a loaf, shifts its weight and tucks in. A rest breathes
+in the loaf for about 15–90 seconds and then gets up or curls up asleep.
+Sleep lasts minutes (usually
 2–15, sometimes up to 35), with slow breathing and an occasional shift. It may
 stretch or groom after waking. Clicks, hints and Vim activity leave it asleep,
 and picking it up wakes it.

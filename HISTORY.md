@@ -1911,6 +1911,22 @@ Invariants stated in `common.h` and enforced by history:
   limit. The key drawings and their normalized coordinates are shared with
   the previous build.
 
+### Tailmon: even stride, active dozing and stretch recovery (2026-11-28)
+
+- Kim reported that the walk still limped, dozing still appeared static, and
+  a stray pose flashed after stretching. The walk now gives its skipped
+  intervals the same travel distance that the original stride allotted them.
+  The stance at a stop blends from the visible gait phase.
+- Eleven new poses derived from the shipped artwork add a drowsy nod, a
+  breathing loaf, weight shifts and tail tuck, a stretch recovery, and three
+  idle accents. Both stretch lengths finish on the pose used by idle.
+  A resting loaf keeps breathing and completes the cycle before transitioning.
+- The embedded VTM3 pack groups compatible indexed frames in LZMS blocks,
+  encoding adjacent index planes as deltas. It holds 6,323 distinct visible
+  frames, up from 2,058, within the installed updater's 32 MiB limit.
+  The player decodes a block at a time and reuses it while sampling motion.
+  Custom sheet settings stay compatible, including the optional scroll sheet.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2097,6 +2113,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 146 | `be1f0be` | 11-20 | 31 | `input.c`: the power window registers the touchscreen as raw input (`register_raw_touch`, 0x0D/0x04, `RIDEV_INPUTSINK`); `raw_input_check` hands HID reports to `touch_raw_note` (`TOUCH_TIMER` 15 ms until `TOUCH_QUIET_MS` 300 quiet); `touch_raw_check` puts the pointer back at `s_rest_pt` when a touch's first move lands at the top, else takes the touch's end as the new rest | "same though. i think it's related to chrome bar" |
 | 147 | `58d0fc9` | 11-20 | 32 | `input.c` `focus_key_passed(vk, mods)`: a key passed with Ctrl / Alt / Win or a typing key while the answer is not `FOCUS_TEXT` calls `uia_focus_changed(FOCUS_TYPED_DELAY_MS)` (400); also from mouse mode's modifier pass-through | "from zendesk, searching macro get inputs (shortcut ctrl+shift+m). sometimes, if i focus that and type fast, hjkl works without alt which is not intended" |
 | 148 | This commit | 11-28 | Tailmon | Sample the prepared walk by distance and the rest sequences by elapsed time, rebake denser core motions, and vary idle accents and gesture lengths | Kim requested smoother walking and sleep entry plus much more varied idle |
+| 149 | This commit | 11-28 | Tailmon | Restore the source stride spacing, animate the loaf and stretch recovery, and triple the packaged frames with shared-palette block compression | Kim reported a limp, a static pre-nap pose and a stray cel after stretching |
 
 ## 5. Lessons learned: rules not to break
 
@@ -2849,6 +2866,9 @@ last ten are all `worktree-agent-*` into `element-hints`.
   distance and replaying each stride transition on an independent timer makes
   the paws lag or jump as speed changes. Keep the written timing of slow
   actions in the sampled path so a curl or a breath uses the whole beat.
+  When a gait skips cels, keep the original interval proportional to the
+  number of cels covered so the two halves of the stride run at the same pace.
+  End a stretch on the neutral drawing its next idle clip starts from.
 
 - **Every window Vim itself opens must stay reachable without the real
   mouse.** Click hints never scan our own process, so a new Vim window with

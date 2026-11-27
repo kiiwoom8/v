@@ -36,6 +36,8 @@
 #define SCROLL_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_SCROLL_DETAIL))
 #define IDLE_DETAIL_FIRST (POSES_PER_SHEET * (1 + SECRETARY_IDLE_DETAIL))
 #define INTERACTION_FIRST (POSES_PER_SHEET * (1 + SECRETARY_INTERACTION_DETAIL))
+// Built-in accents use the scroll slot only when there is no custom sheet there.
+#define ACCENT_FIRST SCROLL_DETAIL_FIRST
 
 typedef struct {
     HDC dc;
@@ -103,6 +105,15 @@ static const PoseStep idle_listen[] = {
     {IDLE_DETAIL_FIRST, 200}, {ATTENTION_FIRST, 190}, {ATTENTION_FIRST + 1, 210}, {ATTENTION_FIRST + 2, 260}, {ATTENTION_FIRST + 3, 420},
     {ATTENTION_FIRST + 3, 290}, {ATTENTION_FIRST + 2, 170}, {ATTENTION_FIRST + 1, 200}, {ATTENTION_FIRST, 300}, {IDLE_DETAIL_FIRST, 150}
 };
+static const PoseStep idle_ear_flick[] = {
+    {IDLE_DETAIL_FIRST, 125}, {ACCENT_FIRST + 5, 90}, {ACCENT_FIRST + 6, 120}, {IDLE_DETAIL_FIRST, 390}
+};
+static const PoseStep idle_tail_sweep[] = {
+    {IDLE_DETAIL_FIRST, 300}, {ACCENT_FIRST + 7, 460}, {ACCENT_FIRST + 8, 420}, {IDLE_DETAIL_FIRST, 160}
+};
+static const PoseStep idle_head_tilt[] = {
+    {IDLE_DETAIL_FIRST, 260}, {ACCENT_FIRST + 9, 510}, {IDLE_DETAIL_FIRST + 7, 240}, {IDLE_DETAIL_FIRST, 190}
+};
 static const PoseStep yawn_detail[] = {
     {IDLE_DETAIL_FIRST + 8, 300}, {IDLE_DETAIL_FIRST + 9, 210},
     {IDLE_DETAIL_FIRST + 10, 150}, {IDLE_DETAIL_FIRST + 11, 150},
@@ -137,7 +148,7 @@ static const PoseStep settling[] = {
 // the near paw never swings and the two front paws swap places in one jump at
 // the 5 -> 13 seam. Always FORWARD in the sheet's order; reversing gait cels
 // makes the legs walk backwards. Bake the exact cycle, including the two
-// skipped-cel seams, and sample it at the current distance along the stride.
+// skipped-cel seams, and give them their original share of stride distance.
 static const BYTE walk_detail_cycle[] = {
     13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 9, 10
 };
@@ -150,16 +161,27 @@ static const PoseStep turning_run[] = {
 static const PoseStep turning_walk[] = {
     {WALK_FIRST + 15, 115}, {WALK_FIRST + 14, 105}, {WALK_FIRST + 13, 100}, {WALK_FIRST + 12, 110}, {WALK_FIRST, 35}
 };
-static const PoseStep falling_asleep[] = {
+static const PoseStep falling_asleep_custom[] = {
     {REST_FIRST, 190}, {REST_FIRST, 570}, {REST_FIRST + 1, 650}, {REST_FIRST + 2, 660}, {REST_FIRST + 2, 850}, {REST_FIRST + 3, 650}, {REST_FIRST + 4, 120}
 };
 // Resting: lie down into the loaf, hold it, and either curl up or get up.
 static const PoseStep lying_down[] = {
     {REST_FIRST, 190}, {REST_FIRST, 530}, {REST_FIRST + 1, 750}, {REST_FIRST + 2, 140}
 };
-static const PoseStep curling_up[] = {
+static const PoseStep curling_up_custom[] = {
     {REST_FIRST + 2, 830}, {REST_FIRST + 3, 730}, {REST_FIRST + 4, 120}
 };
+static const PoseStep falling_asleep[] = {
+    {REST_FIRST, 340}, {REST_FIRST + 1, 250}, {ACCENT_FIRST, 460},
+    {REST_FIRST + 2, 540}, {ACCENT_FIRST + 1, 620}, {ACCENT_FIRST + 2, 520},
+    {REST_FIRST + 3, 470}, {ACCENT_FIRST + 3, 340}, {REST_FIRST + 4, 65}
+};
+static const PoseStep curling_up[] = {
+    {REST_FIRST + 2, 460}, {ACCENT_FIRST + 1, 520}, {ACCENT_FIRST + 2, 440},
+    {REST_FIRST + 3, 480}, {ACCENT_FIRST + 3, 340}, {REST_FIRST + 4, 65}
+};
+#define LOAF_BREATH_MS 3980
+static const PoseStep loaf_breath[] = {{REST_FIRST + 2, 1840}, {ACCENT_FIRST + 4, LOAF_BREATH_MS - 1840}};
 static const PoseStep getting_up[] = {
     {REST_FIRST + 2, 600}, {REST_FIRST + 1, 490}, {REST_FIRST, 200}
 };
@@ -172,9 +194,22 @@ static const PoseStep sleep_shift[] = {
 static const PoseStep waking[] = {
     {REST_FIRST + 4, 670}, {REST_FIRST + 3, 670}, {REST_FIRST + 2, 250}, {REST_FIRST + 2, 830}, {REST_FIRST + 1, 700}, {REST_FIRST, 360}
 };
-static const PoseStep stretching[] = {
+static const PoseStep stretching_custom[] = {
     {REST_FIRST + 8, 240}, {REST_FIRST + 9, 235}, {REST_FIRST + 10, 380},
-    {REST_FIRST + 9, 180}, {REST_FIRST + 8, 170}, {REST_FIRST + 11, 250}
+    {REST_FIRST + 9, 200}, {REST_FIRST + 8, 210}, {REST_FIRST + 2, 225},
+    {REST_FIRST + 1, 210}, {REST_FIRST, 70}
+};
+static const PoseStep stretching[] = {
+    {REST_FIRST, 155}, {REST_FIRST + 1, 150}, {REST_FIRST + 2, 165}, {REST_FIRST + 8, 190},
+    {REST_FIRST + 9, 260}, {REST_FIRST + 10, 400}, {REST_FIRST + 9, 175},
+    {ACCENT_FIRST + 10, 165}, {REST_FIRST + 8, 220}, {REST_FIRST + 2, 250},
+    {REST_FIRST + 1, 180}, {REST_FIRST, 125}, {IDLE_DETAIL_FIRST, 80}
+};
+static const PoseStep stretching_short[] = {
+    {REST_FIRST, 140}, {REST_FIRST + 1, 125}, {REST_FIRST + 2, 130}, {REST_FIRST + 8, 145},
+    {REST_FIRST + 9, 210}, {REST_FIRST + 10, 180}, {REST_FIRST + 9, 140},
+    {ACCENT_FIRST + 10, 140}, {REST_FIRST + 8, 180}, {REST_FIRST + 2, 185},
+    {REST_FIRST + 1, 150}, {REST_FIRST, 110}, {IDLE_DETAIL_FIRST, 80}
 };
 static const PoseStep grooming[] = {
     {REST_FIRST + 12, 150}, {REST_FIRST + 12, 310}, {REST_FIRST + 13, 440}, {REST_FIRST + 14, 180}, {REST_FIRST + 13, 280}, {REST_FIRST + 15, 260}
@@ -228,6 +263,7 @@ static const WCHAR *const tailmon_sheets[SECRETARY_EXTRA_SHEETS] = {
     [SECRETARY_INTERACTION_DETAIL] = L"TAILMON_INTERACTION"
 };
 static BOOL extra_ready[SECRETARY_EXTRA_SHEETS];
+static BOOL bundled_accents;
 static BOOL tailmon_art[1 + SECRETARY_EXTRA_SHEETS];
 static WCHAR extra_settings[SECRETARY_EXTRA_SHEETS][MAX_PATH];
 static DWORD *pose_pixels, *blend_from, *blend_to, *blend_entry;
@@ -913,6 +949,8 @@ static BOOL draw_sprite(void)
     free(pose_pixels);
     pose_pixels = NULL;
     secretary_motion_close();
+    bundled_accents = FALSE;
+    tailmon_art[1 + SECRETARY_SCROLL_DETAIL] = FALSE;
     blend_ms = 0;
     painted_pose = -1;
     sample_to = -1;
@@ -949,6 +987,13 @@ static BOOL draw_sprite(void)
         if (tailmon_art[0]) {
             int index;
             secretary_motion_open(g_hinst, sprite.size.cx, sprite.size.cy);
+            if (!extra_settings[SECRETARY_SCROLL_DETAIL][0] &&
+                tailmon_art[1 + SECRETARY_REST] && extra_ready[SECRETARY_REST] &&
+                tailmon_art[1 + SECRETARY_IDLE_DETAIL] && extra_ready[SECRETARY_IDLE_DETAIL] &&
+                secretary_motion_find(REST_FIRST + 1, ACCENT_FIRST, POSE_COUNT).count) {
+                bundled_accents = TRUE;
+                tailmon_art[1 + SECRETARY_SCROLL_DETAIL] = TRUE;
+            }
             // The endpoints and the intermediate frames share the same canvas.
             // A monitor scale change therefore resamples the whole sequence alike.
             for (index = 0; index < poses; ++index) {
@@ -1741,7 +1786,8 @@ typedef struct {
 
 static const PoseClip idle_clips[] = {
     {CLIP(idle_breath)}, {CLIP(idle_blink)}, {CLIP(idle_slow_blink)},
-    {CLIP(idle_glance)}, {CLIP(idle_listen)}
+    {CLIP(idle_glance)}, {CLIP(idle_ear_flick)}, {CLIP(idle_tail_sweep)}, {CLIP(idle_head_tilt)},
+    {CLIP(idle_listen)}
 };
 
 static struct {
@@ -1796,10 +1842,13 @@ static PoseCue natural_idle(DWORD now)
             --idle_motion.breaths;
             idle_motion.clip = 0;
         } else {
-            unsigned choices = extra_ready[SECRETARY_ATTENTION] ? 4 : 3;
-            BOOL exclude = idle_motion.last_accent && idle_motion.last_accent <= choices;
-            unsigned pick = 1 + random_below(choices - exclude);
-            if (exclude && pick >= idle_motion.last_accent) ++pick;
+            unsigned last = sizeof idle_clips / sizeof *idle_clips - 1;
+            unsigned choices[sizeof idle_clips / sizeof *idle_clips - 1], count = 0, i, pick;
+            for (i = 1; i <= (bundled_accents ? last - 1 : 3); ++i)
+                if (i != idle_motion.last_accent) choices[count++] = i;
+            if (extra_ready[SECRETARY_ATTENTION] && idle_motion.last_accent != last)
+                choices[count++] = last;
+            pick = choices[random_below(count)];
             idle_motion.clip = idle_motion.last_accent = pick;
             idle_motion.breaths = 1 + random_below(3);
         }
@@ -1877,15 +1926,40 @@ static void schedule_twitch(DWORD now)
     pet_motion.twitch_at = now + SLEEP_BREATH_MS * (5 + random_below(14));
 }
 
+static PoseClip nap_entry(void)
+{
+    if (pet_motion.from_rest)
+        return bundled_accents ? (PoseClip){CLIP(curling_up)} : (PoseClip){CLIP(curling_up_custom)};
+    return bundled_accents ? (PoseClip){CLIP(falling_asleep)} : (PoseClip){CLIP(falling_asleep_custom)};
+}
+
 static void start_nap(DWORD now, BOOL from_rest)
 {
+    PoseClip clip;
     start_state(now, PET_NAP);
     pet_motion.from_rest = from_rest;
-    pet_motion.clip_ms = from_rest ? clip_length(CLIP(curling_up)) : clip_length(CLIP(falling_asleep));
+    clip = nap_entry();
+    pet_motion.clip_ms = clip_length(clip.steps, clip.count);
     pet_motion.duration = pet_motion.clip_ms + SLEEP_BREATH_MS * (nap_length() / SLEEP_BREATH_MS);
     schedule_twitch(now + pet_motion.clip_ms);
     reaction = REACT_NONE;
     command_pose = 0;
+}
+
+static PoseClip stretch_clip(void)
+{
+    if (!bundled_accents) return (PoseClip){CLIP(stretching_custom)};
+    if (pet_motion.long_clip) return (PoseClip){CLIP(stretching)};
+    return (PoseClip){CLIP(stretching_short)};
+}
+
+static void start_stretch(DWORD now)
+{
+    PoseClip clip;
+    start_state(now, PET_STRETCH);
+    pet_motion.long_clip = random_below(100) < 65;
+    clip = stretch_clip();
+    pet_motion.clip_ms = clip_length(clip.steps, clip.count);
 }
 
 static void start_walk(DWORD now)
@@ -1948,7 +2022,7 @@ static void advance_walk(DWORD now, double seconds, BOOL stopping)
         pet_motion.started = now;
     }
     pet_motion.traveled += step;
-    pet_motion.gait += step / px(pet_motion.fast ? 8 : extra_ready[SECRETARY_WALK_DETAIL] ? 4 : 7);
+    pet_motion.gait += step / px(pet_motion.fast ? 8 : extra_ready[SECRETARY_WALK_DETAIL] ? 3 : 7);
     progress = pet_motion.distance > 0 ? pet_motion.traveled / pet_motion.distance : 1.0;
     anchor.x = pet_motion.origin.x + (LONG)lround((pet_motion.goal.x - pet_motion.origin.x) * progress);
     anchor.y = pet_motion.origin.y + (LONG)lround((pet_motion.goal.y - pet_motion.origin.y) * progress +
@@ -2008,11 +2082,13 @@ static void pick_behaviour(DWORD now, BOOL hovered)
         start_gesture(now, PET_GROOM);
         break;
     case DO_STRETCH:
-        start_state(now, PET_STRETCH);
+        start_stretch(now);
         break;
     case DO_REST:
         start_state(now, PET_REST);
-        pet_motion.duration = clip_length(CLIP(lying_down)) + 15000 + random_below(75000);
+        pet_motion.duration = bundled_accents ? (4 + random_below(19)) * LOAF_BREATH_MS
+                                            : 15000 + random_below(75000);
+        pet_motion.duration += clip_length(CLIP(lying_down));
         break;
     case DO_NAP:
         start_nap(now, FALSE);
@@ -2095,13 +2171,13 @@ static void advance_pet(DWORD now, POINT pointer)
     case PET_WAKE:
         if (elapsed >= clip_length(CLIP(waking))) {
             unsigned roll = random_below(100);
-            if (roll < 60) start_state(now, PET_STRETCH);
+            if (roll < 60) start_stretch(now);
             else if (roll < 85) start_gesture(now, PET_GROOM);
             else wait_to_roam(now, idle_pause());
         }
         return;
     case PET_STRETCH:
-        if (elapsed >= clip_length(CLIP(stretching))) wait_to_roam(now, idle_pause());
+        if (elapsed >= pet_motion.clip_ms) wait_to_roam(now, idle_pause());
         return;
     case PET_YAWN:
         if (elapsed >= (extra_ready[SECRETARY_IDLE_DETAIL] ? clip_length(CLIP(yawn_detail)) : clip_length(CLIP(bored))))
@@ -2260,19 +2336,29 @@ static PoseCue animated_pose(DWORD now)
         static const BYTE walk_cycle[] = {16, 17, 18, 19, 20, 21, 22, 23};
         static const BYTE run_cycle[] = {24, 25, 26, 27};
         const BYTE *cycle;
-        int first = 0, count, step = (int)pet_motion.gait;
+        int count, step = (int)pet_motion.gait;
         if (pet_motion.fast) {
             cycle = run_cycle;
             count = sizeof run_cycle;
         } else if (extra_ready[SECRETARY_WALK_DETAIL]) {
-            first = WALK_DETAIL_FIRST;
-            cycle = walk_detail_cycle;
+            double phase = fmod(pet_motion.gait + walk_detail_cycle[0], POSES_PER_SHEET);
+            unsigned i;
             count = sizeof walk_detail_cycle;
+            for (i = 0; i < (unsigned)count; ++i) {
+                int from = walk_detail_cycle[i], to = walk_detail_cycle[(i + 1) % count];
+                int span = (to - from + POSES_PER_SHEET) % POSES_PER_SHEET;
+                double offset = phase - from;
+                if (offset < 0) offset += POSES_PER_SHEET;
+                if (offset < span)
+                    return motion_between(WALK_DETAIL_FIRST + from, WALK_DETAIL_FIRST + to,
+                                          (DWORD)(offset * PIXEL_UNIT / span), 150);
+            }
+            return HOLD(WALK_DETAIL_FIRST + walk_detail_cycle[0], 150);
         } else {
             cycle = walk_cycle;
             count = sizeof walk_cycle;
         }
-        return motion_between(first + cycle[step % count], first + cycle[(step + 1) % count],
+        return motion_between(cycle[step % count], cycle[(step + 1) % count],
                               (DWORD)((pet_motion.gait - step) * PIXEL_UNIT), 150);
     }
     case PET_SETTLE:
@@ -2280,6 +2366,8 @@ static PoseCue animated_pose(DWORD now)
         break;
     case PET_REST:
         cue = motion_at(CLIP(lying_down), elapsed, FALSE);
+        if (cue.pose < 0 && bundled_accents)
+            cue = motion_at(CLIP(loaf_breath), elapsed - clip_length(CLIP(lying_down)), TRUE);
         if (cue.pose < 0) cue = HOLD(REST_FIRST + 2, 1000);
         break;
     case PET_RISE:
@@ -2288,9 +2376,9 @@ static PoseCue animated_pose(DWORD now)
         if (cue.pose < 0) cue = HOLD(REST_FIRST, 1000);
         break;
     case PET_NAP: {
+        PoseClip clip = nap_entry();
         DWORD shift = now - pet_motion.twitch_at;
-        cue = pet_motion.from_rest ? motion_at(CLIP(curling_up), elapsed, FALSE)
-                                   : motion_at(CLIP(falling_asleep), elapsed, FALSE);
+        cue = motion_at(clip.steps, clip.count, elapsed, FALSE);
         if (cue.pose >= 0) break;
         if ((LONG)shift >= 0 && shift < SLEEP_BREATH_MS)
             cue = motion_at(CLIP(sleep_shift), shift, FALSE);
@@ -2309,9 +2397,12 @@ static PoseCue animated_pose(DWORD now)
         cue = motion_at(clip.steps, clip.count, time, FALSE);
         break;
     }
-    case PET_STRETCH:
-        cue = motion_at(CLIP(stretching), elapsed, FALSE);
+    case PET_STRETCH: {
+        PoseClip clip = stretch_clip();
+        cue = motion_at(clip.steps, clip.count, elapsed, FALSE);
+        if (cue.pose < 0) cue = HOLD(clip.steps[clip.count - 1].pose, 100);
         break;
+    }
     case PET_YAWN:
         cue = detailed_idle ? motion_at(CLIP(yawn_detail), elapsed, FALSE)
                             : step_at(CLIP(bored), elapsed, FALSE);
@@ -2441,7 +2532,8 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
             // A walk step with no prepared frames cross-fades over the step
             // instead of cutting, so a skipped cel reads as motion.
             blend_ms = prepared_motion.count ? (DWORD)clamp(cue.duration - 16, 24, limit) :
-                       blend_linear ? (DWORD)clamp(cue.duration - 16, 40, limit) : 40;
+                       blend_linear ? (DWORD)clamp(cue.duration - 16, 40, limit) :
+                       pet_motion.state == PET_SETTLE && mid_path ? 105 : 40;
             blend_started = now;
             CopyMemory(blend_from, sprite.pixels, count * sizeof(DWORD));
         }
@@ -3105,6 +3197,7 @@ void secretary_config_changed(void)
                              0, 0, 0, 0, NULL, NULL, g_hinst, NULL);
     if (!pet || !bubble) goto fail;
     born = animation_now();
+    ZeroMemory(&idle_motion, sizeof(idle_motion));
     last_activity = born;
     reaction = REACT_NONE;
     command_pose = 0;
