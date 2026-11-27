@@ -1,0 +1,42 @@
+{
+  "expressions": [
+    "curious-head-tilt",
+    "stargaze",
+    "wink"
+  ],
+  "attention": [
+    "ear-radar",
+    "nose-sniff",
+    "surprised-backstep"
+  ],
+  "face-and-paws": [
+    "face-wash",
+    "peekaboo",
+    "giggle"
+  ],
+  "paw-gestures": [
+    "paw-wave",
+    "paw-shake",
+    "air-swat"
+  ],
+  "stretch-and-knead": [
+    "knead",
+    "stretch-one-paw",
+    "play-bow"
+  ],
+  "spring-and-reach": [
+    "happy-hop",
+    "pounce",
+    "backward-stretch"
+  ],
+  "roll-and-turn": [
+    "side-tumble",
+    "belly-offer",
+    "twirl"
+  ],
+  "tail-and-scratch": [
+    "tail-chase",
+    "tail-windmill",
+    "ear-scratch"
+  ]
+}

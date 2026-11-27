@@ -13,6 +13,7 @@
 #define MAX_FRAME_SIDE 640
 #define PALETTE_BYTES (256 * sizeof(DWORD))
 #define ROUTINE_MARKER 0xffff
+#define BRIDGE_ROUTINE_MARKER 0xfffe
 
 typedef struct {
     char magic[4];
@@ -146,9 +147,18 @@ SecretaryMotion secretary_motion_find(int from, int to, int pose_count)
 unsigned secretary_motion_routine_count(void)
 {
     const MotionEntry *last;
+    if (!secretary_motion_routine_frame_ms()) return 0;
+    last = &pack.entries[pack.header->edges - 1];
+    return last->to <= pack.header->edges ? last->to : 0;
+}
+
+unsigned secretary_motion_routine_frame_ms(void)
+{
+    const MotionEntry *last;
     if (!pack.header) return 0;
     last = &pack.entries[pack.header->edges - 1];
-    return last->from == ROUTINE_MARKER && last->to <= pack.header->edges ? last->to : 0;
+    if (last->from == BRIDGE_ROUTINE_MARKER) return 33;
+    return last->from == ROUTINE_MARKER ? 50 : 0;
 }
 
 SecretaryMotion secretary_motion_routine(unsigned number)
@@ -157,7 +167,7 @@ SecretaryMotion secretary_motion_routine(unsigned number)
     const MotionEntry *entry;
     if (!number || number > count) return (SecretaryMotion){0};
     entry = &pack.entries[pack.header->edges - count + number - 1];
-    if (entry->from != ROUTINE_MARKER || entry->to != number ||
+    if (entry->from != pack.entries[pack.header->edges - 1].from || entry->to != number ||
         entry->first + entry->count > pack.header->frames) return (SecretaryMotion){0};
     return (SecretaryMotion){entry->first, entry->count, FALSE, FALSE};
 }

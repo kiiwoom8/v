@@ -502,8 +502,11 @@ may ask to save it, which holds the shutdown up until someone answers. Set
 
 `vim.exe` includes Tailmon's eight pose sheets, prepared in-between frames,
 and 24 extra idle animations. Open an [animation PNG](assets/tailmon/animations)
-in a browser to preview it. Its four GPT Image key drawings are in the
-[key-frame sheets](assets/tailmon/keyframes). A fresh settings file enables
+in a browser to preview it. Each clip has 33 frames, with new GPT Image
+drawings for the entry, the middle of the action, and the recovery. The
+[key-frame sheets](assets/tailmon/keyframes) and [bridge sheets](assets/tailmon/bridges)
+hold the source artwork. Tailmon sometimes follows one action with another
+through a brief seated pose. A fresh settings file enables
 Tailmon and its animation and assigns Claude to slot 1. For an existing settings file,
 set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and
 any extra sheet paths blank to use all the bundled poses. Add personal links

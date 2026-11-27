@@ -25,7 +25,6 @@
 #define MAX_ATLAS_SIZE 512
 #define PIXEL_UNIT 256
 #define BUBBLE_MS 165
-#define ROUTINE_FRAME_MS 50
 #define POSES_PER_ROW 4
 #define POSES_PER_SHEET (POSES_PER_ROW * POSES_PER_ROW)
 #define POSE_COUNT ((1 + SECRETARY_EXTRA_SHEETS) * POSES_PER_SHEET)
@@ -1796,6 +1795,7 @@ static struct {
     DWORD started, seen;
     unsigned clip, tempo, breaths, last_accent;
     unsigned routine, last_routine;
+    BOOL joined;
 } idle_motion;
 
 static PoseCue motion_between(int from, int to, DWORD phase, int duration)
@@ -1837,19 +1837,25 @@ static PoseCue natural_idle(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
     SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
-    DWORD duration = routine.count ? (routine.count + 2) * ROUTINE_FRAME_MS : clip_length(clip.steps, clip.count);
+    unsigned frame_ms = secretary_motion_routine_frame_ms();
+    DWORD duration = routine.count ? (routine.count + 2) * frame_ms : clip_length(clip.steps, clip.count);
     DWORD elapsed = (now - idle_motion.started) * idle_motion.tempo / 100;
     BOOL resumed = !idle_motion.tempo || now - idle_motion.seen > 100;
     idle_motion.seen = now;
     if (resumed || elapsed >= duration) {
         unsigned routines = secretary_motion_routine_count();
+        // A recovery and the next entry share their seated drawing. Let an
+        // occasional second action follow through that pose before breathing.
+        BOOL join_next = !resumed && frame_ms == 33 && routines > 1 && routine.count &&
+                         !idle_motion.joined && random_below(3) == 0;
+        idle_motion.joined = join_next;
         idle_motion.routine = 0;
         routine = (SecretaryMotion){0};
         if (resumed) idle_motion.breaths = 1 + random_below(2);
-        if (idle_motion.breaths) {
+        if (idle_motion.breaths && !join_next) {
             --idle_motion.breaths;
             idle_motion.clip = 0;
-        } else if (routines && random_below(4) != 0) {
+        } else if (routines && (join_next || random_below(4) != 0)) {
             BOOL omit_last = routines > 1 && idle_motion.last_routine && idle_motion.last_routine <= routines;
             unsigned pick = 1 + random_below(routines - omit_last);
             if (omit_last && pick >= idle_motion.last_routine) ++pick;
@@ -1874,10 +1880,10 @@ static PoseCue natural_idle(DWORD now)
         elapsed = 0;
     }
     if (routine.count) {
-        DWORD frame = elapsed / ROUTINE_FRAME_MS;
+        DWORD frame = elapsed / frame_ms;
         if (frame && frame <= routine.count)
-            return (PoseCue){IDLE_DETAIL_FIRST, ROUTINE_FRAME_MS, -1, frame - 1, idle_motion.routine};
-        return HOLD(IDLE_DETAIL_FIRST, ROUTINE_FRAME_MS);
+            return (PoseCue){IDLE_DETAIL_FIRST, (int)frame_ms, -1, frame - 1, idle_motion.routine};
+        return HOLD(IDLE_DETAIL_FIRST, (int)frame_ms);
     }
     return motion_at(clip.steps, clip.count, elapsed, FALSE);
 }
@@ -1886,7 +1892,8 @@ static BOOL finishing_idle_gesture(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
     SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
-    DWORD duration = routine.count ? (routine.count + 2) * ROUTINE_FRAME_MS : clip_length(clip.steps, clip.count);
+    DWORD duration = routine.count ? (routine.count + 2) * secretary_motion_routine_frame_ms()
+                                   : clip_length(clip.steps, clip.count);
     return (idle_motion.clip || routine.count) && now - idle_motion.seen <= 100 &&
            (now - idle_motion.started) * idle_motion.tempo / 100 < duration;
 }
@@ -3171,7 +3178,7 @@ static BOOL same_tailmon_pixels(GpImage *custom, const WCHAR *name)
 }
 
 // Keep the same anchors for installations that still point to the original
-// external Tailmon sheets. The resource for the base sheet is recompressed.
+// external Tailmon sheets. Embedded sheets can have different PNG encoding.
 static BOOL is_tailmon_sheet(const WCHAR *path, const WCHAR *name, GpImage *sheet)
 {
     HRSRC resource = name ? FindResourceW(g_hinst, name, RT_RCDATA) : NULL;
@@ -3194,7 +3201,7 @@ static BOOL is_tailmon_sheet(const WCHAR *path, const WCHAR *name, GpImage *shee
         offset += wanted;
     }
     CloseHandle(file);
-    return match || (wcscmp(name, L"TAILMON_POSES") == 0 && same_tailmon_pixels(sheet, name));
+    return match || same_tailmon_pixels(sheet, name);
 }
 
 void secretary_config_changed(void)

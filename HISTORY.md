@@ -1944,6 +1944,20 @@ Invariants stated in `common.h` and enforced by history:
   source PNG keeps its original bytes. Existing external copies are recognized
   by comparing decoded premultiplied pixels if the file bytes differ.
 
+### Tailmon: drawn bridges and connected actions (2026-11-28)
+
+- Kim asked for bridge animations with more frames and more natural motion.
+  GPT Image drew 72 new entry, mid-action, and recovery poses against the
+  original endpoint drawings. Each of the 24 clips now has 33 timed frames
+  at 33 ms per frame, up from 21 at 50 ms. The new drawings trace the same
+  floor and motion path as their neighboring cels.
+- An idle routine can lead into one other routine through the shared seated
+  pose. After a pair, Tailmon returns to breathing. The VTM3 directory records
+  the new cadence and the player also accepts the earlier 50 ms routines.
+- The eight embedded PNG sheets use lossless recompression of visible
+  pixels to keep the release within the installed updater's size limit.
+  External copies of the original sheets still use the bundled motions.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2132,6 +2146,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 148 | This commit | 11-28 | Tailmon | Sample the prepared walk by distance and the rest sequences by elapsed time, rebake denser core motions, and vary idle accents and gesture lengths | Kim requested smoother walking and sleep entry plus much more varied idle |
 | 149 | This commit | 11-28 | Tailmon | Restore the source stride spacing, animate the loaf and stretch recovery, and triple the packaged frames with shared-palette block compression | Kim reported a limp, a static pre-nap pose and a stray cel after stretching |
 | 150 | This commit | 11-28 | Tailmon | Add 24 newly drawn animation PNGs, source sheets, and playback between idle breaths | Kim specified new standalone animations drawn with GPT Image |
+| 151 | This commit | 11-28 | Tailmon | Add drawn entry, middle, and recovery poses and connect some adjacent idle routines | Kim requested more frames and smoother bridges between actions |
 
 ## 5. Lessons learned: rules not to break
 
@@ -3533,11 +3548,12 @@ when the manifest changes.
   with Pillow, NumPy, and RIFE NCNN Vulkan 20221029. Compare the endpoints,
   in-betweens and loop seams, then check the shipped executable size. To
   assemble the standalone routines from their GPT Image sheets, run
-  `python tools/assemble_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/keyframes <rife-exe> <rife-v4.6-directory> <fresh-scratch> assets/tailmon/animations`.
+  `python tools/assemble_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/keyframes <rife-exe> <rife-v4.6-directory> <fresh-scratch> assets/tailmon/animations --bridges assets/tailmon/bridges`.
   Then run `python tools/pack_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/animations assets/tailmon/motion.bin`.
-  Repeat the pack step after rebaking the base transitions. The copy of
-  `poses.png` in `assets/tailmon/runtime` is encoded with Pillow PNG
-  optimization after setting RGB to zero at fully transparent pixels.
+  Repeat the pack step after rebaking the base transitions. The packer reads
+  the 33 ms or 50 ms cadence from the clips. Use `--frame-ms` to set it explicitly.
+  Recreate the runtime copies of the original pose sheets with
+  `python tools/compact_tailmon_sheets.py assets/tailmon assets/tailmon/runtime`.
 
 - Local (Windows): `mingw32-make`, or double-click `build.bat` (finds MinGW in
   `C:\MinGW` or `C:\msys64\mingw32`). Tools: `mingw32-make probe check icon

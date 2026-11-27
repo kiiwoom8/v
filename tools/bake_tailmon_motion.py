@@ -206,7 +206,7 @@ def accent_poses(poses):
                               + (cel[bottom, left] * (1 - fx) + cel[bottom, right] * fx) * fy)
 
 
-def infer(exe, model, work, poses, keys, count, background):
+def infer(exe, model, work, poses, keys, count, background, pose_count=POSES):
     source = work / f"source-{count}-{background}"
     output = work / f"frames-{count}-{background}"
     source.mkdir(exist_ok=True)
@@ -218,8 +218,8 @@ def infer(exe, model, work, poses, keys, count, background):
     if len(list(source.glob("*.png"))) > len(keys) or len(list(output.glob("*.png"))) > len(keys) * scale:
         raise ValueError(f"stale frames in {work}, supply a fresh work directory")
     for i, key in enumerate(keys):
-        image = poses[key % POSES]
-        if key >= POSES:
+        image = poses[key % pose_count]
+        if key >= pose_count:
             image = image[:, ::-1]
         rgb = image[..., 2::-1].astype(np.uint16) + (255 - image[..., 3:4]).astype(np.uint16) * background // 255
         Image.fromarray(rgb.astype(np.uint8)).save(source / f"{i:06d}.png", compress_level=1)

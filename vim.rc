@@ -5,13 +5,13 @@
 1 ICON "vim.ico"
 
 TAILMON_POSES RCDATA "assets/tailmon/runtime/poses.png"
-TAILMON_MOVEMENT RCDATA "assets/tailmon/movement.png"
-TAILMON_REST RCDATA "assets/tailmon/rest.png"
-TAILMON_REACTIONS RCDATA "assets/tailmon/reactions.png"
-TAILMON_WALK RCDATA "assets/tailmon/walk.png"
-TAILMON_ATTENTION RCDATA "assets/tailmon/attention.png"
-TAILMON_IDLE RCDATA "assets/tailmon/idle.png"
-TAILMON_INTERACTION RCDATA "assets/tailmon/interaction.png"
+TAILMON_MOVEMENT RCDATA "assets/tailmon/runtime/movement.png"
+TAILMON_REST RCDATA "assets/tailmon/runtime/rest.png"
+TAILMON_REACTIONS RCDATA "assets/tailmon/runtime/reactions.png"
+TAILMON_WALK RCDATA "assets/tailmon/runtime/walk.png"
+TAILMON_ATTENTION RCDATA "assets/tailmon/runtime/attention.png"
+TAILMON_IDLE RCDATA "assets/tailmon/runtime/idle.png"
+TAILMON_INTERACTION RCDATA "assets/tailmon/runtime/interaction.png"
 TAILMON_MOTION RCDATA "assets/tailmon/motion.bin"
 
 // Embedded process manifest. 24 is RT_MANIFEST. The UIAccess build

@@ -5,8 +5,8 @@ LDFLAGS = -mwindows -lgdi32 -luser32 -lshell32 -ladvapi32 -lwtsapi32 -lwinmm -lo
 SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c touchpad.c zoom.c secretary.c secretary_motion.c secretary_editor.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
-TAILMON_ASSETS = $(addprefix assets/tailmon/,poses.png movement.png rest.png reactions.png \
-	walk.png attention.png idle.png interaction.png motion.bin runtime/poses.png)
+TAILMON_ASSETS = assets/tailmon/motion.bin $(addprefix assets/tailmon/runtime/,poses.png \
+	movement.png rest.png reactions.png walk.png attention.png idle.png interaction.png)
 TARGET = vim.exe
 
 all: $(TARGET)

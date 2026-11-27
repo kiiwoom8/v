@@ -1,6 +1,7 @@
-"""Assemble GPT Image's 2 x 2 Tailmon key drawings into transparent APNG clips."""
+"""Assemble Tailmon key drawings and GPT Image bridges into transparent APNG clips."""
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -33,28 +34,36 @@ def contact_x(image):
     return float(np.median(x))
 
 
-def gutter(profile):
-    middle = len(profile) // 2
-    margin = len(profile) // 8
-    return min(range(middle - margin, middle + margin + 1),
-               key=lambda at: (profile[at - 1] + profile[at], abs(at - middle)))
+def gutters(profile, divisions):
+    margin = len(profile) // (4 * divisions)
+    bounds = [0]
+    for i in range(1, divisions):
+        center = len(profile) * i // divisions
+        bound = min(range(center - margin, center + margin + 1),
+                    key=lambda at: (profile[at - 1] + profile[at], abs(at - center)))
+        bounds.append(bound)
+    return [*bounds, len(profile)]
 
 
-def key_cels(path, neutral):
+def split_sheet(path, divisions):
     with Image.open(path) as source:
         sheet = source.convert("RGBA")
     cells = []
     opaque = np.asarray(sheet.getchannel("A")) >= 100
-    middle_y = gutter(opaque.sum(axis=1))
-    for top, bottom in ((0, middle_y), (middle_y, sheet.height)):
-        middle_x = gutter(opaque[top:bottom].sum(axis=0))
-        for left, right in ((0, middle_x), (middle_x, sheet.width)):
+    rows = gutters(opaque.sum(axis=1), divisions)
+    for top, bottom in zip(rows, rows[1:]):
+        columns = gutters(opaque[top:bottom].sum(axis=0), divisions)
+        for left, right in zip(columns, columns[1:]):
             cell = sheet.crop((left, top, right, bottom))
             box = alpha_box(cell)
             if box is None or box[0] == 0 or box[1] == 0 or box[2] == cell.width or box[3] == cell.height:
                 raise ValueError(f"{path.name}: cell {len(cells) + 1} is empty, opaque, or touches the grid boundary")
             cells.append(cell.crop(box))
+    return cells
 
+
+def key_cels(path, neutral):
+    cells = split_sheet(path, 2)
     left, top, right, floor = alpha_box(neutral)
     anchor = left + contact_x(neutral.crop((left, top, right, floor)))
     scale = min((floor - top) / max(cell.height for cell in cells),
@@ -69,6 +78,33 @@ def key_cels(path, neutral):
         canvas = Image.new("RGBA", neutral.size)
         canvas.alpha_composite(resized, (x, y))
         yield canvas
+
+
+def bridge_rows(folder):
+    groups = json.loads((folder / "groups.json").read_text(encoding="utf-8"))
+    rows = {}
+    for group, actions in groups.items():
+        if len(actions) != 3 or len(set(actions)) != 3 or set(actions) & rows.keys():
+            raise ValueError(f"{group}: expected three distinct action names")
+        cells = split_sheet(folder / f"{group}.png", 3)
+        for i, action in enumerate(actions):
+            rows[action] = cells[3 * i:3 * i + 3]
+    return rows
+
+
+def place_bridge(cel, before, after):
+    endpoints = [alpha_box(image) for image in (before, after)]
+    anchors = [box[0] + contact_x(image.crop(box)) for image, box in zip((before, after), endpoints)]
+    width = before.width
+    floor = round(sum(box[3] for box in endpoints) / 2)
+    height = sum(box[3] - box[1] for box in endpoints) / 2
+    scale = min(height / cel.height, (width - 6) / cel.width, (floor - 3) / cel.height)
+    cel = cel.resize((round(cel.width * scale), round(cel.height * scale)), Image.Resampling.LANCZOS)
+    x = round(sum(anchors) / 2 - contact_x(cel))
+    x = max(3, min(x, width - cel.width - 3))
+    image = Image.new("RGBA", before.size)
+    image.alpha_composite(cel, (x, floor - cel.height))
+    return image
 
 
 def to_bgra(image):
@@ -103,28 +139,40 @@ def clean_inbetween(candidate, before, after, phase):
     return clean
 
 
-def assemble(base, sources, rife, model, work, output):
+def assemble(base, sources, rife, model, work, output, bridges=None):
     pack = MotionPack(base)
     with CabinetCodec(5, decode=True) as decoder:
         rgba = pack.frame(decoder, 112)
     neutral = to_rgba(rgba[..., [2, 1, 0, 3]])
     frames = [neutral]
     keys, clips = [0], []
-    for path in sorted(sources.glob("*.png")):
-        positions = list(range(len(frames), len(frames) + 4))
-        frames.extend(key_cels(path, neutral))
-        clips.append((path.stem, len(keys) - 1))
-        keys.extend([*positions, 0])
-    if len(frames) > 144 or not clips:
-        raise ValueError("assemble between one and 35 sheets at a time")
+    paths = sorted(sources.glob("*.png"))
+    if not paths:
+        raise ValueError("no action sheets to assemble")
+    bridge_art = bridge_rows(bridges) if bridges else {}
+    if bridges and bridge_art.keys() != {path.stem for path in paths}:
+        raise ValueError("bridge manifest and action sheets must name the same actions")
+    for path in paths:
+        first, second, third, fourth = key_cels(path, neutral)
+        drawings = [first, second, third, fourth]
+        if bridges:
+            enter, middle, recover = bridge_art[path.stem]
+            drawings = [place_bridge(enter, neutral, first), first, second,
+                        place_bridge(middle, second, third), third, fourth,
+                        place_bridge(recover, fourth, neutral)]
+        start = len(keys) - 1
+        keys.extend(range(len(frames), len(frames) + len(drawings)))
+        keys.append(0)
+        frames.extend(drawings)
+        clips.append((path.stem, start, len(keys) - 1))
     pixels = np.stack([to_bgra(frame) for frame in frames])
     work.mkdir(parents=True, exist_ok=True)
-    dark = infer(rife, model, work, pixels, keys, INBETWEENS, 0)
-    light = infer(rife, model, work, pixels, keys, INBETWEENS, 255)
+    dark = infer(rife, model, work, pixels, keys, INBETWEENS, 0, pose_count=len(frames))
+    light = infer(rife, model, work, pixels, keys, INBETWEENS, 255, pose_count=len(frames))
     output.mkdir(parents=True, exist_ok=True)
-    for name, first in clips:
+    for name, first, last in clips:
         sequence = [neutral]
-        for position in range(first, first + 5):
+        for position in range(first, last):
             before, after = frames[keys[position]], frames[keys[position + 1]]
             for j in range(1, INBETWEENS + 1):
                 at = position * (INBETWEENS + 1) + j + 1
@@ -133,7 +181,7 @@ def assemble(base, sources, rife, model, work, output):
                 sequence.append(clean_inbetween(candidate, before, after, j / (INBETWEENS + 1)))
             sequence.append(after)
         path = output / f"{name}.png"
-        sequence[0].save(path, save_all=True, append_images=sequence[1:], duration=FRAME_MS, loop=0)
+        sequence[0].save(path, save_all=True, append_images=sequence[1:], duration=FRAME_MS if bridges else 50, loop=0)
     print(f"Assembled {len(clips)} APNG animations from {len(frames) - 1} GPT Image drawings")
 
 
@@ -141,4 +189,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("base", "sources", "rife", "model", "work", "output"):
         parser.add_argument(name, type=Path)
+    parser.add_argument("--bridges", type=Path)
     assemble(**vars(parser.parse_args()))

@@ -12,8 +12,10 @@ from bake_tailmon_motion import CabinetCodec, FRAMES_PER_BLOCK, indexed_frames
 
 
 ROUTINE_MARKER = 0xFFFF
-FRAME_MS = 50
-PACK_LIMIT = 18_200_000
+BRIDGE_ROUTINE_MARKER = 0xFFFE
+FRAME_MS = 33
+ROUTINE_MARKERS = {33: BRIDGE_ROUTINE_MARKER, 50: ROUTINE_MARKER}
+PACK_LIMIT = 20_100_000
 
 
 class MotionPack:
@@ -44,23 +46,37 @@ class MotionPack:
         return colors[planes][..., [2, 1, 0, 3]]
 
 
-def clip_frames(path, size):
+def clip_frames(path, size, frame_ms=FRAME_MS):
     with Image.open(path) as image:
         if not image.is_animated or image.size != size:
             raise ValueError(f"{path} must be an animated PNG sized {size}")
         for frame in ImageSequence.Iterator(image):
             duration = frame.info.get("duration", 0)
-            if not duration or duration % FRAME_MS:
-                raise ValueError(f"{path} frame durations must be multiples of {FRAME_MS} ms")
+            if not duration or duration % frame_ms:
+                raise ValueError(f"{path} frame durations must be multiples of {frame_ms} ms")
             # VTM3 stores premultiplied pixels and PNG stores straight alpha.
             pixels = np.asarray(frame.convert("RGBa"))
-            for _ in range(int(duration) // FRAME_MS):
+            for _ in range(int(duration) // frame_ms):
                 yield pixels
 
 
-def pack_routines(base, assets, output):
+def pack_routines(base, assets, output, frame_ms=None):
+    paths = sorted(assets.glob("*.png"))
+    if not paths:
+        raise ValueError("no animation PNGs to pack")
+    if frame_ms is None:
+        with Image.open(paths[0]) as image:
+            for frame in ImageSequence.Iterator(image):
+                duration = frame.info.get("duration", 0)
+                rates = [rate for rate in ROUTINE_MARKERS if duration and duration % rate == 0]
+                if len(rates) == 1:
+                    frame_ms = rates[0]
+                    break
+        if frame_ms is None:
+            raise ValueError("could not infer the frame time; use --frame-ms")
     pack = MotionPack(base)
-    entries = [entry for entry in pack.entries if entry[0] != ROUTINE_MARKER]
+    marker = ROUTINE_MARKERS[frame_ms]
+    entries = [entry for entry in pack.entries if entry[0] not in ROUTINE_MARKERS.values()]
     frames = entries[-1][2] + entries[-1][3]
     full_blocks, remainder = divmod(frames, FRAMES_PER_BLOCK)
     packets = pack.packets[:full_blocks]
@@ -81,12 +97,12 @@ def pack_routines(base, assets, output):
             frames += FRAMES_PER_BLOCK - remainder
 
         block = []
-        for number, path in enumerate(sorted(assets.glob("*.png")), 1):
-            clip = list(clip_frames(path, (pack.width, pack.height)))
+        for number, path in enumerate(paths, 1):
+            clip = list(clip_frames(path, (pack.width, pack.height), frame_ms))
             if len(clip) < 3 or not np.array_equal(clip[0], clip[-1]):
                 raise ValueError(f"{path} must begin and end on the same neutral drawing")
             # The executable already has the neutral endpoint of each routine.
-            entries.append((ROUTINE_MARKER, number, frames, len(clip) - 2))
+            entries.append((marker, number, frames, len(clip) - 2))
             for frame in clip[1:-1]:
                 block.append(frame)
                 frames += 1
@@ -108,7 +124,7 @@ def pack_routines(base, assets, output):
     candidate = output.with_suffix(output.suffix + ".tmp")
     candidate.write_bytes(b"".join([header, directory, index, *packets]))
     candidate.replace(output)
-    print(f"{sum(entry[0] == ROUTINE_MARKER for entry in entries)} PNG animations, {size:,} bytes")
+    print(f"{sum(entry[0] == marker for entry in entries)} PNG animations, {size:,} bytes")
 
 
 if __name__ == "__main__":
@@ -116,5 +132,6 @@ if __name__ == "__main__":
     parser.add_argument("base", type=Path)
     parser.add_argument("assets", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--frame-ms", type=int, choices=ROUTINE_MARKERS)
     args = parser.parse_args()
-    pack_routines(args.base, args.assets, args.output)
+    pack_routines(args.base, args.assets, args.output, args.frame_ms)
