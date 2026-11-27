@@ -21,6 +21,7 @@ TIMELINE = Path(__file__).resolve().parents[1] / "secretary.c"
 
 def transition_edges():
     edges = {}
+    clips = {}
 
     def edge(a, b, count=3, opposite=False):
         a, b = sorted((a, b))
@@ -35,70 +36,72 @@ def transition_edges():
         if loop:
             edge(poses[-1], poses[0], count)
 
-    for name, clip in re.findall(r"static const PoseStep (\w+)\[\] = \{(.*?)\};", TIMELINE.read_text(), re.S):
+    source = TIMELINE.read_text(encoding="utf-8")
+    for name, clip in re.findall(r"static const PoseStep (\w+)\[\] = \{(.*?)\};", source, re.S):
         poses = []
         for expression in re.findall(r"\{([^,]+),", clip):
             base, _, offset = expression.partition("+")
             base = base.strip()
             poses.append((int(base) if base.isdecimal() else SHEETS[base]) + int(offset or 0))
-        run(poses, name in {"idle", "grabbed", "breathing_detail", "grab_detail", "sleeping", "sleep_breath"},
-            7 if name in {"breathing_detail", "falling_asleep", "grab_detail", "grooming", "settling",
-                          "sleeping", "sleep_breath", "sleep_shift", "stretching", "turning"} else 3)
+        clips[name] = poses
+    # The player traverses these routes continuously over their authored time.
+    # Pay for dense motion there and use shorter transitions for reactions,
+    # which last only a handful of display refreshes.
+    density = dict(falling_asleep=23, curling_up=23, lying_down=23, getting_up=23,
+                   sleep_breath=47, sleep_shift=23, waking=23, idle_breath=23,
+                   idle_blink=11, idle_slow_blink=11, idle_glance=15, idle_listen=11,
+                   turning_detail=23, turning_run=15, turning_walk=11, settling=23,
+                   grooming=23, grooming_long=23, stretching=23, looking=11, looking_quick=11,
+                   yawn_detail=11, grab_detail=7)
+    for name, poses in clips.items():
+        if name == "idle_custom":
+            continue
+        run(poses, name in {"idle", "grabbed", "grab_detail", "sleep_breath"}, density.get(name, 3))
 
-    for first, length in ((16, 8), (24, 4), (64, 16), (80, 16)):
-        run(list(range(first, first + length)), True, 7 if first in (64, 80) else 3)
-    # walk_detail_cycle (secretary.c) skips cels 7, 8 and 11, 12: bake its two seams.
-    edge(64 + 6, 64 + 9, 7)
-    edge(64 + 10, 64 + 13, 7)
+    walk = re.search(r"walk_detail_cycle\[\] = \{([^}]+)\}", source)[1]
+    walk_poses = [SHEETS["WALK_DETAIL_FIRST"] + int(cel) for cel in re.findall(r"\d+", walk)]
+    run(walk_poses, True, 23)
+    for first, length, count in ((16, 8, 7), (24, 4, 11), (80, 16, 7)):
+        run(list(range(first, first + length)), True, count)
     for first in (48, 52, 56, 60):
         run(list(range(first, first + 4)))
     run([52, 53, 54, 53, 55])
     run([80, 81, 82, 83, 84, 85, 87, 90, 93, 95])
 
-    for idle in range(112, 120):
-        for entry in (12, 32, 44, 52, 56, 60, 80, 120, 128, 136):
-            edge(idle, entry, 7 if entry == 128 else 3)
+    for entry in (12, 32, 44, 52, 56, 60, 80, 120, 128, 136):
+        edge(112, entry, 7 if entry == 128 else 3)
+    edge(113, 32)
+    for idle in (112, 113, 118):
         edge(idle, 31, 7, True)
         edge(idle, 31, 7)
     for exit_pose in (0, 4, 12, 15, 43, 47, 51, 55, 59, 63, 95, 127, 143):
         edge(exit_pose, 112, 7 if exit_pose in (43, 47, 143) else 3)
     edge(31, 112, 7, True)
-    for phase in range(64, 80):
+    for phase in walk_poses:
         edge(phase, 28, 7)
         edge(phase, 80, 3, True)
         edge(phase, 128, 3, True)
-    for phase in (16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27):
+    for phase in (24, 25, 26, 27):
         edge(phase, 28, 3)
     for phase in (16, 24, 64):
         edge(phase, 28, 7)
-    # A rare sleep_shift starts from either breathing drawing (secretary.c).
-    edge(36, 38, 7)
-    edge(37, 38, 7)
-    edge(35, 36, 7)
-    for phase in range(32, 36):
-        edge(phase, 128, 2)
-    for phase in range(36, 40):
-        edge(phase, 40, 7)
-        edge(phase, 128, 7)
-    for a, b in ((29, 30), (30, 31), (38, 40), (40, 41), (40, 43)):
-        edge(a, b, 15)
+    edge(32, 40, 11)
+    edge(32, 44, 7)
+    edge(31, 80, 7, True)
     edge(53, 55, 7)
     for phase in range(128, 136):
         edge(phase, 142, 15 if phase in (128, 131, 132, 135) else 7)
         edge(phase, 136, 3)
-    for first, last in ((28, 31), (40, 47), (80, 95), (120, 127), (136, 143)):
+    for first, last in ((28, 31), (40, 47), (120, 127), (136, 143)):
         for phase in range(first, last + 1):
             edge(phase, 128, 3, first == 28)
+    for phase in (80, 85, 90, 95):
+        edge(phase, 128)
     for phase in (28, 29, 30, 31):
         edge(phase, 80, 3, True)
         edge(phase, 112, 2, True)
     for phase in range(80, 96):
         edge(phase, 112)
-    for phase in (*range(40, 47), *range(120, 127)):
-        edge(phase, 80, 2)
-    for last in (15, 43, 47, 51, 55, 59, 63, 95, 127, 143):
-        for entry in (12, 52, 56, 60, 80, 136):
-            edge(last, entry)
     return edges
 
 

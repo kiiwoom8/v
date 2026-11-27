@@ -1889,6 +1889,28 @@ Invariants stated in `common.h` and enforced by history:
   `j` or an Alt key in Notepad or VS Code still types / acts as before.
 - Kim's `vim.ini` sets no `esc_unfocus`, so the new default applies.
 
+### Tailmon: continuous walks, settling into sleep, and varied idle (2026-11-28)
+
+- Kim reported that the walk, sleep entry, and idle still looked unnatural and
+  requested triple the frame density and more randomized idle. The old player
+  treated the arriving cel as a reaction target: it limited its blend time,
+  held the pose for the rest of its beat, and guessed gait timing from speed
+  even while the cat was accelerating. Timed clips now sample a path from
+  its source cel across the full authored interval. Walks sample the forward
+  gait by distance traveled and cap vertical drift. Scampers use the running
+  cels.
+- The nap can enter through a full lower-head, loaf, and curl sequence or
+  resume from a resting loaf. Slow breathing, a rare shift, and waking share
+  the same curled drawing at the seam. Breath tempo and the interval between
+  idle accents vary. Blinks, slow blinks, glances and listening take turns
+  between breaths. Looking and grooming also have short and long versions.
+- The motion bake derives the detailed walk edges from the actual playback
+  order. Walk and sleep-entry transitions use 23 prepared in-betweens each
+  (previously seven on the main route), and the sleep breath uses 47.
+  Retiring unused handoffs keeps the executable within the updater's 32 MiB
+  limit. The key drawings and their normalized coordinates are shared with
+  the previous build.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2074,6 +2096,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 145 | `39b0850` | 11-20 | 31 | `input.c` `touch_message` (from `mouse_proc`): a real touch that begins within `touch_top` (new setting, default 80) pixels of its monitor's top has its mouse messages blocked (a release only where its press was; a lost lift ends after `TOUCH_GAP_MS`); `touch_edge_back` puts the pointer back at `s_rest_pt`, at once and after `TOUCH_RECHECK_MS`; `touch_edge_tap`, `TOUCH_EDGE_PX`, `TOUCH_LIFT_PX` gone; ini template, help row, README | "while i'm closing the lid, i accidentally touch the upper screen which triggers the mouse point to the position. block this behavior" |
 | 146 | `be1f0be` | 11-20 | 31 | `input.c`: the power window registers the touchscreen as raw input (`register_raw_touch`, 0x0D/0x04, `RIDEV_INPUTSINK`); `raw_input_check` hands HID reports to `touch_raw_note` (`TOUCH_TIMER` 15 ms until `TOUCH_QUIET_MS` 300 quiet); `touch_raw_check` puts the pointer back at `s_rest_pt` when a touch's first move lands at the top, else takes the touch's end as the new rest | "same though. i think it's related to chrome bar" |
 | 147 | `58d0fc9` | 11-20 | 32 | `input.c` `focus_key_passed(vk, mods)`: a key passed with Ctrl / Alt / Win or a typing key while the answer is not `FOCUS_TEXT` calls `uia_focus_changed(FOCUS_TYPED_DELAY_MS)` (400); also from mouse mode's modifier pass-through | "from zendesk, searching macro get inputs (shortcut ctrl+shift+m). sometimes, if i focus that and type fast, hjkl works without alt which is not intended" |
+| 148 | This commit | 11-28 | Tailmon | Sample the prepared walk by distance and the rest sequences by elapsed time, rebake denser core motions, and vary idle accents and gesture lengths | Kim requested smoother walking and sleep entry plus much more varied idle |
 
 ## 5. Lessons learned: rules not to break
 
@@ -2821,6 +2844,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   The 13..5 walk fixed the hind legs but dropped the near front paw's swing,
   so the front paws swapped at the seam. Render the loop from motion.bin,
   with its prepared frames, before shipping a re-ordered cycle.
+
+- **Use the same progress for travel and its gait.** Advancing the position by
+  distance and replaying each stride transition on an independent timer makes
+  the paws lag or jump as speed changes. Keep the written timing of slow
+  actions in the sampled path so a curl or a breath uses the whole beat.
 
 - **Every window Vim itself opens must stay reachable without the real
   mouse.** Click hints never scan our own process, so a new Vim window with

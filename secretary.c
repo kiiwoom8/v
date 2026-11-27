@@ -53,10 +53,12 @@ typedef struct {
 } PoseStep;
 
 typedef struct {
-    int pose, duration;
+    int pose, duration, next;
+    DWORD phase;
 } PoseCue;
 
-static const PoseCue no_cue = {-1, 0};
+#define HOLD(pose, ms) ((PoseCue){(pose), (ms), -1, 0})
+static const PoseCue no_cue = {-1, 0, -1, 0};
 
 enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
 enum { PET_WAIT, PET_TURN, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH, PET_YAWN,
@@ -81,12 +83,25 @@ static const PoseStep grabbed[] = {
 static const PoseStep clicked[] = {
     {12, 90}, {13, 170}, {14, 240}, {15, 230}
 };
-static const PoseStep breathing_detail[] = {
-    {IDLE_DETAIL_FIRST, 570}, {IDLE_DETAIL_FIRST + 1, 420},
-    {IDLE_DETAIL_FIRST + 2, 390}, {IDLE_DETAIL_FIRST + 3, 85},
-    {IDLE_DETAIL_FIRST + 4, 90}, {IDLE_DETAIL_FIRST + 5, 70},
-    {IDLE_DETAIL_FIRST + 6, 210}, {IDLE_DETAIL_FIRST + 7, 490},
-    {IDLE_DETAIL_FIRST + 6, 375}, {IDLE_DETAIL_FIRST + 1, 410}
+static const PoseStep idle_custom[] = {
+    {IDLE_DETAIL_FIRST, 570}, {IDLE_DETAIL_FIRST + 1, 420}, {IDLE_DETAIL_FIRST + 2, 390}, {IDLE_DETAIL_FIRST + 3, 85}, {IDLE_DETAIL_FIRST + 4, 90},
+    {IDLE_DETAIL_FIRST + 5, 70}, {IDLE_DETAIL_FIRST + 6, 210}, {IDLE_DETAIL_FIRST + 7, 490}, {IDLE_DETAIL_FIRST + 6, 375}, {IDLE_DETAIL_FIRST + 1, 410}
+};
+static const PoseStep idle_breath[] = {
+    {IDLE_DETAIL_FIRST, 940}, {IDLE_DETAIL_FIRST + 1, 1340}, {IDLE_DETAIL_FIRST, 360}
+};
+static const PoseStep idle_blink[] = {
+    {IDLE_DETAIL_FIRST, 110}, {IDLE_DETAIL_FIRST + 2, 80}, {IDLE_DETAIL_FIRST + 3, 80}, {IDLE_DETAIL_FIRST + 4, 65}, {IDLE_DETAIL_FIRST + 5, 75}, {IDLE_DETAIL_FIRST + 6, 200}, {IDLE_DETAIL_FIRST, 120}
+};
+static const PoseStep idle_slow_blink[] = {
+    {IDLE_DETAIL_FIRST, 240}, {IDLE_DETAIL_FIRST + 2, 220}, {IDLE_DETAIL_FIRST + 3, 260}, {IDLE_DETAIL_FIRST + 4, 170}, {IDLE_DETAIL_FIRST + 3, 130}, {IDLE_DETAIL_FIRST + 2, 300}, {IDLE_DETAIL_FIRST, 160}
+};
+static const PoseStep idle_glance[] = {
+    {IDLE_DETAIL_FIRST, 340}, {IDLE_DETAIL_FIRST + 6, 210}, {IDLE_DETAIL_FIRST + 7, 460}, {IDLE_DETAIL_FIRST + 7, 390}, {IDLE_DETAIL_FIRST + 6, 330}, {IDLE_DETAIL_FIRST, 150}
+};
+static const PoseStep idle_listen[] = {
+    {IDLE_DETAIL_FIRST, 200}, {ATTENTION_FIRST, 190}, {ATTENTION_FIRST + 1, 210}, {ATTENTION_FIRST + 2, 260}, {ATTENTION_FIRST + 3, 420},
+    {ATTENTION_FIRST + 3, 290}, {ATTENTION_FIRST + 2, 170}, {ATTENTION_FIRST + 1, 200}, {ATTENTION_FIRST, 300}, {IDLE_DETAIL_FIRST, 150}
 };
 static const PoseStep yawn_detail[] = {
     {IDLE_DETAIL_FIRST + 8, 300}, {IDLE_DETAIL_FIRST + 9, 210},
@@ -111,13 +126,8 @@ static const PoseStep landing_detail[] = {
 };
 static const PoseStep menu_reaction[] = {{12, 440}, {15, 210}};
 static const PoseStep landed[] = {{15, 175}, {0, 170}};
-static const PoseStep turning[] = {
-    {WALK_FIRST + 15, 100}, {WALK_FIRST + 14, 105},
-    {WALK_FIRST + 13, 95}, {WALK_FIRST + 12, 90}
-};
 static const PoseStep settling[] = {
-    {WALK_FIRST + 12, 95}, {WALK_FIRST + 13, 175},
-    {WALK_FIRST + 14, 145}, {WALK_FIRST + 15, 130}
+    {WALK_FIRST + 12, 170}, {WALK_FIRST + 12, 155}, {WALK_FIRST + 13, 175}, {WALK_FIRST + 14, 165}, {WALK_FIRST + 15, 130}
 };
 // Order the detailed walk so both front paws step and the hind legs stay
 // stable. walk.png's 16 cels are one stride: the far front paw swings forward
@@ -126,39 +136,59 @@ static const PoseStep settling[] = {
 // so skip those, but keep 6, 9 and 10: without them (the earlier 13..5 loop)
 // the near paw never swings and the two front paws swap places in one jump at
 // the 5 -> 13 seam. Always FORWARD in the sheet's order; reversing gait cels
-// makes the legs walk backwards. The two seams, 6 -> 9 and 10 -> 13, have
-// their own RIFE in-betweens in motion.bin; a pack without them cross-fades
-// them over the whole step (paint_atlas_pose).
-static const BYTE walk_detail_cycle[12] = {
+// makes the legs walk backwards. Bake the exact cycle, including the two
+// skipped-cel seams, and sample it at the current distance along the stride.
+static const BYTE walk_detail_cycle[] = {
     13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 9, 10
 };
+static const PoseStep turning_detail[] = {
+    {WALK_FIRST + 15, 125}, {WALK_FIRST + 14, 135}, {WALK_FIRST + 13, 130}, {WALK_FIRST + 12, 175}, {WALK_DETAIL_FIRST + 13, 35}
+};
+static const PoseStep turning_run[] = {
+    {WALK_FIRST + 15, 115}, {WALK_FIRST + 14, 105}, {WALK_FIRST + 13, 100}, {WALK_FIRST + 12, 110}, {WALK_FIRST + 8, 35}
+};
+static const PoseStep turning_walk[] = {
+    {WALK_FIRST + 15, 115}, {WALK_FIRST + 14, 105}, {WALK_FIRST + 13, 100}, {WALK_FIRST + 12, 110}, {WALK_FIRST, 35}
+};
 static const PoseStep falling_asleep[] = {
-    {REST_FIRST, 280}, {REST_FIRST + 1, 450}, {REST_FIRST + 2, 410}, {REST_FIRST + 3, 300}
+    {REST_FIRST, 190}, {REST_FIRST, 570}, {REST_FIRST + 1, 650}, {REST_FIRST + 2, 660}, {REST_FIRST + 2, 850}, {REST_FIRST + 3, 650}, {REST_FIRST + 4, 120}
 };
 // Resting: lie down into the loaf, hold it, and either curl up or get up.
 static const PoseStep lying_down[] = {
-    {REST_FIRST, 340}, {REST_FIRST + 1, 560}, {REST_FIRST + 2, 700}
+    {REST_FIRST, 190}, {REST_FIRST, 530}, {REST_FIRST + 1, 750}, {REST_FIRST + 2, 140}
 };
-static const PoseStep curling_up[] = {{REST_FIRST + 2, 420}, {REST_FIRST + 3, 900}};
+static const PoseStep curling_up[] = {
+    {REST_FIRST + 2, 830}, {REST_FIRST + 3, 730}, {REST_FIRST + 4, 120}
+};
 static const PoseStep getting_up[] = {
-    {REST_FIRST + 2, 420}, {REST_FIRST + 1, 520}, {REST_FIRST, 380}
+    {REST_FIRST + 2, 600}, {REST_FIRST + 1, 490}, {REST_FIRST, 200}
 };
-// Deep sleep breathes slowly between two curled drawings. A rare shift
-// (sleep_shift) is the only other movement until the cat wakes.
-static const PoseStep sleep_breath[] = {{REST_FIRST + 4, 2300}, {REST_FIRST + 5, 2700}};
+// A shift replaces one breath and returns to the same pose at the seam.
+#define SLEEP_BREATH_MS 5100
+static const PoseStep sleep_breath[] = {{REST_FIRST + 4, 2350}, {REST_FIRST + 5, SLEEP_BREATH_MS - 2350}};
 static const PoseStep sleep_shift[] = {
-    {REST_FIRST + 6, 700}, {REST_FIRST + 7, 480}, {REST_FIRST + 6, 900}
+    {REST_FIRST + 4, 680}, {REST_FIRST + 6, 740}, {REST_FIRST + 7, 500}, {REST_FIRST + 7, 810}, {REST_FIRST + 6, 990}, {REST_FIRST + 4, SLEEP_BREATH_MS - 3720}
 };
 static const PoseStep waking[] = {
-    {REST_FIRST + 3, 1100}, {REST_FIRST + 2, 1300}, {REST_FIRST + 1, 800}, {REST_FIRST, 420}
+    {REST_FIRST + 4, 670}, {REST_FIRST + 3, 670}, {REST_FIRST + 2, 250}, {REST_FIRST + 2, 830}, {REST_FIRST + 1, 700}, {REST_FIRST, 360}
 };
 static const PoseStep stretching[] = {
     {REST_FIRST + 8, 240}, {REST_FIRST + 9, 235}, {REST_FIRST + 10, 380},
     {REST_FIRST + 9, 180}, {REST_FIRST + 8, 170}, {REST_FIRST + 11, 250}
 };
 static const PoseStep grooming[] = {
-    {REST_FIRST + 12, 210}, {REST_FIRST + 13, 260},
-    {REST_FIRST + 14, 295}, {REST_FIRST + 13, 210}, {REST_FIRST + 15, 240}
+    {REST_FIRST + 12, 150}, {REST_FIRST + 12, 310}, {REST_FIRST + 13, 440}, {REST_FIRST + 14, 180}, {REST_FIRST + 13, 280}, {REST_FIRST + 15, 260}
+};
+static const PoseStep grooming_long[] = {
+    {REST_FIRST + 12, 150}, {REST_FIRST + 12, 310}, {REST_FIRST + 13, 340}, {REST_FIRST + 14, 120}, {REST_FIRST + 13, 310}, {REST_FIRST + 14, 220},
+    {REST_FIRST + 13, 560}, {REST_FIRST + 14, 230}, {REST_FIRST + 13, 340}, {REST_FIRST + 15, 280}
+};
+static const PoseStep looking[] = {
+    {ATTENTION_FIRST, 145}, {ATTENTION_FIRST, 200}, {ATTENTION_FIRST + 1, 150}, {ATTENTION_FIRST + 2, 165}, {ATTENTION_FIRST + 3, 190}, {ATTENTION_FIRST + 4, 220},
+    {ATTENTION_FIRST + 5, 120}, {ATTENTION_FIRST + 6, 90}, {ATTENTION_FIRST + 7, 90}, {ATTENTION_FIRST + 8, 160}, {ATTENTION_FIRST + 10, 220}, {ATTENTION_FIRST + 13, 240}, {ATTENTION_FIRST + 15, 155}
+};
+static const PoseStep looking_quick[] = {
+    {ATTENTION_FIRST, 140}, {ATTENTION_FIRST, 145}, {ATTENTION_FIRST + 1, 165}, {ATTENTION_FIRST + 2, 280}, {ATTENTION_FIRST + 2, 195}, {ATTENTION_FIRST + 1, 230}, {ATTENTION_FIRST, 140}
 };
 
 typedef struct {
@@ -204,9 +234,10 @@ static DWORD *pose_pixels, *blend_from, *blend_to, *blend_entry;
 static POINT pose_clicks[POSE_COUNT];
 static RECT pose_bounds[POSE_COUNT], sprite_bounds;
 static int painted_pose = -1, reaction;
-static DWORD blend_started, blend_ms, bridge_ms, last_yawn, idle_started;
+static DWORD blend_started, blend_ms, bridge_ms, last_yawn;
 static SecretaryMotion prepared_motion;
-static int blend_sample;
+static int blend_sample, sample_to = -1, sample_frame = -1;
+static DWORD sample_phase;
 static BOOL use_atlas, blend_linear, grab_playing;
 static BYTE painted_opacity;
 static WCHAR image_path[APP_PATH_MAX];
@@ -243,7 +274,7 @@ static struct {
     double speed, cruise, distance, traveled, stop, gait;
     POINT origin, goal;
     int curve;
-    DWORD started, next, last_frame, duration, seed;
+    DWORD started, next, last_frame, duration, seed, clip_ms;
     int state;
     BOOL left, fast, face_right;
     BOOL curious;      // this walk stops for a nearby pointer
@@ -251,7 +282,7 @@ static struct {
     int walk_kind;     // 0 roam, 1 explore, 2 scamper; start_walk reads it
     BOOL from_rest;    // the nap began from the resting loaf
     DWORD twitch_at;   // next small movement in deep sleep
-    DWORD look_ms;     // length of this look around
+    BOOL long_clip;
 } pet_motion;
 // Reactions start only when the cat is free; anything else is dropped, never
 // replayed later. Interest falls with repeated stimulation and recovers.
@@ -884,6 +915,7 @@ static BOOL draw_sprite(void)
     secretary_motion_close();
     blend_ms = 0;
     painted_pose = -1;
+    sample_to = -1;
     measured = FALSE;
     if (GdipGetImageWidth(image, &w) != Ok || GdipGetImageHeight(image, &h) != Ok ||
         !w || !h || w > INT_MAX || h > INT_MAX)
@@ -1694,13 +1726,53 @@ static PoseCue step_at(const PoseStep *steps, size_t count, DWORD elapsed, BOOL 
     size_t i;
     if (loop) elapsed %= clip_length(steps, count);
     for (i = 0; i < count; ++i) {
-        if (elapsed < steps[i].duration_ms) return (PoseCue){steps[i].pose, steps[i].duration_ms};
+        if (elapsed < steps[i].duration_ms) return HOLD(steps[i].pose, steps[i].duration_ms);
         elapsed -= steps[i].duration_ms;
     }
     return no_cue;
 }
 
 #define CLIP(steps) (steps), (sizeof(steps) / sizeof((steps)[0]))
+
+typedef struct {
+    const PoseStep *steps;
+    size_t count;
+} PoseClip;
+
+static const PoseClip idle_clips[] = {
+    {CLIP(idle_breath)}, {CLIP(idle_blink)}, {CLIP(idle_slow_blink)},
+    {CLIP(idle_glance)}, {CLIP(idle_listen)}
+};
+
+static struct {
+    DWORD started, seen;
+    unsigned clip, tempo, breaths, last_accent;
+} idle_motion;
+
+static PoseCue motion_between(int from, int to, DWORD phase, int duration)
+{
+    if (from == to) return HOLD(from, duration);
+    return (PoseCue){from, duration, to, phase};
+}
+
+// Each cue owns the full time between these two drawings. Slow transitions
+// no longer use the short, reactive handoff time in paint_atlas_pose.
+static PoseCue motion_at(const PoseStep *steps, size_t count, DWORD elapsed, BOOL loop)
+{
+    size_t i;
+    if (loop) elapsed %= clip_length(steps, count);
+    for (i = 0; i < count; ++i) {
+        DWORD duration = steps[i].duration_ms;
+        if (elapsed < duration) {
+            DWORD phase = elapsed * PIXEL_UNIT / duration;
+            DWORD eased = phase * phase * (3 * PIXEL_UNIT - 2 * phase) / (PIXEL_UNIT * PIXEL_UNIT);
+            int next = i + 1 < count ? steps[i + 1].pose : loop ? steps[0].pose : steps[i].pose;
+            return motion_between(steps[i].pose, next, (phase + eased) / 2, (int)duration);
+        }
+        elapsed -= duration;
+    }
+    return no_cue;
+}
 
 static unsigned random_below(unsigned limit)
 {
@@ -1710,6 +1782,40 @@ static unsigned random_below(unsigned limit)
     n ^= n << 5;
     pet_motion.seed = n;
     return n % limit;
+}
+
+static PoseCue natural_idle(DWORD now)
+{
+    PoseClip clip = idle_clips[idle_motion.clip];
+    DWORD elapsed = (now - idle_motion.started) * idle_motion.tempo / 100;
+    BOOL resumed = !idle_motion.tempo || now - idle_motion.seen > 100;
+    idle_motion.seen = now;
+    if (resumed || elapsed >= clip_length(clip.steps, clip.count)) {
+        if (resumed) idle_motion.breaths = 1 + random_below(2);
+        if (idle_motion.breaths) {
+            --idle_motion.breaths;
+            idle_motion.clip = 0;
+        } else {
+            unsigned choices = extra_ready[SECRETARY_ATTENTION] ? 4 : 3;
+            BOOL exclude = idle_motion.last_accent && idle_motion.last_accent <= choices;
+            unsigned pick = 1 + random_below(choices - exclude);
+            if (exclude && pick >= idle_motion.last_accent) ++pick;
+            idle_motion.clip = idle_motion.last_accent = pick;
+            idle_motion.breaths = 1 + random_below(3);
+        }
+        idle_motion.started = now;
+        idle_motion.tempo = 75 + random_below(46);
+        clip = idle_clips[idle_motion.clip];
+        elapsed = 0;
+    }
+    return motion_at(clip.steps, clip.count, elapsed, FALSE);
+}
+
+static BOOL finishing_idle_gesture(DWORD now)
+{
+    PoseClip clip = idle_clips[idle_motion.clip];
+    return idle_motion.clip && now - idle_motion.seen <= 100 &&
+           (now - idle_motion.started) * idle_motion.tempo / 100 < clip_length(clip.steps, clip.count);
 }
 
 static void wait_to_roam(DWORD now, DWORD delay)
@@ -1722,6 +1828,30 @@ static void start_state(DWORD now, int state)
 {
     pet_motion.state = state;
     pet_motion.started = now;
+}
+
+static PoseClip turn_clip(void)
+{
+    if (pet_motion.fast) return (PoseClip){CLIP(turning_run)};
+    if (extra_ready[SECRETARY_WALK_DETAIL]) return (PoseClip){CLIP(turning_detail)};
+    return (PoseClip){CLIP(turning_walk)};
+}
+
+static PoseClip gesture_clip(int state)
+{
+    if (state == PET_LOOK)
+        return pet_motion.long_clip ? (PoseClip){CLIP(looking)} : (PoseClip){CLIP(looking_quick)};
+    return pet_motion.long_clip ? (PoseClip){CLIP(grooming_long)} : (PoseClip){CLIP(grooming)};
+}
+
+static void start_gesture(DWORD now, int state)
+{
+    PoseClip clip;
+    start_state(now, state);
+    pet_motion.long_clip = random_below(100) < 55;
+    clip = gesture_clip(state);
+    pet_motion.clip_ms = clip_length(clip.steps, clip.count);
+    pet_motion.duration = pet_motion.clip_ms * (85 + random_below(41)) / 100;
 }
 
 // Idle pauses: mostly short, often longer, sometimes a long still sit.
@@ -1744,21 +1874,23 @@ static DWORD nap_length(void)
 
 static void schedule_twitch(DWORD now)
 {
-    pet_motion.twitch_at = now + 25000 + random_below(70000);
+    pet_motion.twitch_at = now + SLEEP_BREATH_MS * (5 + random_below(14));
 }
 
 static void start_nap(DWORD now, BOOL from_rest)
 {
     start_state(now, PET_NAP);
     pet_motion.from_rest = from_rest;
-    pet_motion.duration = nap_length();
-    schedule_twitch(now);
+    pet_motion.clip_ms = from_rest ? clip_length(CLIP(curling_up)) : clip_length(CLIP(falling_asleep));
+    pet_motion.duration = pet_motion.clip_ms + SLEEP_BREATH_MS * (nap_length() / SLEEP_BREATH_MS);
+    schedule_twitch(now + pet_motion.clip_ms);
     reaction = REACT_NONE;
     command_pose = 0;
 }
 
 static void start_walk(DWORD now)
 {
+    PoseClip turn;
     int margin = px(17);
     // Explore takes a shorter, deliberate hop; a scamper is a short dash; else a full roam.
     int distance = pet_motion.walk_kind == 1 ? px(60 + random_below(110)) :
@@ -1773,11 +1905,12 @@ static void start_walk(DWORD now)
     int y_drift = (int)random_below(stay_low ? 111 : 271) - (stay_low ? 55 : 135);
 
     if (abs(x - anchor.x) < px(55)) x = clamp(anchor.x - direction * distance, left, right);
-    pet_motion.goal = (POINT){x, clamp(anchor.y + px(y_drift), top, bottom)};
+    int rise = abs(x - anchor.x) / 4;
+    pet_motion.goal = (POINT){x, clamp(anchor.y + clamp(px(y_drift), -rise, rise), top, bottom)};
     pet_motion.origin = anchor;
     pet_motion.distance = hypot(pet_motion.goal.x - anchor.x, pet_motion.goal.y - anchor.y);
     pet_motion.stop = pet_motion.distance;
-    pet_motion.curve = px((int)random_below(49) - 24);
+    pet_motion.curve = (int)random_below(2 * (unsigned)(rise / 4) + 1) - rise / 4;
     pet_motion.left = x < anchor.x;
     pet_motion.face_right = !pet_motion.left;
     // A scamper always runs; otherwise a long trip now and then becomes a
@@ -1789,8 +1922,9 @@ static void start_walk(DWORD now)
     pet_motion.curious = pet_motion.walk_kind != 2 && random_below(100) < 40;
     pet_motion.cruise = px(pet_motion.fast ? 68 + random_below(17) : 37 + random_below(19));
     pet_motion.speed = pet_motion.gait = pet_motion.traveled = 0.0;
-    pet_motion.state = PET_TURN;
-    pet_motion.started = now;
+    start_state(now, PET_TURN);
+    turn = turn_clip();
+    pet_motion.clip_ms = clip_length(turn.steps, turn.count);
 }
 
 static void advance_walk(DWORD now, double seconds, BOOL stopping)
@@ -1800,7 +1934,7 @@ static void advance_walk(DWORD now, double seconds, BOOL stopping)
     if (stopping && pet_motion.stop == pet_motion.distance)
         pet_motion.stop = fmin(pet_motion.distance, pet_motion.traveled +
                               pet_motion.speed * pet_motion.speed / (2.0 * acceleration) + px(4));
-    remaining = pet_motion.stop - pet_motion.traveled;
+    remaining = fmax(0.0, pet_motion.stop - pet_motion.traveled);
     goal_speed = fmin(pet_motion.cruise, sqrt(2.0 * acceleration * remaining));
 
     if (pet_motion.speed < goal_speed)
@@ -1814,7 +1948,7 @@ static void advance_walk(DWORD now, double seconds, BOOL stopping)
         pet_motion.started = now;
     }
     pet_motion.traveled += step;
-    pet_motion.gait += step / px(extra_ready[SECRETARY_WALK_DETAIL] ? (pet_motion.fast ? 5 : 4) : 7);
+    pet_motion.gait += step / px(pet_motion.fast ? 8 : extra_ready[SECRETARY_WALK_DETAIL] ? 4 : 7);
     progress = pet_motion.distance > 0 ? pet_motion.traveled / pet_motion.distance : 1.0;
     anchor.x = pet_motion.origin.x + (LONG)lround((pet_motion.goal.x - pet_motion.origin.x) * progress);
     anchor.y = pet_motion.origin.y + (LONG)lround((pet_motion.goal.y - pet_motion.origin.y) * progress +
@@ -1871,7 +2005,7 @@ static void pick_behaviour(DWORD now, BOOL hovered)
         start_walk(now);
         break;
     case DO_GROOM:
-        start_state(now, PET_GROOM);
+        start_gesture(now, PET_GROOM);
         break;
     case DO_STRETCH:
         start_state(now, PET_STRETCH);
@@ -1884,8 +2018,7 @@ static void pick_behaviour(DWORD now, BOOL hovered)
         start_nap(now, FALSE);
         break;
     case DO_LOOK:
-        start_state(now, PET_LOOK);
-        pet_motion.look_ms = 108 * (6 + random_below(11));
+        start_gesture(now, PET_LOOK);
         break;
     case DO_YAWN:
         start_state(now, PET_YAWN);
@@ -1917,7 +2050,7 @@ static void advance_pet(DWORD now, POINT pointer)
     case PET_TURN:
         if (pressed || !g_cfg.secretary_roam)
             wait_to_roam(now, 3000);
-        else if (elapsed >= clip_length(CLIP(turning)))
+        else if (elapsed >= pet_motion.clip_ms)
             start_state(now, PET_WALK);
         return;
     case PET_WALK:
@@ -1933,8 +2066,7 @@ static void advance_pet(DWORD now, POINT pointer)
             // An explore walk ends by looking around at the new spot.
             if (pet_motion.then_look && g_cfg.secretary_play && extra_ready[SECRETARY_ATTENTION]) {
                 pet_motion.then_look = FALSE;
-                start_state(now, PET_LOOK);
-                pet_motion.look_ms = 108 * (7 + random_below(12));
+                start_gesture(now, PET_LOOK);
             } else {
                 pet_motion.then_look = FALSE;
                 wait_to_roam(now, idle_pause());
@@ -1951,40 +2083,40 @@ static void advance_pet(DWORD now, POINT pointer)
         if (elapsed >= clip_length(CLIP(getting_up))) wait_to_roam(now, idle_pause());
         return;
     case PET_NAP:
-        if (elapsed >= pet_motion.duration) {
+        if (elapsed >= pet_motion.duration && (elapsed - pet_motion.clip_ms) % SLEEP_BREATH_MS < 100) {
             start_state(now, PET_WAKE);
             last_nap_end = now;
-        } else if ((LONG)(now - (pet_motion.twitch_at + clip_length(CLIP(sleep_shift)))) >= 0) {
-            schedule_twitch(now);
+        } else if ((LONG)(now - (pet_motion.twitch_at + SLEEP_BREATH_MS)) >= 0) {
+            // Use the clock origin, so a late display tick cannot move the
+            // shift off the breathing cycle's seam.
+            schedule_twitch(now - (elapsed - pet_motion.clip_ms) % SLEEP_BREATH_MS);
         }
         return;
     case PET_WAKE:
         if (elapsed >= clip_length(CLIP(waking))) {
             unsigned roll = random_below(100);
             if (roll < 60) start_state(now, PET_STRETCH);
-            else if (roll < 85) start_state(now, PET_GROOM);
+            else if (roll < 85) start_gesture(now, PET_GROOM);
             else wait_to_roam(now, idle_pause());
         }
         return;
     case PET_STRETCH:
         if (elapsed >= clip_length(CLIP(stretching))) wait_to_roam(now, idle_pause());
         return;
-    case PET_GROOM:
-        if (elapsed >= clip_length(CLIP(grooming))) wait_to_roam(now, idle_pause());
-        return;
     case PET_YAWN:
         if (elapsed >= (extra_ready[SECRETARY_IDLE_DETAIL] ? clip_length(CLIP(yawn_detail)) : clip_length(CLIP(bored))))
             wait_to_roam(now, idle_pause());
         return;
+    case PET_GROOM:
     case PET_LOOK:
-        if (elapsed >= pet_motion.look_ms) wait_to_roam(now, idle_pause());
+        if (elapsed >= pet_motion.duration) wait_to_roam(now, idle_pause());
         return;
     }
     if (pressed || opened || secretary_editor_visible() || reaction || command_pose) {
         if ((LONG)(now - pet_motion.next) >= 0) pet_motion.next = now + 1500;
         return;
     }
-    if ((LONG)(now - pet_motion.next) < 0) return;
+    if ((LONG)(now - pet_motion.next) < 0 || finishing_idle_gesture(now)) return;
     pick_behaviour(now, hovered);
 }
 
@@ -2043,20 +2175,20 @@ static PoseCue command_frame(DWORD now)
         BOOL upward = command_pose == SECRETARY_SCROLL_UP;
         if (elapsed >= cycle) return no_cue;
         if (extra_ready[SECRETARY_SCROLL_DETAIL])
-            return (PoseCue){SCROLL_DETAIL_FIRST + (upward ? 8 : 0) + (int)(elapsed / 110), 110};
+            return HOLD(SCROLL_DETAIL_FIRST + (upward ? 8 : 0) + (int)(elapsed / 110), 110);
         if (upward && extra_ready[SECRETARY_ATTENTION])
-            return (PoseCue){ATTENTION_FIRST + up[elapsed / 100], 100};
+            return HOLD(ATTENTION_FIRST + up[elapsed / 100], 100);
         if (!upward && extra_ready[SECRETARY_REACTIONS]) {
             static const BYTE down[] = {4, 4, 5, 5, 6, 6, 6, 5, 7, 7};
-            return (PoseCue){COMMAND_FIRST + down[elapsed / 100], 140};
+            return HOLD(COMMAND_FIRST + down[elapsed / 100], 140);
         }
     }
     if (extra_ready[SECRETARY_ATTENTION] && (command_pose == SECRETARY_MOVE || command_pose == SECRETARY_HINT)) {
         if (elapsed >= 16 * 108) return no_cue;
-        return (PoseCue){ATTENTION_FIRST + (int)(elapsed / 108), 108};
+        return HOLD(ATTENTION_FIRST + (int)(elapsed / 108), 108);
     }
     if (elapsed >= 600) return no_cue;
-    if (!extra_ready[SECRETARY_REACTIONS]) return (PoseCue){12 + (int)(elapsed / 150), 150};
+    if (!extra_ready[SECRETARY_REACTIONS]) return HOLD(12 + (int)(elapsed / 150), 150);
     switch (command_pose) {
     case SECRETARY_MOVE:
     case SECRETARY_HINT: row = 0; break;
@@ -2067,7 +2199,7 @@ static PoseCue command_frame(DWORD now)
     default: row = 3; break;
     }
     col = (int)(elapsed / 150);
-    return (PoseCue){COMMAND_FIRST + row * POSES_PER_ROW + col, 150};
+    return HOLD(COMMAND_FIRST + row * POSES_PER_ROW + col, 150);
 }
 
 static PoseCue reaction_frame(DWORD now)
@@ -2095,7 +2227,7 @@ static PoseCue animated_pose(DWORD now)
     if (!animate) {
         reaction = REACT_NONE;
         command_pose = 0;
-        return (PoseCue){0, 0};
+        return HOLD(0, 0);
     }
     if (dragging || (pressed && now - press_started >= 160)) {
         if (!grab_playing) grab_started = now;
@@ -2119,72 +2251,76 @@ static PoseCue animated_pose(DWORD now)
     }
     command_pose = 0;
     switch (pet_motion.state) {
-    case PET_TURN:
-        cue = step_at(CLIP(turning), elapsed, FALSE);
+    case PET_TURN: {
+        PoseClip clip = turn_clip();
+        cue = motion_at(clip.steps, clip.count, elapsed, FALSE);
         break;
+    }
     case PET_WALK: {
-        BOOL detail = extra_ready[SECRETARY_WALK_DETAIL];
-        int phase = (int)pet_motion.gait;
-        int pose = detail ? WALK_DETAIL_FIRST + walk_detail_cycle[phase % (int)sizeof walk_detail_cycle] :
-                   WALK_FIRST + (pet_motion.fast ? 8 + phase % 4 : phase % 8);
-        int stride = px(detail ? (pet_motion.fast ? 5 : 4) : 7);
-        int duration = (int)(1000 * stride / fmax(pet_motion.speed, 1.0));
-        return (PoseCue){pose, clamp(duration, 35, 160)};
+        static const BYTE walk_cycle[] = {16, 17, 18, 19, 20, 21, 22, 23};
+        static const BYTE run_cycle[] = {24, 25, 26, 27};
+        const BYTE *cycle;
+        int first = 0, count, step = (int)pet_motion.gait;
+        if (pet_motion.fast) {
+            cycle = run_cycle;
+            count = sizeof run_cycle;
+        } else if (extra_ready[SECRETARY_WALK_DETAIL]) {
+            first = WALK_DETAIL_FIRST;
+            cycle = walk_detail_cycle;
+            count = sizeof walk_detail_cycle;
+        } else {
+            cycle = walk_cycle;
+            count = sizeof walk_cycle;
+        }
+        return motion_between(first + cycle[step % count], first + cycle[(step + 1) % count],
+                              (DWORD)((pet_motion.gait - step) * PIXEL_UNIT), 150);
     }
     case PET_SETTLE:
-        cue = step_at(CLIP(settling), elapsed, FALSE);
+        cue = motion_at(CLIP(settling), elapsed, FALSE);
         break;
     case PET_REST:
-        cue = step_at(CLIP(lying_down), elapsed, FALSE);
-        if (cue.pose < 0) cue = (PoseCue){REST_FIRST + 2, 1000};
+        cue = motion_at(CLIP(lying_down), elapsed, FALSE);
+        if (cue.pose < 0) cue = HOLD(REST_FIRST + 2, 1000);
         break;
     case PET_RISE:
         // The last drawing holds only while hints freeze the state.
-        cue = step_at(CLIP(getting_up), elapsed, FALSE);
-        if (cue.pose < 0) cue = (PoseCue){REST_FIRST, 1000};
+        cue = motion_at(CLIP(getting_up), elapsed, FALSE);
+        if (cue.pose < 0) cue = HOLD(REST_FIRST, 1000);
         break;
     case PET_NAP: {
-        DWORD intro = pet_motion.from_rest ? clip_length(CLIP(curling_up)) : clip_length(CLIP(falling_asleep));
         DWORD shift = now - pet_motion.twitch_at;
-        cue = pet_motion.from_rest ? step_at(CLIP(curling_up), elapsed, FALSE)
-                                   : step_at(CLIP(falling_asleep), elapsed, FALSE);
+        cue = pet_motion.from_rest ? motion_at(CLIP(curling_up), elapsed, FALSE)
+                                   : motion_at(CLIP(falling_asleep), elapsed, FALSE);
         if (cue.pose >= 0) break;
-        if ((LONG)shift >= 0 && shift < clip_length(CLIP(sleep_shift)))
-            cue = step_at(CLIP(sleep_shift), shift, FALSE);
+        if ((LONG)shift >= 0 && shift < SLEEP_BREATH_MS)
+            cue = motion_at(CLIP(sleep_shift), shift, FALSE);
         else
-            cue = step_at(CLIP(sleep_breath), elapsed - intro, TRUE);
+            cue = motion_at(CLIP(sleep_breath), elapsed - pet_motion.clip_ms, TRUE);
         break;
     }
     case PET_WAKE:
-        cue = step_at(CLIP(waking), elapsed, FALSE);
-        if (cue.pose < 0) cue = (PoseCue){REST_FIRST, 1000};
+        cue = motion_at(CLIP(waking), elapsed, FALSE);
+        if (cue.pose < 0) cue = HOLD(REST_FIRST, 1000);
         break;
     case PET_LOOK:
-        if (elapsed < pet_motion.look_ms && extra_ready[SECRETARY_ATTENTION])
-            cue = (PoseCue){ATTENTION_FIRST + (int)(elapsed / 108 % 16), 108};
+    case PET_GROOM: {
+        PoseClip clip = gesture_clip(pet_motion.state);
+        DWORD time = min(elapsed, pet_motion.duration - 1) * pet_motion.clip_ms / pet_motion.duration;
+        cue = motion_at(clip.steps, clip.count, time, FALSE);
         break;
+    }
     case PET_STRETCH:
-        cue = step_at(CLIP(stretching), elapsed, FALSE);
-        break;
-    case PET_GROOM:
-        cue = step_at(CLIP(grooming), elapsed, FALSE);
+        cue = motion_at(CLIP(stretching), elapsed, FALSE);
         break;
     case PET_YAWN:
-        cue = detailed_idle ? step_at(CLIP(yawn_detail), elapsed, FALSE)
+        cue = detailed_idle ? motion_at(CLIP(yawn_detail), elapsed, FALSE)
                             : step_at(CLIP(bored), elapsed, FALSE);
         break;
     }
     if (cue.pose >= 0) return cue;
-    // Each action returns through the same neutral resting drawing.
-    if (detailed_idle && tailmon_art[1 + SECRETARY_IDLE_DETAIL]) {
-        int previous = painted_pose < 0 ? -1 : painted_pose % POSE_COUNT;
-        if (previous < IDLE_DETAIL_FIRST || previous >= IDLE_DETAIL_FIRST + 8) idle_started = now;
-        elapsed = now - idle_started;
-    } else {
-        elapsed = now - born;
-    }
-    return detailed_idle ? step_at(CLIP(breathing_detail), elapsed, TRUE)
-                         : step_at(CLIP(idle), elapsed, TRUE);
+    if (detailed_idle && tailmon_art[1 + SECRETARY_IDLE_DETAIL]) return natural_idle(now);
+    return detailed_idle ? step_at(CLIP(idle_custom), now - born, TRUE)
+                         : step_at(CLIP(idle), now - born, TRUE);
 }
 
 static PoseCue hint_pose(DWORD now)
@@ -2198,7 +2334,7 @@ static PoseCue hint_pose(DWORD now)
         hint_waiting = FALSE;
         attention_started = now;
     }
-    return (PoseCue){ATTENTION_FIRST + (int)((now - attention_started) / 108 % 16), 108};
+    return HOLD(ATTENTION_FIRST + (int)((now - attention_started) / 108 % 16), 108);
 }
 
 static int pose_key_for(int pose)
@@ -2224,6 +2360,41 @@ static void dissolve(const DWORD *target, DWORD weight, size_t count)
     for (i = 0; i < count; ++i) sprite.pixels[i] = mix_pixels(blend_from[i], target[i], weight);
 }
 
+static BOOL paint_motion_sample(PoseCue cue, int key, const DWORD *source, BOOL pinned)
+{
+    int next_key = pose_key_for(cue.next);
+    int w = sprite.size.cx, h = sprite.size.cy, x, y;
+    const DWORD *target = pose_pixels + (size_t)w * h * cue.next;
+    BOOL flip = next_key >= POSE_COUNT;
+    SecretaryMotion motion = {0};
+    int step = (int)cue.phase;
+    if (tailmon_art[cue.pose / POSES_PER_SHEET] && tailmon_art[cue.next / POSES_PER_SHEET])
+        motion = secretary_motion_find(key, next_key, POSE_COUNT);
+    if (motion.count)
+        step = (int)((cue.phase * (motion.count + 1) + PIXEL_UNIT / 2) / PIXEL_UNIT);
+    if (sample_to == next_key && step == sample_frame &&
+        (!pinned || sprite.pixels[hint_hit.y * w + hint_hit.x] >> 24 >= 128)) return FALSE;
+    sample_to = next_key;
+    sample_frame = step;
+    sample_phase = cue.phase;
+    if (!step) {
+        CopyMemory(sprite.pixels, source, (size_t)w * h * sizeof(DWORD));
+    } else if (!motion.count || !secretary_motion_paint(motion, (unsigned)step - 1, sprite.pixels)) {
+        DWORD weight = motion.count && step > (int)motion.count ? PIXEL_UNIT : cue.phase;
+        for (y = 0; y < h; ++y) {
+            for (x = 0; x < w; ++x) {
+                int at = y * w + x;
+                sprite.pixels[at] = mix_pixels(source[at], target[y * w + (flip ? w - 1 - x : x)], weight);
+            }
+        }
+    }
+    if (pinned) {
+        size_t at = hint_hit.y * w + hint_hit.x;
+        if (sprite.pixels[at] >> 24 < 128) sprite.pixels[at] = source[at];
+    }
+    measured = FALSE;
+    return TRUE;
+}
 
 static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
 {
@@ -2238,15 +2409,18 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
         bounds.right = w - pose_bounds[pose].left;
     }
     if (painted_pose != key) {
-        BOOL can_blend = painted_pose >= 0 && animate;
+        BOOL can_blend = painted_pose >= 0 && animate && sample_to != key;
         BOOL interrupted = blend_ms && now - blend_started + (DWORD)frame_interval < blend_ms;
+        BOOL mid_path = sample_to >= 0 && sample_phase > 32 && sample_phase < 224;
+        int previous_key = sample_to >= 0 && sample_phase >= 224 ? sample_to : painted_pose;
         blend_ms = 0;
         blend_sample = 0;
         bridge_ms = 0;
+        sample_to = -1;
         prepared_motion = (SecretaryMotion){0};
-        if (can_blend && tailmon_art[pose / POSES_PER_SHEET] &&
-            tailmon_art[(painted_pose % POSE_COUNT) / POSES_PER_SHEET])
-            prepared_motion = secretary_motion_find(painted_pose, key, POSE_COUNT);
+        if (can_blend && !mid_path && tailmon_art[pose / POSES_PER_SHEET] &&
+            tailmon_art[(previous_key % POSE_COUNT) / POSES_PER_SHEET])
+            prepared_motion = secretary_motion_find(previous_key, key, POSE_COUNT);
         if (interrupted && prepared_motion.count) {
             bridge_ms = 2 * (DWORD)frame_interval;
             blend_sample = -1;
@@ -2305,6 +2479,8 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
     }
 finished:
     blend_ms = 0;
+    if (cue.next >= 0) return paint_motion_sample(cue, key, blend_to, pinned);
+    sample_to = -1;
     CopyMemory(sprite.pixels, blend_to, count * sizeof(DWORD));
     click_pixel = pose_clicks[pose];
     if (flip) click_pixel.x = w - 1 - click_pixel.x;
@@ -2462,7 +2638,7 @@ static void frame(void)
     BYTE opacity = 255;
     BOOL hints = hint_is_open();
     BOOL pinned;
-    PoseCue cue = {0, 0};
+    PoseCue cue = HOLD(0, 0);
     int pose_key = 0;
     BOOL can_route = input_mouse_hook_active(), changed = painted_pose != 0;
 
@@ -2511,6 +2687,7 @@ static void frame(void)
             // Frozen under the hints: resume from the same drawing afterwards.
             if (paused < 1000) {
                 pet_motion.started += paused;
+                if (pet_motion.state == PET_NAP) pet_motion.twitch_at += paused;
                 reaction_started += paused;
                 command_started += paused;
             }
@@ -2532,7 +2709,7 @@ static void frame(void)
         if (now - pulse < 290) at.y -= (int)(px(10) * sin((now - pulse) * 3.14159 / 290.0));
     }
     if (dragging && !use_atlas) opacity = 218;
-    if (use_atlas && (painted_pose != pose_key || blend_ms))
+    if (use_atlas && (painted_pose != pose_key || blend_ms || cue.next >= 0 || sample_to >= 0))
         changed = paint_atlas_pose(cue, pose_key, now, pinned);
     else if (use_atlas)
         changed = FALSE;
@@ -2564,6 +2741,7 @@ void secretary_hint_reaction(void)
     // jumping to the attention loop; they finish once the hints close.
     hint_animate = use_atlas && animate && pet_motion.state != PET_GROOM &&
                    pet_motion.state != PET_STRETCH && pet_motion.state != PET_YAWN &&
+                   pet_motion.state != PET_LOOK &&
                    (hint_sleeping ? extra_ready[SECRETARY_REST] :
                    g_cfg.secretary_react && extra_ready[SECRETARY_ATTENTION]);
     hint_hit = click_pixel;

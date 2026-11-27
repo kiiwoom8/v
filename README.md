@@ -514,7 +514,8 @@ windows and click-through overlays such as Chrome's "Loading..." / link status
 bubble are passed at once. Menus, dropdowns and the taskbar are left above it.
 
 The secretary remembers where you drop it. With a movement sheet, it wanders
-between resting spots at different speeds, and some walks stop when you reach for it. It
+between resting spots at different speeds. Paw movement follows the distance
+traveled as the cat accelerates or slows down, and some walks stop when you reach for it. It
 also explores now and then — a short walk that ends by looking around the new spot — and
 has the odd playful scamper; set `play = 0` to turn those extras off. Click
 the character to open the speech bubble, or right-click it to open the Vim tray
@@ -544,12 +545,15 @@ held key keeps the same gesture going. Hints hold the character's position;
 grooming, stretching and yawning pause under them and finish afterwards. Vim's pointer movement passes over the
 character. Keyboard scrolling and the physical wheel reach the window behind
 the character at the pointer's location. The character follows upward and
-downward scrolls with different movements. When idle it chooses by weighted
-chance between sitting still, looking around, grooming, stretching, yawning,
-walking or running, and resting. A rest lies down for 15–90 seconds and then
-gets up or curls up asleep. Sleep lasts minutes (usually 2–15, sometimes up to
-35), breathes slowly with an occasional shift, and ends by waking and
-stretching. Clicks, hints and Vim activity do not wake it; picking it up does.
+downward scrolls with different movements. Between larger actions, Tailmon
+breathes at a varying pace and mixes in quick blinks, slow blinks, glances and
+listening. It also chooses between short and long looks and grooming sessions
+alongside stretching, yawning, roaming and resting. Tailmon lowers its head
+and settles into a loaf before curling up. A rest holds the loaf for 15–90
+seconds and then gets up or curls up asleep. Sleep lasts minutes (usually
+2–15, sometimes up to 35), with slow breathing and an occasional shift. It may
+stretch or groom after waking. Clicks, hints and Vim activity leave it asleep,
+and picking it up wakes it.
 It waves briefly when you quit Vim from the tray or the quit hotkey.
 
 The shortcut editor takes typing, but the mouse-mode key and the hint hotkey
