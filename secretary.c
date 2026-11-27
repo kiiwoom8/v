@@ -1794,8 +1794,7 @@ static const PoseClip idle_clips[] = {
 static struct {
     DWORD started, seen;
     unsigned clip, tempo, breaths, last_accent;
-    unsigned routine, last_routine;
-    BOOL joined;
+    unsigned routine, last_routine, following_routines;
 } idle_motion;
 
 static PoseCue motion_between(int from, int to, DWORD phase, int duration)
@@ -1844,14 +1843,16 @@ static PoseCue natural_idle(DWORD now)
     idle_motion.seen = now;
     if (resumed || elapsed >= duration) {
         unsigned routines = secretary_motion_routine_count();
-        // A recovery and the next entry share their seated drawing. Let an
-        // occasional second action follow through that pose before breathing.
+        // Every current routine ends on the same seated drawing. A chain
+        // uses that drawing once and carries the elapsed time across the join.
         BOOL join_next = !resumed && frame_ms == 33 && routines > 1 && routine.count &&
-                         !idle_motion.joined && random_below(3) == 0;
-        idle_motion.joined = join_next;
+                         idle_motion.following_routines;
         idle_motion.routine = 0;
         routine = (SecretaryMotion){0};
-        if (resumed) idle_motion.breaths = 1 + random_below(2);
+        if (resumed) {
+            idle_motion.following_routines = 0;
+            idle_motion.breaths = 1 + random_below(2);
+        }
         if (idle_motion.breaths && !join_next) {
             --idle_motion.breaths;
             idle_motion.clip = 0;
@@ -1862,7 +1863,13 @@ static PoseCue natural_idle(DWORD now)
             idle_motion.routine = idle_motion.last_routine = pick;
             routine = secretary_motion_routine(pick);
             idle_motion.clip = 0;
-            idle_motion.breaths = 1 + random_below(2);
+            if (join_next) {
+                --idle_motion.following_routines;
+            } else {
+                idle_motion.following_routines = frame_ms == 33 && routines > 1 ?
+                                                 1 + random_below(3) : 0;
+                idle_motion.breaths = 1 + random_below(2);
+            }
         } else {
             unsigned last = sizeof idle_clips / sizeof *idle_clips - 1;
             unsigned choices[sizeof idle_clips / sizeof *idle_clips - 1], count = 0, i, pick;
@@ -1874,10 +1881,15 @@ static PoseCue natural_idle(DWORD now)
             idle_motion.clip = idle_motion.last_accent = pick;
             idle_motion.breaths = 1 + random_below(3);
         }
-        idle_motion.started = now;
-        idle_motion.tempo = 75 + random_below(46);
+        if (join_next) {
+            idle_motion.started += duration - frame_ms;
+            elapsed = now - idle_motion.started;
+        } else {
+            idle_motion.started = now;
+            elapsed = 0;
+        }
+        idle_motion.tempo = routine.count && frame_ms == 33 ? 100 : 75 + random_below(46);
         clip = idle_clips[idle_motion.clip];
-        elapsed = 0;
     }
     if (routine.count) {
         DWORD frame = elapsed / frame_ms;

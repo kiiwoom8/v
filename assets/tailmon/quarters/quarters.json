@@ -1,0 +1,217 @@
+[
+  {
+    "action": "backward-stretch",
+    "sample": 9,
+    "png": "backward-stretch-09.png"
+  },
+  {
+    "action": "belly-offer",
+    "sample": 9,
+    "png": "belly-offer-09.png"
+  },
+  {
+    "action": "belly-offer",
+    "sample": 21,
+    "png": "belly-offer-21.png"
+  },
+  {
+    "action": "belly-offer",
+    "sample": 23,
+    "png": "belly-offer-23.png"
+  },
+  {
+    "action": "belly-offer",
+    "sample": 29,
+    "png": "belly-offer-29.png"
+  },
+  {
+    "action": "happy-hop",
+    "sample": 9,
+    "png": "happy-hop-09.png"
+  },
+  {
+    "action": "knead",
+    "sample": 5,
+    "png": "knead-05.png"
+  },
+  {
+    "action": "nose-sniff",
+    "sample": 9,
+    "png": "nose-sniff-09.png"
+  },
+  {
+    "action": "nose-sniff",
+    "sample": 21,
+    "png": "nose-sniff-21.png"
+  },
+  {
+    "action": "play-bow",
+    "sample": 9,
+    "png": "play-bow-09.png"
+  },
+  {
+    "action": "play-bow",
+    "sample": 13,
+    "png": "play-bow-13.png"
+  },
+  {
+    "action": "play-bow",
+    "sample": 21,
+    "png": "play-bow-21.png"
+  },
+  {
+    "action": "play-bow",
+    "sample": 29,
+    "png": "play-bow-29.png"
+  },
+  {
+    "action": "play-bow",
+    "sample": 31,
+    "png": "play-bow-31.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 1,
+    "png": "pounce-01.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 3,
+    "png": "pounce-03.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 9,
+    "png": "pounce-09.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 19,
+    "png": "pounce-19.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 23,
+    "png": "pounce-23.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 25,
+    "png": "pounce-25.png"
+  },
+  {
+    "action": "pounce",
+    "sample": 29,
+    "png": "pounce-29.png"
+  },
+  {
+    "action": "side-tumble",
+    "sample": 21,
+    "png": "side-tumble-21.png"
+  },
+  {
+    "action": "side-tumble",
+    "sample": 23,
+    "png": "side-tumble-23.png"
+  },
+  {
+    "action": "stretch-one-paw",
+    "sample": 1,
+    "png": "stretch-one-paw-01.png"
+  },
+  {
+    "action": "stretch-one-paw",
+    "sample": 9,
+    "png": "stretch-one-paw-09.png"
+  },
+  {
+    "action": "stretch-one-paw",
+    "sample": 23,
+    "png": "stretch-one-paw-23.png"
+  },
+  {
+    "action": "stretch-one-paw",
+    "sample": 29,
+    "png": "stretch-one-paw-29.png"
+  },
+  {
+    "action": "surprised-backstep",
+    "sample": 21,
+    "png": "surprised-backstep-21.png"
+  },
+  {
+    "action": "tail-chase",
+    "sample": 9,
+    "png": "tail-chase-09.png"
+  },
+  {
+    "action": "tail-chase",
+    "sample": 11,
+    "png": "tail-chase-11.png"
+  },
+  {
+    "action": "tail-chase",
+    "sample": 17,
+    "png": "tail-chase-17.png"
+  },
+  {
+    "action": "tail-chase",
+    "sample": 21,
+    "png": "tail-chase-21.png"
+  },
+  {
+    "action": "tail-chase",
+    "sample": 23,
+    "png": "tail-chase-23.png"
+  },
+  {
+    "action": "twirl",
+    "sample": 9,
+    "png": "twirl-09.png"
+  },
+  {
+    "action": "twirl",
+    "sample": 17,
+    "png": "twirl-17.png"
+  },
+  {
+    "action": "twirl",
+    "sample": 19,
+    "png": "twirl-19.png"
+  },
+  {
+    "action": "twirl",
+    "sample": 21,
+    "png": "twirl-21.png"
+  },
+  {
+    "action": "tail-windmill",
+    "sample": 9,
+    "png": "tail-windmill-09.png"
+  },
+  {
+    "action": "tail-windmill",
+    "sample": 11,
+    "png": "tail-windmill-11.png"
+  },
+  {
+    "action": "tail-windmill",
+    "sample": 13,
+    "png": "tail-windmill-13.png"
+  },
+  {
+    "action": "tail-windmill",
+    "sample": 15,
+    "png": "tail-windmill-15.png"
+  },
+  {
+    "action": "tail-windmill",
+    "sample": 18,
+    "png": "tail-windmill-18.png"
+  },
+  {
+    "action": "tail-windmill",
+    "sample": 22,
+    "png": "tail-windmill-22.png"
+  }
+]

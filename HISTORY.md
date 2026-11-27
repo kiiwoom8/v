@@ -1995,6 +1995,21 @@ Invariants stated in `common.h` and enforced by history:
   21, and the worst step of each of the ten changed routines improved (pounce
   0.32 -> 0.39, tail windmill 0.32 -> 0.42, side tumble 0.41 -> 0.50).
 
+### Tailmon continuity between idle actions (2026-11-28)
+
+- Kim reported that Tailmon's actions still looked laggy and asked to connect
+  every motion. GPT Image drew 37 quarter poses to replace the remaining
+  repeated samples, plus six poses for the tail-windmill sweep and curl.
+  Keep her seated head aligned during the sweep rather than moving the cat
+  sideways as the tail extends.
+- All 24 actions play at a steady 33 ms per frame. She can chain two to four
+  different routines through the same seated drawing, played once at each
+  join. The next action retains elapsed time when a display tick arrives late.
+- The 24 clips have no remaining identical adjacent samples, down from 37.
+  Steps with less than 0.50 silhouette overlap fell from 21 to eight. The
+  Windows renderer exercised all 552 ordered distinct pairs in both facing
+  directions at 125% and 200% DPI. Older 50 ms routines retain their cadence.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2913,6 +2928,11 @@ last ten are all `worktree-agent-*` into `element-hints`.
   Check both walking directions, interruptions, and click hints through the
   handoffs. Follow the visible pose when an animation is interrupted.
 
+- **Count repeated poses when measuring animation lag.** Identical adjacent
+  samples inflate mean silhouette overlap. Count repeated poses and large
+  jumps alongside overlap, and sample the actual clock on both sides of a
+  join. A shared seated pose should occupy one tick when two actions connect.
+
 - **Check each frame for distortion and rendering cost.** Tailmon's runtime
   pixel warp smoothed changes in silhouette but bent features and ran on the UI
   loop. Package reviewed intermediate drawings and replay them at the animation
@@ -3588,6 +3608,9 @@ when the manifest changes.
   in-betweens and loop seams, then check the shipped executable size. To
   assemble the standalone routines from their GPT Image sheets, run
   `python tools/assemble_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/keyframes <rife-exe> <rife-v4.6-directory> <fresh-scratch> assets/tailmon/animations --bridges assets/tailmon/bridges --midpoints assets/tailmon/midpoints`.
+  Apply the drawn quarter poses with
+  `python tools/patch_tailmon_quarters.py assets/tailmon/animations assets/tailmon/quarters assets/tailmon/animations`.
+
   Then run `python tools/pack_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/animations assets/tailmon/motion.bin`.
   Repeat the pack step after rebaking the base transitions. The packer reads
   the 33 ms or 50 ms cadence from the clips. Use `--frame-ms` to set it explicitly.
