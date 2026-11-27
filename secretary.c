@@ -25,6 +25,7 @@
 #define MAX_ATLAS_SIZE 512
 #define PIXEL_UNIT 256
 #define BUBBLE_MS 165
+#define ROUTINE_FRAME_MS 50
 #define POSES_PER_ROW 4
 #define POSES_PER_SHEET (POSES_PER_ROW * POSES_PER_ROW)
 #define POSE_COUNT ((1 + SECRETARY_EXTRA_SHEETS) * POSES_PER_SHEET)
@@ -57,10 +58,11 @@ typedef struct {
 typedef struct {
     int pose, duration, next;
     DWORD phase;
+    unsigned routine;
 } PoseCue;
 
-#define HOLD(pose, ms) ((PoseCue){(pose), (ms), -1, 0})
-static const PoseCue no_cue = {-1, 0, -1, 0};
+#define HOLD(pose, ms) ((PoseCue){(pose), (ms), -1, 0, 0})
+static const PoseCue no_cue = {-1, 0, -1, 0, 0};
 
 enum { REACT_NONE, REACT_CLICK, REACT_MENU, REACT_LAND };
 enum { PET_WAIT, PET_TURN, PET_WALK, PET_SETTLE, PET_NAP, PET_GROOM, PET_STRETCH, PET_YAWN,
@@ -1793,12 +1795,13 @@ static const PoseClip idle_clips[] = {
 static struct {
     DWORD started, seen;
     unsigned clip, tempo, breaths, last_accent;
+    unsigned routine, last_routine;
 } idle_motion;
 
 static PoseCue motion_between(int from, int to, DWORD phase, int duration)
 {
     if (from == to) return HOLD(from, duration);
-    return (PoseCue){from, duration, to, phase};
+    return (PoseCue){from, duration, to, phase, 0};
 }
 
 // Each cue owns the full time between these two drawings. Slow transitions
@@ -1833,14 +1836,27 @@ static unsigned random_below(unsigned limit)
 static PoseCue natural_idle(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
+    SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
+    DWORD duration = routine.count ? (routine.count + 2) * ROUTINE_FRAME_MS : clip_length(clip.steps, clip.count);
     DWORD elapsed = (now - idle_motion.started) * idle_motion.tempo / 100;
     BOOL resumed = !idle_motion.tempo || now - idle_motion.seen > 100;
     idle_motion.seen = now;
-    if (resumed || elapsed >= clip_length(clip.steps, clip.count)) {
+    if (resumed || elapsed >= duration) {
+        unsigned routines = secretary_motion_routine_count();
+        idle_motion.routine = 0;
+        routine = (SecretaryMotion){0};
         if (resumed) idle_motion.breaths = 1 + random_below(2);
         if (idle_motion.breaths) {
             --idle_motion.breaths;
             idle_motion.clip = 0;
+        } else if (routines && random_below(4) != 0) {
+            BOOL omit_last = routines > 1 && idle_motion.last_routine && idle_motion.last_routine <= routines;
+            unsigned pick = 1 + random_below(routines - omit_last);
+            if (omit_last && pick >= idle_motion.last_routine) ++pick;
+            idle_motion.routine = idle_motion.last_routine = pick;
+            routine = secretary_motion_routine(pick);
+            idle_motion.clip = 0;
+            idle_motion.breaths = 1 + random_below(2);
         } else {
             unsigned last = sizeof idle_clips / sizeof *idle_clips - 1;
             unsigned choices[sizeof idle_clips / sizeof *idle_clips - 1], count = 0, i, pick;
@@ -1857,14 +1873,22 @@ static PoseCue natural_idle(DWORD now)
         clip = idle_clips[idle_motion.clip];
         elapsed = 0;
     }
+    if (routine.count) {
+        DWORD frame = elapsed / ROUTINE_FRAME_MS;
+        if (frame && frame <= routine.count)
+            return (PoseCue){IDLE_DETAIL_FIRST, ROUTINE_FRAME_MS, -1, frame - 1, idle_motion.routine};
+        return HOLD(IDLE_DETAIL_FIRST, ROUTINE_FRAME_MS);
+    }
     return motion_at(clip.steps, clip.count, elapsed, FALSE);
 }
 
 static BOOL finishing_idle_gesture(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
-    return idle_motion.clip && now - idle_motion.seen <= 100 &&
-           (now - idle_motion.started) * idle_motion.tempo / 100 < clip_length(clip.steps, clip.count);
+    SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
+    DWORD duration = routine.count ? (routine.count + 2) * ROUTINE_FRAME_MS : clip_length(clip.steps, clip.count);
+    return (idle_motion.clip || routine.count) && now - idle_motion.seen <= 100 &&
+           (now - idle_motion.started) * idle_motion.tempo / 100 < duration;
 }
 
 static void wait_to_roam(DWORD now, DWORD delay)
@@ -2571,6 +2595,19 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
     }
 finished:
     blend_ms = 0;
+    if (cue.routine) {
+        SecretaryMotion motion = secretary_motion_routine(cue.routine);
+        int frame = (int)(motion.first + cue.phase);
+        if (sample_to == key && sample_frame == frame) return FALSE;
+        motion.flip = flip;
+        if (secretary_motion_paint(motion, cue.phase, sprite.pixels)) {
+            sample_to = key;
+            sample_frame = frame;
+            sample_phase = PIXEL_UNIT / 2;
+            measured = FALSE;
+            return TRUE;
+        }
+    }
     if (cue.next >= 0) return paint_motion_sample(cue, key, blend_to, pinned);
     sample_to = -1;
     CopyMemory(sprite.pixels, blend_to, count * sizeof(DWORD));
@@ -2801,7 +2838,7 @@ static void frame(void)
         if (now - pulse < 290) at.y -= (int)(px(10) * sin((now - pulse) * 3.14159 / 290.0));
     }
     if (dragging && !use_atlas) opacity = 218;
-    if (use_atlas && (painted_pose != pose_key || blend_ms || cue.next >= 0 || sample_to >= 0))
+    if (use_atlas && (painted_pose != pose_key || blend_ms || cue.next >= 0 || cue.routine || sample_to >= 0))
         changed = paint_atlas_pose(cue, pose_key, now, pinned);
     else if (use_atlas)
         changed = FALSE;
@@ -3104,9 +3141,38 @@ static BOOL load_tailmon_sheet(const WCHAR *name, GpImage **sheet, IStream **bac
     return TRUE;
 }
 
+static BOOL same_tailmon_pixels(GpImage *custom, const WCHAR *name)
+{
+    GpImage *bundled;
+    IStream *backing;
+    UINT w, h, bw, bh;
+    BOOL match = FALSE;
+    if (!load_tailmon_sheet(name, &bundled, &backing)) return FALSE;
+    if (GdipGetImageWidth(custom, &w) == Ok && GdipGetImageHeight(custom, &h) == Ok &&
+        GdipGetImageWidth(bundled, &bw) == Ok && GdipGetImageHeight(bundled, &bh) == Ok &&
+        w == bw && h == bh && w <= 8192 && h <= 8192) {
+        GpRect bounds = {0, 0, (INT)w, (INT)h};
+        BitmapData a, b;
+        if (GdipBitmapLockBits((GpBitmap *)custom, &bounds, ImageLockModeRead, PixelFormat32bppPARGB, &a) == Ok) {
+            if (GdipBitmapLockBits((GpBitmap *)bundled, &bounds, ImageLockModeRead, PixelFormat32bppPARGB, &b) == Ok) {
+                UINT y;
+                match = TRUE;
+                for (y = 0; match && y < h; ++y)
+                    match = memcmp((BYTE *)a.Scan0 + (ptrdiff_t)y * a.Stride,
+                                   (BYTE *)b.Scan0 + (ptrdiff_t)y * b.Stride, (size_t)w * sizeof(DWORD)) == 0;
+                GdipBitmapUnlockBits((GpBitmap *)bundled, &b);
+            }
+            GdipBitmapUnlockBits((GpBitmap *)custom, &a);
+        }
+    }
+    GdipDisposeImage(bundled);
+    backing->lpVtbl->Release(backing);
+    return match;
+}
+
 // Keep the same anchors for installations that still point to the original
-// external Tailmon sheets. Custom artwork uses the measured silhouettes.
-static BOOL is_tailmon_sheet(const WCHAR *path, const WCHAR *name)
+// external Tailmon sheets. The resource for the base sheet is recompressed.
+static BOOL is_tailmon_sheet(const WCHAR *path, const WCHAR *name, GpImage *sheet)
 {
     HRSRC resource = name ? FindResourceW(g_hinst, name, RT_RCDATA) : NULL;
     const BYTE *bytes = resource ? LockResource(LoadResource(g_hinst, resource)) : NULL;
@@ -3128,7 +3194,7 @@ static BOOL is_tailmon_sheet(const WCHAR *path, const WCHAR *name)
         offset += wanted;
     }
     CloseHandle(file);
-    return match;
+    return match || (wcscmp(name, L"TAILMON_POSES") == 0 && same_tailmon_pixels(sheet, name));
 }
 
 void secretary_config_changed(void)
@@ -3160,7 +3226,7 @@ void secretary_config_changed(void)
         goto fail;
     }
     ZeroMemory(tailmon_art, sizeof(tailmon_art));
-    tailmon_art[0] = tailmon || (atlas && is_tailmon_sheet(path, L"TAILMON_POSES"));
+    tailmon_art[0] = tailmon || (atlas && is_tailmon_sheet(path, L"TAILMON_POSES", image));
     lstrcpynW(image_path, path, APP_PATH_MAX);
     CopyMemory(extra_settings, g_cfg.secretary_extra, sizeof(extra_settings));
     for (extra = 0; atlas && extra < SECRETARY_EXTRA_SHEETS; ++extra) {
@@ -3169,7 +3235,7 @@ void secretary_config_changed(void)
             if (GdipLoadImageFromFile(path, &extra_images[extra]) != Ok)
                 app_log(L"secretary: could not read animation sheet %ls", path);
             else
-                tailmon_art[extra + 1] = is_tailmon_sheet(path, tailmon_sheets[extra]);
+                tailmon_art[extra + 1] = is_tailmon_sheet(path, tailmon_sheets[extra], extra_images[extra]);
         } else if (tailmon && tailmon_sheets[extra]) {
             if (!load_tailmon_sheet(tailmon_sheets[extra], &extra_images[extra], &extra_streams[extra]))
                 app_log(L"secretary: could not read bundled animation sheet %ls", tailmon_sheets[extra]);

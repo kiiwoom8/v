@@ -6,7 +6,7 @@ SRCS = main.c config.c input.c hint.c tray.c uia.c snippet.c update.c shutdown.c
 OBJS = $(SRCS:.c=.o)
 RESOBJ = vim.res.o
 TAILMON_ASSETS = $(addprefix assets/tailmon/,poses.png movement.png rest.png reactions.png \
-	walk.png attention.png idle.png interaction.png motion.bin)
+	walk.png attention.png idle.png interaction.png motion.bin runtime/poses.png)
 TARGET = vim.exe
 
 all: $(TARGET)

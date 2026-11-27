@@ -4,7 +4,7 @@
 // Application icon (Explorer also shows it for vim.exe).
 1 ICON "vim.ico"
 
-TAILMON_POSES RCDATA "assets/tailmon/poses.png"
+TAILMON_POSES RCDATA "assets/tailmon/runtime/poses.png"
 TAILMON_MOVEMENT RCDATA "assets/tailmon/movement.png"
 TAILMON_REST RCDATA "assets/tailmon/rest.png"
 TAILMON_REACTIONS RCDATA "assets/tailmon/reactions.png"

@@ -1927,6 +1927,23 @@ Invariants stated in `common.h` and enforced by history:
   The player decodes a block at a time and reuses it while sampling motion.
   Custom sheet settings stay compatible, including the optional scroll sheet.
 
+### Tailmon: 24 separate GPT Image animations (2026-11-28)
+
+- Kim clarified that the request was for new behaviors with their own PNGs
+  and asked for the drawings to be generated with GPT Image. Twenty-four
+  four-drawing sheets supply 24 transparent animation PNGs, including a paw
+  wave, ear scratch, side tumble, play bow, and tail chase. The idle player
+  mixes these routines with the original gestures between breaths.
+- The packer appends the animation frames after the existing VTM3 transitions.
+  Old transitions retain their indexed pixels. Each new routine shares the
+  bundled sitting endpoint to make its entry and exit meet idle. RIFE can
+  leave faint double silhouettes across large pose changes. Such intervals
+  carry a clean key drawing along the motion instead.
+- Recompress the embedded neutral pose sheet after clearing RGB where alpha
+  is zero. This frees about 860 kB inside the executable. The canonical
+  source PNG keeps its original bytes. Existing external copies are recognized
+  by comparing decoded premultiplied pixels if the file bytes differ.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2114,6 +2131,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 147 | `58d0fc9` | 11-20 | 32 | `input.c` `focus_key_passed(vk, mods)`: a key passed with Ctrl / Alt / Win or a typing key while the answer is not `FOCUS_TEXT` calls `uia_focus_changed(FOCUS_TYPED_DELAY_MS)` (400); also from mouse mode's modifier pass-through | "from zendesk, searching macro get inputs (shortcut ctrl+shift+m). sometimes, if i focus that and type fast, hjkl works without alt which is not intended" |
 | 148 | This commit | 11-28 | Tailmon | Sample the prepared walk by distance and the rest sequences by elapsed time, rebake denser core motions, and vary idle accents and gesture lengths | Kim requested smoother walking and sleep entry plus much more varied idle |
 | 149 | This commit | 11-28 | Tailmon | Restore the source stride spacing, animate the loaf and stretch recovery, and triple the packaged frames with shared-palette block compression | Kim reported a limp, a static pre-nap pose and a stray cel after stretching |
+| 150 | This commit | 11-28 | Tailmon | Add 24 newly drawn animation PNGs, source sheets, and playback between idle breaths | Kim specified new standalone animations drawn with GPT Image |
 
 ## 5. Lessons learned: rules not to break
 
@@ -3513,7 +3531,13 @@ when the manifest changes.
   run `tools/tailmon_pose_export.exe poses.raw`. Run
   `python tools/bake_tailmon_motion.py poses.raw <rife-exe> <rife-v4.6-directory> <scratch> assets/tailmon/motion.bin`
   with Pillow, NumPy, and RIFE NCNN Vulkan 20221029. Compare the endpoints,
-  in-betweens and loop seams, then check the shipped executable size.
+  in-betweens and loop seams, then check the shipped executable size. To
+  assemble the standalone routines from their GPT Image sheets, run
+  `python tools/assemble_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/keyframes <rife-exe> <rife-v4.6-directory> <fresh-scratch> assets/tailmon/animations`.
+  Then run `python tools/pack_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/animations assets/tailmon/motion.bin`.
+  Repeat the pack step after rebaking the base transitions. The copy of
+  `poses.png` in `assets/tailmon/runtime` is encoded with Pillow PNG
+  optimization after setting RGB to zero at fully transparent pixels.
 
 - Local (Windows): `mingw32-make`, or double-click `build.bat` (finds MinGW in
   `C:\MinGW` or `C:\msys64\mingw32`). Tools: `mingw32-make probe check icon

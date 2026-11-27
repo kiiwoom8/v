@@ -12,6 +12,7 @@
 #define FRAMES_PER_BLOCK 12
 #define MAX_FRAME_SIDE 640
 #define PALETTE_BYTES (256 * sizeof(DWORD))
+#define ROUTINE_MARKER 0xffff
 
 typedef struct {
     char magic[4];
@@ -138,6 +139,27 @@ SecretaryMotion secretary_motion_find(int from, int to, int pose_count)
         else low = mid + 1;
     }
     return motion;
+}
+
+// Optional PNG routines follow the sorted pose edges in the embedded pack.
+// Older VTM3 packs end with a pose edge and have no standalone routines.
+unsigned secretary_motion_routine_count(void)
+{
+    const MotionEntry *last;
+    if (!pack.header) return 0;
+    last = &pack.entries[pack.header->edges - 1];
+    return last->from == ROUTINE_MARKER && last->to <= pack.header->edges ? last->to : 0;
+}
+
+SecretaryMotion secretary_motion_routine(unsigned number)
+{
+    unsigned count = secretary_motion_routine_count();
+    const MotionEntry *entry;
+    if (!number || number > count) return (SecretaryMotion){0};
+    entry = &pack.entries[pack.header->edges - count + number - 1];
+    if (entry->from != ROUTINE_MARKER || entry->to != number ||
+        entry->first + entry->count > pack.header->frames) return (SecretaryMotion){0};
+    return (SecretaryMotion){entry->first, entry->count, FALSE, FALSE};
 }
 
 static DWORD blend(DWORD a, DWORD b, DWORD fraction)

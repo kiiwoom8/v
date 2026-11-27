@@ -500,9 +500,11 @@ may ask to save it, which holds the shutdown up until someone answers. Set
 
 ## Desktop secretary
 
-`vim.exe` includes Tailmon's eight animation sheets and its prepared in-between
-frames. A fresh settings file
-enables Tailmon and its animation and assigns Claude to slot 1. For an existing settings file,
+`vim.exe` includes Tailmon's eight pose sheets, prepared in-between frames,
+and 24 extra idle animations. Open an [animation PNG](assets/tailmon/animations)
+in a browser to preview it. Its four GPT Image key drawings are in the
+[key-frame sheets](assets/tailmon/keyframes). A fresh settings file enables
+Tailmon and its animation and assigns Claude to slot 1. For an existing settings file,
 set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and
 any extra sheet paths blank to use all the bundled poses. Add personal links
 to numbered slots in your own settings file.
