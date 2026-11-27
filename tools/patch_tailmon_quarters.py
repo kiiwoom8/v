@@ -12,7 +12,7 @@ from assemble_tailmon_routines import alpha_box, fit_halfway, is_clean
 from pack_tailmon_routines import FRAME_MS
 
 
-def rgba_samples(path):
+def rgba_samples(path, expected=33):
     with Image.open(path) as clip:
         samples = []
         for frame in ImageSequence.Iterator(clip):
@@ -20,8 +20,8 @@ def rgba_samples(path):
             if duration <= 0 or duration % FRAME_MS:
                 raise ValueError(f"{path.name}: expected {FRAME_MS} ms samples")
             samples.extend([frame.convert("RGBA")] * (int(duration) // FRAME_MS))
-    if len(samples) != 33 or samples[0].tobytes() != samples[-1].tobytes():
-        raise ValueError(f"{path.name}: expected 33 samples with the same seated endpoints")
+    if len(samples) != expected or samples[0].tobytes() != samples[-1].tobytes():
+        raise ValueError(f"{path.name}: expected {expected} samples with the same seated endpoints")
     return samples
 
 

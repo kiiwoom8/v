@@ -2023,6 +2023,27 @@ Invariants stated in `common.h` and enforced by history:
   worst overlap rose from 0.407 to 0.492. The Windows test replayed every frame
   and all 552 ordered action pairs facing both ways at 125% and 200% DPI.
 
+### Tailmon playback aligned to the display (2026-11-28)
+
+- Kim still saw stutter in some actions. Fitting all routines into the same
+  duration made the longer clips alternate between one and two display
+  refreshes per drawing. On the 60 Hz display, the old clock gave 54
+  drawings across the routines a single refresh. The new clock holds every
+  drawing for two refreshes at 60 Hz and chooses a consistent hold on
+  other refresh rates. The longer actions use more time to show all their
+  drawings at this cadence.
+- During a held refresh, decode the next routine drawing. This gives the
+  renderer time to prepare the next compressed block before it needs to
+  paint it. The original 50 ms timing and motion-pack format still work.
+- GPT Image generated 36 drafts. The 22 selected drawings revise six actions,
+  including the bow, roll recovery, stretch, pounce, sniff and tail chase.
+  The bow's largest silhouette-centre reversal dropped from 14.4 to
+  8.7 pixels, and the roll's dropped from 14.9 to 10.9. Large silhouette
+  changes across all clips fell from two to one.
+- Replayed all 552 ordered pairs in both orientations at 60, 120 and 144 Hz
+  with timing jitter. The playback probe checks that every drawing uses
+  the scheduled number of display refreshes.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -3626,6 +3647,8 @@ when the manifest changes.
 
   Insert the denser transitions into those 33-sample clips with
   `python tools/extend_tailmon_actions.py assets/tailmon/animations assets/tailmon/details assets/tailmon/animations`.
+  Apply the pacing drawings after those additional in-betweens with
+  `python tools/extend_tailmon_actions.py assets/tailmon/animations assets/tailmon/pacing assets/tailmon/animations`.
   Then run `python tools/pack_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/animations assets/tailmon/motion.bin`.
   Repeat the pack step after rebaking the base transitions. The packer reads
   the 33 ms or 50 ms cadence from the clips. Use `--frame-ms` to set it explicitly.

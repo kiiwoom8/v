@@ -506,10 +506,12 @@ in a browser to preview it. Idle clips have 33 to 39 frames, with GPT Image
 drawings for the entry, middle, recovery, and the fast steps between them.
 The [key-frame sheets](assets/tailmon/keyframes),
 [bridge sheets](assets/tailmon/bridges),
-[quarter poses](assets/tailmon/quarters), and
-[additional in-betweens](assets/tailmon/details) hold the source artwork.
-Tailmon chains two to four different actions before resting. All 24 actions
-share the same seated frame and keep their original playback time.
+[quarter poses](assets/tailmon/quarters),
+[additional in-betweens](assets/tailmon/details), and
+[frames for steady playback](assets/tailmon/pacing) hold the source artwork.
+Tailmon chains two to four different actions through a shared seated drawing.
+Each drawing holds for two display refreshes at 60 Hz, so an action's length
+depends on how many drawings it has.
 A fresh settings file enables
 Tailmon and its animation and assigns Claude to slot 1. For an existing settings file,
 set `enabled = 1` under `[secretary]` and leave `image`, `sprite_sheet`, and

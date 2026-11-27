@@ -1,0 +1,80 @@
+[
+  {
+    "action": "belly-offer",
+    "start": 26,
+    "end": 28,
+    "base_samples": 39,
+    "pngs": [
+      "belly-offer-15.png"
+    ]
+  },
+  {
+    "action": "belly-offer",
+    "start": 32,
+    "end": 37,
+    "base_samples": 39,
+    "pngs": [
+      "belly-offer-06.png",
+      "belly-offer-07.png",
+      "belly-offer-08.png",
+      "belly-offer-09.png"
+    ]
+  },
+  {
+    "action": "nose-sniff",
+    "start": 8,
+    "end": 12,
+    "base_samples": 35,
+    "pngs": [
+      "nose-sniff-25.png",
+      "nose-sniff-26.png",
+      "nose-sniff-27.png"
+    ]
+  },
+  {
+    "action": "play-bow",
+    "start": 8,
+    "end": 13,
+    "base_samples": 36,
+    "pngs": [
+      "play-bow-02.png",
+      "play-bow-03.png",
+      "play-bow-04.png",
+      "play-bow-05.png"
+    ]
+  },
+  {
+    "action": "pounce",
+    "start": 1,
+    "end": 2,
+    "base_samples": 38,
+    "pngs": [
+      "pounce-33.png"
+    ]
+  },
+  {
+    "action": "stretch-one-paw",
+    "start": 22,
+    "end": 27,
+    "base_samples": 35,
+    "pngs": [
+      "stretch-one-paw-16.png",
+      "stretch-one-paw-17.png",
+      "stretch-one-paw-18.png",
+      "stretch-one-paw-19.png",
+      "stretch-one-paw-20.png"
+    ]
+  },
+  {
+    "action": "tail-chase",
+    "start": 16,
+    "end": 20,
+    "base_samples": 36,
+    "pngs": [
+      "tail-chase-29.png",
+      "tail-chase-30.png",
+      "tail-chase-31.png",
+      "tail-chase-32.png"
+    ]
+  }
+]

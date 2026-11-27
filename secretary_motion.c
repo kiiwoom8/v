@@ -208,16 +208,26 @@ static const BYTE *frame_image(unsigned index)
     return images + area * frame;
 }
 
+static const BYTE *motion_image(SecretaryMotion motion, unsigned frame)
+{
+    unsigned index;
+    if (!pack.header || frame >= motion.count) return NULL;
+    index = motion.first + (motion.reverse ? motion.count - 1 - frame : frame);
+    return index < pack.header->frames ? frame_image(index) : NULL;
+}
+
+void secretary_motion_prepare(SecretaryMotion motion, unsigned frame)
+{
+    (void)motion_image(motion, frame);
+}
+
 BOOL secretary_motion_paint(SecretaryMotion motion, unsigned frame, DWORD *pixels)
 {
     const MotionHeader *header = pack.header;
-    unsigned index;
     int x, y;
     const DWORD *palette = (const DWORD *)pack.decoded;
-    const BYTE *image;
-    if (!header || frame >= motion.count) return FALSE;
-    index = motion.first + (motion.reverse ? motion.count - 1 - frame : frame);
-    if (index >= header->frames || !(image = frame_image(index))) return FALSE;
+    const BYTE *image = motion_image(motion, frame);
+    if (!image) return FALSE;
     if (pack.width == header->width && pack.height == header->height) {
         for (y = 0; y < pack.height; ++y) {
             for (x = 0; x < pack.width; ++x)

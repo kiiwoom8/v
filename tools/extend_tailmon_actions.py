@@ -1,4 +1,4 @@
-"""Add drawn transition frames to the 33-sample Tailmon routine sources."""
+"""Add drawn transition frames to Tailmon routine sources."""
 
 import argparse
 from collections import defaultdict
@@ -42,15 +42,16 @@ def fit_action_sequence(action, cels, before, after):
 def extend_actions(animations, drawings, output):
     windows = defaultdict(list)
     for row in json.loads((drawings / "details.json").read_text(encoding="utf-8")):
-        windows[row["action"]].append((row["start"], row["end"], row["pngs"]))
+        windows[row["action"]].append(row)
     output.mkdir(parents=True, exist_ok=True)
     for action, regions in sorted(windows.items()):
         path = animations / f"{action}.png"
-        base = rgba_samples(path)
+        base = rgba_samples(path, regions[0].get("base_samples", 33))
         sequence = [base[0]]
         previous = 0
-        for start, end, pngs in sorted(regions):
-            if not previous <= start < end < len(base) or not pngs:
+        for region in sorted(regions, key=lambda region: region["start"]):
+            start, end, pngs = region["start"], region["end"], region["pngs"]
+            if region.get("base_samples", 33) != len(base) or not previous <= start < end < len(base) or not pngs:
                 raise ValueError(f"{action}: invalid or overlapping interval {start}-{end}")
             cels = []
             for name in pngs:

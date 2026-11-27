@@ -362,7 +362,7 @@ static DWORD animation_now(void)
 static HRESULT (WINAPI *dwm_timing)(HWND, void *);
 static LONGLONG refresh_qpc, vblank_qpc, last_frame_qpc; // timer callback only
 static DWORD timing_read;
-static volatile LONG frame_interval = FALLBACK_FRAME_MS; // ms, read by the UI thread
+static volatile LONG frame_interval_us = FALLBACK_FRAME_MS * 1000; // read by the UI thread
 
 static void read_refresh(LONGLONG now)
 {
@@ -381,7 +381,7 @@ static void read_refresh(LONGLONG now)
     }
     refresh_qpc = period;
     vblank_qpc = vblank;
-    InterlockedExchange(&frame_interval, (LONG)(period * 1000 / second));
+    InterlockedExchange(&frame_interval_us, (LONG)(period * 1000000 / second));
 }
 
 static BOOL arm_frame_timer(void)
@@ -440,7 +440,7 @@ static void start_frame_timer(void)
             return;
         stop_frame_timer();
     }
-    InterlockedExchange(&frame_interval, FALLBACK_FRAME_MS);
+    InterlockedExchange(&frame_interval_us, FALLBACK_FRAME_MS * 1000);
     SetTimer(pet, 1, FALLBACK_FRAME_MS, NULL);
 }
 
@@ -1832,10 +1832,18 @@ static unsigned random_below(unsigned limit)
     return n % limit;
 }
 
-// Extra drawings increase the sampling rate within the original action time.
-static DWORD idle_routine_duration(SecretaryMotion routine, unsigned frame_ms)
+// Keep equal time on each drawing. Squeezing a longer clip into the
+// original slot made some cels last one refresh and the rest two.
+static DWORD idle_routine_period(unsigned frame_ms, DWORD refresh_us)
 {
-    return (frame_ms == 33 ? 33 : routine.count + 2) * frame_ms;
+    DWORD nominal = frame_ms * 1000;
+    if (frame_ms != 33) return nominal;
+    return max(1, (nominal + refresh_us / 2) / refresh_us) * refresh_us;
+}
+
+static DWORD idle_routine_frame(DWORD elapsed, DWORD period_us, DWORD slack_us)
+{
+    return (DWORD)(((ULONGLONG)elapsed * 1000 + slack_us) / period_us);
 }
 
 static PoseCue natural_idle(DWORD now)
@@ -1843,17 +1851,23 @@ static PoseCue natural_idle(DWORD now)
     PoseClip clip = idle_clips[idle_motion.clip];
     SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
     unsigned frame_ms = secretary_motion_routine_frame_ms();
-    DWORD duration = routine.count ? idle_routine_duration(routine, frame_ms)
-                                   : clip_length(clip.steps, clip.count);
+    DWORD refresh_us = (DWORD)frame_interval_us;
+    DWORD period_us = idle_routine_period(frame_ms, refresh_us);
+    // A timer can wake slightly before or after its display slot.
+    DWORD slack_us = frame_ms == 33 ? refresh_us / 2 : 0;
     DWORD elapsed = (now - idle_motion.started) * idle_motion.tempo / 100;
+    DWORD frame = routine.count ? idle_routine_frame(elapsed, period_us, slack_us) : 0;
+    BOOL finished = routine.count ? frame >= routine.count + 2
+                                  : elapsed >= clip_length(clip.steps, clip.count);
     BOOL resumed = !idle_motion.tempo || now - idle_motion.seen > 100;
     idle_motion.seen = now;
-    if (resumed || elapsed >= duration) {
+    if (resumed || finished) {
         unsigned routines = secretary_motion_routine_count();
         // Every current routine ends on the same seated drawing. A chain
         // uses that drawing once and carries the elapsed time across the join.
         BOOL join_next = !resumed && frame_ms == 33 && routines > 1 && routine.count &&
                          idle_motion.following_routines;
+        DWORD seated_at = join_next ? ((routine.count + 1) * period_us + 500) / 1000 : 0;
         idle_motion.routine = 0;
         routine = (SecretaryMotion){0};
         if (resumed) {
@@ -1889,23 +1903,21 @@ static PoseCue natural_idle(DWORD now)
             idle_motion.breaths = 1 + random_below(3);
         }
         if (join_next) {
-            idle_motion.started += duration - frame_ms;
+            idle_motion.started += seated_at;
             elapsed = now - idle_motion.started;
         } else {
             idle_motion.started = now;
             elapsed = 0;
         }
+        frame = routine.count ? idle_routine_frame(elapsed, period_us, slack_us) : 0;
         idle_motion.tempo = routine.count && frame_ms == 33 ? 100 : 75 + random_below(46);
         clip = idle_clips[idle_motion.clip];
     }
     if (routine.count) {
-        DWORD drawing_ms = idle_routine_duration(routine, frame_ms) - 2 * frame_ms;
-        if (elapsed >= frame_ms && elapsed - frame_ms < drawing_ms) {
-            DWORD frame = (DWORD)((ULONGLONG)(elapsed - frame_ms) * routine.count / drawing_ms);
-            return (PoseCue){IDLE_DETAIL_FIRST, (int)(drawing_ms / routine.count),
-                             -1, frame, idle_motion.routine};
-        }
-        return HOLD(IDLE_DETAIL_FIRST, (int)frame_ms);
+        int sample_ms = (int)((period_us + 500) / 1000);
+        if (frame && frame <= routine.count)
+            return (PoseCue){IDLE_DETAIL_FIRST, sample_ms, -1, frame - 1, idle_motion.routine};
+        return HOLD(IDLE_DETAIL_FIRST, sample_ms);
     }
     return motion_at(clip.steps, clip.count, elapsed, FALSE);
 }
@@ -1914,10 +1926,16 @@ static BOOL finishing_idle_gesture(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
     SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
-    DWORD duration = routine.count ? idle_routine_duration(routine, secretary_motion_routine_frame_ms())
-                                   : clip_length(clip.steps, clip.count);
-    return (idle_motion.clip || routine.count) && now - idle_motion.seen <= 100 &&
-           (now - idle_motion.started) * idle_motion.tempo / 100 < duration;
+    DWORD elapsed = (now - idle_motion.started) * idle_motion.tempo / 100;
+    if (now - idle_motion.seen > 100) return FALSE;
+    if (routine.count) {
+        unsigned frame_ms = secretary_motion_routine_frame_ms();
+        DWORD refresh_us = (DWORD)frame_interval_us;
+        DWORD period_us = idle_routine_period(frame_ms, refresh_us);
+        return idle_routine_frame(elapsed, period_us, frame_ms == 33 ? refresh_us / 2 : 0)
+               < routine.count + 2;
+    }
+    return idle_motion.clip && elapsed < clip_length(clip.steps, clip.count);
 }
 
 static void wait_to_roam(DWORD now, DWORD delay)
@@ -2554,7 +2572,7 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
     }
     if (painted_pose != key) {
         BOOL can_blend = painted_pose >= 0 && animate && sample_to != key;
-        BOOL interrupted = blend_ms && now - blend_started + (DWORD)frame_interval < blend_ms;
+        BOOL interrupted = blend_ms && now - blend_started + (DWORD)frame_interval_us / 1000 < blend_ms;
         BOOL mid_path = sample_to >= 0 && sample_phase > 32 && sample_phase < 224;
         int previous_key = sample_to >= 0 && sample_phase >= 224 ? sample_to : painted_pose;
         blend_ms = 0;
@@ -2566,7 +2584,7 @@ static BOOL paint_atlas_pose(PoseCue cue, int key, DWORD now, BOOL pinned)
             tailmon_art[(previous_key % POSE_COUNT) / POSES_PER_SHEET])
             prepared_motion = secretary_motion_find(previous_key, key, POSE_COUNT);
         if (interrupted && prepared_motion.count) {
-            bridge_ms = 2 * (DWORD)frame_interval;
+            bridge_ms = 2 * ((DWORD)frame_interval_us / 1000);
             blend_sample = -1;
             CopyMemory(blend_entry, blend_to, count * sizeof(DWORD));
         }
@@ -2627,7 +2645,11 @@ finished:
     if (cue.routine) {
         SecretaryMotion motion = secretary_motion_routine(cue.routine);
         int frame = (int)(motion.first + cue.phase);
-        if (sample_to == key && sample_frame == frame) return FALSE;
+        if (sample_to == key && sample_frame == frame) {
+            // Use the refresh that holds this pose to decode the next one.
+            secretary_motion_prepare(motion, cue.phase + 1);
+            return FALSE;
+        }
         motion.flip = flip;
         if (secretary_motion_paint(motion, cue.phase, sprite.pixels)) {
             sample_to = key;
