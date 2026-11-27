@@ -905,7 +905,9 @@ static void build_help_rows(void)
                      L"Move the browser tab right / left (outside text fields)");
     if (g_cfg.esc_unfocus)
         help_add_row(L"Esc in a text field",
-                     g_cfg.esc_unfocus >= 2
+                     g_cfg.esc_unfocus >= 3
+                     ? L"Leave it, in every program (browsers: the focus goes to the page)"
+                     : g_cfg.esc_unfocus >= 2
                      ? L"Leave it: the focus goes to the page (browsers and web apps)"
                      : L"Leave it: the focus goes to the page (web browsers)");
     if (g_cfg.alt_unfocus)

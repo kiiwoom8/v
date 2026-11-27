@@ -6849,6 +6849,24 @@ static BOOL class_in(const WCHAR *cls, const WCHAR *const *list)
     return FALSE;
 }
 
+// Terminals and editors whose text area is the whole window, by the top
+// window's class. Esc is their own key (vim, less, an interrupt), so
+// esc_unfocus = 3 leaves them alone.
+static BOOL terminal_root(HWND root)
+{
+    static const WCHAR *const root_classes[] = {
+        L"ConsoleWindowClass", L"CASCADIA_HOSTING_WINDOW_CLASS",
+        L"PseudoConsoleWindow", L"mintty", L"PuTTY", L"VirtualConsoleClass",
+        L"Vim", L"Emacs", NULL
+    };
+    WCHAR cls[64];
+
+    cls[0] = 0;
+    if (root)
+        GetClassNameW(root, cls, 64);
+    return class_in(cls, root_classes);
+}
+
 // Windows that take typing whatever UI Automation says: edit controls, and
 // terminals and editors whose text area is the whole window.
 static BOOL text_window(HWND focus)
@@ -6856,24 +6874,19 @@ static BOOL text_window(HWND focus)
     static const WCHAR *const focus_classes[] = {
         L"Edit", L"Scintilla", NULL
     };
-    static const WCHAR *const root_classes[] = {
-        L"ConsoleWindowClass", L"CASCADIA_HOSTING_WINDOW_CLASS",
-        L"PseudoConsoleWindow", L"mintty", L"PuTTY", L"VirtualConsoleClass",
-        L"Vim", L"Emacs", NULL
-    };
     WCHAR cls[64];
-    HWND root;
 
     cls[0] = 0;
     GetClassNameW(focus, cls, 64);
     if (class_in(cls, focus_classes) || _wcsnicmp(cls, L"RichEdit", 8) == 0)
         return TRUE;
-    root = GetAncestor(focus, GA_ROOT);
-    cls[0] = 0;
-    if (root)
-        GetClassNameW(root, cls, 64);
-    return class_in(cls, root_classes);
+    return terminal_root(GetAncestor(focus, GA_ROOT));
 }
+
+// esc_unfocus = 3: the top window whose keyboard focus Esc cleared (focus
+// worker only). While it is in front with no focus window, nothing takes
+// typing, so the keys without Alt are ours (focus_classify).
+static HWND g_lv_blank;
 
 static LONG cached_long_property(IUIAutomationElement *el, int property_id)
 {
@@ -7287,6 +7300,10 @@ static int focus_classify(IUIAutomation *automation,
     if (!focus_window(&focus, &gti, &pid))
         return FOCUS_UNKNOWN;
     *out = focus;
+    if (g_lv_blank && !gti.hwndFocus && focus == g_lv_blank &&
+        !(gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE |
+                       GUI_SYSTEMMENUMODE)))
+        return FOCUS_OTHER;
     if (gti.hwndCaret || (gti.flags & GUI_CARETBLINKING))
         return FOCUS_TEXT;
     if (gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE))
@@ -7393,12 +7410,22 @@ static const WCHAR *focus_kind_name(int kind)
 // suggestions on every click, and giving the first Esc to an open list
 // meant two presses there (removed on the user's report).
 //
+// esc_unfocus = 3 (2026-11-28, "make esc escape from input focus in any
+// program"): Esc in a text field of any other program clears the window's
+// keyboard focus instead (SetFocus(NULL) inside the app's input state,
+// AttachThreadInput). A native window hands the focus straight back to its
+// edit control when the window itself is focused (WM_SETFOCUS), so there is
+// no "page" to move to; with no focus window at all the window stays
+// active, typing goes nowhere (Windows sends keys to it as WM_SYSKEYDOWN, a
+// letter it does not use beeps), and a click, or switching away and back,
+// gives the field the focus again. Only Esc, not hold_unfocus or
+// alt_unfocus, and never in terminals and whole-window editors.
+//
 // The hook arms it at the Esc press (uia_focus_leave_down) and the worker
 // finds the field and where the focus goes at once. The move waits for the release (uia_focus_leave_up) plus LEAVE_AFTER_MS,
 // and only if the focus is still in a text field of that window: an Esc that
-// closed a dialog or moved the focus itself is left alone. Native apps are
-// never touched: their windows hand the focus straight back to their edit
-// control, and their Esc means too much (cancel, close).
+// closed a dialog or moved the focus itself is left alone (an Esc that
+// cancelled or closed something has moved the focus away).
 
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
 #define PROCESS_QUERY_LIMITED_INFORMATION 0x1000
@@ -7440,6 +7467,7 @@ typedef struct {
     HWND focus;                         // the focus window when it was looked at
     IUIAutomationCacheRequest *cache;   // full elements, control type and more
     BOOL in_page;                       // the field is in a page, not the browser's own UI
+    BOOL blank;                         // esc_unfocus = 3: clear the window's focus, no target
     BOOL hold;                          // a held scroll key, not an Esc
     int kind;                           // LV_*
 } LeaveState;
@@ -7691,6 +7719,33 @@ static void leave_drop(LeaveState *lv)
     lv->field = NULL;
     lv->focus = NULL;
     lv->in_page = FALSE;
+    lv->blank = FALSE;
+}
+
+// The esc_unfocus level for what armed the leave: 3 (every program) is for
+// Esc only; the held and Alt keys keep to the browsers there.
+static int leave_level(int kind)
+{
+    int level = g_cfg.esc_unfocus;
+
+    return kind != LV_ESC && level > 2 ? 1 : level;
+}
+
+// esc_unfocus = 3: clear the keyboard focus of focus's thread, so no window
+// of it takes typing. SetFocus works on the calling thread's input state,
+// shared with the app's while attached. TRUE when the focus is gone.
+static BOOL leave_blank(HWND focus)
+{
+    DWORD me = GetCurrentThreadId();
+    DWORD tid = GetWindowThreadProcessId(focus, NULL);
+    BOOL ok;
+
+    if (!tid || tid == me || !AttachThreadInput(me, tid, TRUE))
+        return FALSE;
+    SetFocus(NULL);
+    ok = GetFocus() == NULL;
+    AttachThreadInput(me, tid, FALSE);
+    return ok;
 }
 
 // Whether typing goes into a text field in focus (the window with the
@@ -7724,6 +7779,8 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
     HWND focus, root;
     DWORD pid;
     const WCHAR *why = NULL;
+    int level = leave_level(lv->kind);
+    BOOL web = FALSE;
 
     leave_drop(lv);
     if (!automation || !leave_cache_ready(automation, lv)) {
@@ -7734,20 +7791,29 @@ static void leave_look(IUIAutomation *automation, LeaveState *lv)
     } else if (gti.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE |
                             GUI_SYSTEMMENUMODE)) {
         why = L"a menu is open";
-    } else if (!(root = GetAncestor(focus, GA_ROOT)) ||
-               !uia_browser_window(root) ||
-               (g_cfg.esc_unfocus < 2 && !browser_process(pid))) {
-        why = g_cfg.esc_unfocus < 2 ? L"not a web browser"
-                                    : L"no web content";
+    } else if (!(root = GetAncestor(focus, GA_ROOT))) {
+        why = L"no focus window";
+    } else if (!(web = uia_browser_window(root) &&
+                       (level >= 2 || browser_process(pid))) &&
+               level < 3) {
+        why = level < 2 ? L"not a web browser" : L"no web content";
+    } else if (!web && terminal_root(root)) {
+        why = L"a terminal (Esc is its own key)";
     } else if (!leave_in_text(automation, lv, focus, &gti, &el)) {
         why = L"not in a text field";
     } else {
-        if (el)
+        if (web && el)
             lv->target = leave_document_above(automation, lv->cache, el);
         lv->in_page = lv->target != NULL;
-        if (!lv->target && uia_chromium_window(root))
+        if (web && !lv->target && uia_chromium_window(root))
             lv->target = leave_page_document(automation, lv->cache, root);
-        if (!lv->target) {
+        // Every other program (and an app on web content with no page
+        // around the field): clear the window's focus. A browser's own UI
+        // with no page keeps it, as before.
+        if (!lv->target && level >= 3 &&
+            !(uia_browser_window(root) && browser_process(pid)))
+            lv->blank = TRUE;
+        if (!lv->target && !lv->blank) {
             why = L"no page to move the focus to";
         } else {
             lv->focus = focus;
@@ -7830,6 +7896,22 @@ static BOOL leave_act(IUIAutomation *automation, LeaveState *lv)
                     L"field", name);
         return FALSE;
     }
+    if (lv->blank) {
+        BOOL ok = leave_blank(focus);
+        DWORD err = ok ? 0 : GetLastError();
+
+        g_lv_blank = ok ? GetAncestor(focus, GA_ROOT) : NULL;
+        if (g_cfg.log) {
+            if (ok)
+                app_log(L"%ls: focus cleared, no text field takes typing",
+                        name);
+            else
+                app_log(L"%ls: the focus stays, the app would not let it go "
+                        L"(error %lu)", name, (unsigned long)err);
+        }
+        uia_focus_changed(LEAVE_SETTLE_MS);
+        return ok;
+    }
     if (lv->hold)
         leave_erase(lv);
     hr = lv->target->lpVtbl->SetFocus(lv->target);
@@ -7892,7 +7974,7 @@ static DWORD leave_step(IUIAutomation *automation, LeaveState *lv)
         lv->hold = hold_ms != 0;
         lv->kind = kind;
         leave_look(automation, lv);
-        if (!lv->target) {
+        if (!lv->target && !lv->blank) {
             lv->done_seq = seq;
             leave_result(seq, LEAVE_NO);
             return 0;

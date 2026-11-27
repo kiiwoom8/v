@@ -174,11 +174,19 @@ bar, the field's suggestion list), and the same press leaves the field.
 Nothing happens when another key comes before
 `Esc` is released, when `Esc` is held, while a menu is open, or when `Esc`
 itself moved the focus. It works in Chrome, Edge, Firefox, Brave, Vivaldi,
-Opera, Whale, ego lite and other browsers by process name; `esc_unfocus = 2` also
-covers apps built on web content (Electron apps such as Slack, WebView2
-apps), whose editors often use `Esc` themselves, and `esc_unfocus = 0` turns
-it off. Native apps are never touched: their windows hand the focus
-straight back to the text field.
+Opera, Whale, ego lite and other browsers by process name.
+
+**In every other program too** (`esc_unfocus = 3`, the default). In apps
+built on web content (Electron apps such as Slack or Claude, WebView2 apps)
+the focus goes to their page the same way. In any other program (Explorer's
+address and search boxes, KakaoTalk, Notepad, Office, settings windows) the
+window keeps nothing focused: it stays in front, but typing goes nowhere,
+so the keys without Alt work and other letters do nothing (Windows may
+beep for them). Click the field, or switch away and back, to type again;
+`Tab` does not bring it back there. Terminals (Windows Terminal, the
+console, PuTTY, mintty) and Vim / Emacs windows are left alone: `Esc` is
+their own key. `esc_unfocus = 1` keeps it to web browsers, 2 to browsers
+and web apps, 0 turns it off.
 
 **Hold `j`, `k`, `u` or `d` to leave a text field.** In the same text
 fields, holding one of the scroll keys for `hold_unfocus` ms (default
@@ -681,8 +689,9 @@ ones:
   screen, 0-1000, default 300; 0 = off), `tab_move_tap_ms` (two `>` or
   `<` taps within this many ms outside text fields in a browser move the
   tab right / left, 0-3000, default 1000; 0 = off), `esc_unfocus` (`Esc` in a
-  text field moves the focus to the page: 1 = in web browsers, default;
-  2 = also in apps built on web content; 0 = off), `hold_unfocus` (`j`
+  text field moves the focus to the page: 1 = in web browsers; 2 = also in
+  apps built on web content; 3 = in every program, default, where other
+  apps keep no focus at all and terminals are left alone; 0 = off), `hold_unfocus` (`j`
   `k` `u` `d` held this many ms in such a text field leave it and scroll,
   0-2000, default 300; 0 = off), `alt_unfocus` (1 = vim mouse's Alt keys
   used in such a text field leave it like `Esc`, the hint hotkey once the
@@ -997,8 +1006,9 @@ user's store.
   after each focus change ("focus: text field" or "focus: no text field").
   `bare_keys = 0` turns the Alt-less keys off.
 - **`Esc` takes me out of a text field I wanted to keep typing in.** In a
-  browser `Esc` moves the focus to the page (`esc_unfocus`); click the field
-  to type again, or set `esc_unfocus = 0`. With `log = 1`, `vim.log` says
+  browser `Esc` moves the focus to the page, in other programs it clears the
+  window's focus (`esc_unfocus`); click the field to type again, or set
+  `esc_unfocus = 1` (browsers only) or 0. With `log = 1`, `vim.log` says
   what each `Esc` did ("esc: focus to the page", or "esc: the focus stays"
   and why).
 - **Holding `j` or `k` in a search box leaves it.** That is `hold_unfocus`

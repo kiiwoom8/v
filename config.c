@@ -598,7 +598,7 @@ void config_set_defaults(Config *c)
     c->scroll_end_tap_ms = 500;
     c->center_tap_ms = 300;
     c->tab_move_tap_ms = 1000;
-    c->esc_unfocus = 1;
+    c->esc_unfocus = 3;
     c->hold_unfocus = 300;
     c->alt_unfocus = 1;
     c->zoom_speed = 150;
@@ -1048,7 +1048,7 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
     else if (_wcsicmp(key, L"tab_move_tap_ms") == 0)
         apply_int_range(&c->tab_move_tap_ms, line, key, val, 0, 3000);
     else if (_wcsicmp(key, L"esc_unfocus") == 0)
-        apply_int_range(&c->esc_unfocus, line, key, val, 0, 2);
+        apply_int_range(&c->esc_unfocus, line, key, val, 0, 3);
     else if (_wcsicmp(key, L"hold_unfocus") == 0)
         apply_int_range(&c->hold_unfocus, line, key, val, 0, 2000);
     else if (_wcsicmp(key, L"alt_unfocus") == 0)
@@ -1827,7 +1827,9 @@ static void build_default_ini(WCHAR *buf, size_t cch)
     appendf(buf, cch, L"; again). Esc still reaches the app first, so the same press also closes\r\n");
     appendf(buf, cch, L"; the field's suggestion list.\r\n");
     appendf(buf, cch, L"; 1 = in web browsers (and their address bar), 2 = also in apps built on\r\n");
-    appendf(buf, cch, L"; web content (Electron, WebView2), 0 = off.\r\n");
+    appendf(buf, cch, L"; web content (Electron, WebView2), 3 = in every program (other apps:\r\n");
+    appendf(buf, cch, L"; no window keeps the keyboard focus, so typing goes nowhere until a\r\n");
+    appendf(buf, cch, L"; click; terminals excepted), 0 = off.\r\n");
     appendf(buf, cch, L"esc_unfocus = %d\r\n", d.esc_unfocus);
     appendf(buf, cch, L"; j k u d held this many ms in such a text field leave it the same way:\r\n");
     appendf(buf, cch, L"; the letter the press typed is taken back, the focus goes to the page\r\n");

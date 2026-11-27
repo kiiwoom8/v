@@ -212,8 +212,10 @@ typedef struct {
                                // 1000 (0 = off; needs bare_keys)
     int    esc_unfocus;        // Esc in a text field moves the focus to the page, so the
                                // keys without Alt work: 1 = in web browsers (and their
-                               // address bar), default; 2 = also apps built on web
-                               // content (Electron, WebView2); 0 = off. Esc still
+                               // address bar); 2 = also apps built on web content
+                               // (Electron, WebView2); 3 = every program, default
+                               // (elsewhere the window's focus is cleared; not
+                               // terminals); 0 = off. Esc still
                                // reaches the app first (it closes a suggestion list)
     int    hold_unfocus;       // ms: a scroll key (j k u d) held this long in such a text
                                // field takes its letter back, leaves the field like Esc

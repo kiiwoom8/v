@@ -1862,6 +1862,33 @@ Invariants stated in `common.h` and enforced by history:
   `opacity` default 150 -> 235 (the value before 2026-11-25); letters and
   borders stay opaque (per-pixel alpha). Kim's own `vim.ini` 150 -> 235.
 
+### `Esc` leaves a text field in every program (2026-11-28)
+
+- Kim: "not only disable text input focus on browser, make esc to escape
+  from input focus from any programs". `esc_unfocus = 3`, the new default
+  (range 0-3): browsers move the focus to the page as before, apps on web
+  content (Electron, WebView2) the same way as with 2, and every other
+  program has its window's keyboard focus cleared (`uia.c` `leave_blank`:
+  `AttachThreadInput` to the app's thread, `SetFocus(NULL)`, detach). A
+  native window cannot be given a "page": focusing the window itself
+  bounces the focus back to its edit control in `WM_SETFOCUS` (phase 15),
+  so the focus goes nowhere. The window stays active; Windows hands keys
+  to it as `WM_SYSKEYDOWN`, so letters type nothing (an unused one beeps),
+  `Tab` does not refocus, a click or switching away and back does.
+- `focus_classify` answers `FOCUS_OTHER` while the window Esc cleared
+  (`g_lv_blank`) is in front with no focus window and no menu, so the keys
+  without Alt work at once (a bare top window says `FOCUS_UNKNOWN`
+  otherwise and they would type).
+- Same guards as phase 15: armed at the press, acted on after the release
+  only if the focus is still in a text field of the same window (an `Esc`
+  that closed a dialog or KakaoTalk's chat window does nothing). Never in
+  terminals and whole-window editors (`terminal_root`: Windows Terminal,
+  the console, PuTTY, mintty, Vim, Emacs), where `Esc` is the program's
+  key (Claude Code's interrupt, vim). Only `Esc`: `hold_unfocus` and
+  `alt_unfocus` keep level 1's browsers at 3 (`leave_level`), so a held
+  `j` or an Alt key in Notepad or VS Code still types / acts as before.
+- Kim's `vim.ini` sets no `esc_unfocus`, so the new default applies.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2225,8 +2252,12 @@ last ten are all `worktree-agent-*` into `element-hints`.
   the focus in the field. One press: do not hand the first `Esc` to an
   open suggestion list (Google's box opens one on every click, phase 15). The look and the
   move run on the focus worker; the hook only arms, posts and cancels.
-  Electron apps are not browsers here (VS Code's editor closes its widgets
-  with `Esc`), and native apps cannot be left this way at all.
+  Electron apps are not browsers here at 1 (VS Code's editor closes its
+  widgets with `Esc`). Native apps cannot be given a page (their window
+  hands the focus back to the edit control): at 3 the window's focus is
+  cleared instead (`SetFocus(NULL)` attached to the app's thread), and
+  `focus_classify` must call that blank focus `FOCUS_OTHER` or the keys
+  without Alt would still type. Never in terminals: `Esc` is their key.
 - **A held scroll key leaves a text field without delaying typing.**
   `hold_unfocus` lets the press type and takes the letter back when it
   leaves; do not hold the press back to avoid the erase (every typed
@@ -3011,6 +3042,7 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | The touchpad is on while the keyboard is locked, off again after unlocking (with `touchpad_off`) | phase 18 | The touchpad stayed off under the lock, so only a mouse worked |
 | `Alt+T` (`touchpad_hotkey`) turns the touchpad on while vim mouse runs and off again; phases 24 and 25 (off only while the keys steer, then in mouse mode) are gone | phase 26 | The touchpad was off all the time with no key to get it back short of pausing |
 | In a web browser, `Esc` in a text field (or the address bar) moves the focus to the page once the field has had the `Esc`, one press even with its suggestion list open (`esc_unfocus = 0` restores, 2 adds Electron and WebView2 apps) | phase 15 | `Esc` only did what the field did with it; the keys without Alt needed a click on the page first |
+| `esc_unfocus` defaults to 3: `Esc` in a text field of any other program (not terminals) clears the window's keyboard focus, and v treats that blank focus as outside text fields (`esc_unfocus = 1` restores browsers only) | 2026-11-28 | Native apps were never touched; their fields kept the focus after `Esc` |
 | A held move key pauses the pointer `magnet` ms (200) where the cursor turns into the hand (`magnet = 0` restores) | phase 16 | The pointer passed links at full speed |
 | After `magnet_skip` ms (500) of holding the move keys the magnet no longer pauses and a running pause ends; the press counts by the clock from the first move key down to the last one up, pauses included (`magnet_skip = 0` restores) | phases 20, 30 | A long hold heading far stopped on every link it crossed; counting only the time moved let a dense page stop it well past half a second |
 | In a browser text field, `j k u d` held `hold_unfocus` ms (300) take their letter back, leave the field like `Esc` and scroll (`hold_unfocus = 0` restores) | phase 17 | A held letter repeated in the field; leaving needed `Esc` or a click |
