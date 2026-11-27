@@ -1979,6 +1979,22 @@ Invariants stated in `common.h` and enforced by history:
   poses for those intervals RIFE only has to cover the small steps around
   them, which it does for every interval it already handles.
 
+### Tailmon: drawn halfway poses for the gaps RIFE cannot follow (2026-11-28)
+
+- Kim had GPT Image draw the 40 missing halfway poses from each gap's two
+  drawings (`assets/tailmon/midpoints`). The assembler's `--midpoints` makes
+  each one the middle of its gap; RIFE draws the quarter steps either side.
+- Placed by the bridges' rule (the average box height of the two endpoints),
+  several came out 10-20 % smaller than the cat on either side (glove area),
+  and one tail-windmill step overlapped its neighbour by 0.13. Each drawing is
+  now sized (-15 % to +25 %) and moved (12 px either way) to the placement
+  whose smaller overlap with its two neighbours is largest.
+- RIFE still ghosts on 37 of the 80 quarter steps, 27 of them from the
+  earlier drawing to the halfway pose (doubled face or paws); those hold the
+  drawing they leave, so the jump there is half the old one. Steps whose silhouettes overlap less than 0.5 went from 26 to
+  21, and the worst step of each of the ten changed routines improved (pounce
+  0.32 -> 0.39, tail windmill 0.32 -> 0.42, side tumble 0.41 -> 0.50).
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -2168,7 +2184,8 @@ last ten are all `worktree-agent-*` into `element-hints`.
 | 149 | This commit | 11-28 | Tailmon | Restore the source stride spacing, animate the loaf and stretch recovery, and triple the packaged frames with shared-palette block compression | Kim reported a limp, a static pre-nap pose and a stray cel after stretching |
 | 150 | This commit | 11-28 | Tailmon | Add 24 newly drawn animation PNGs, source sheets, and playback between idle breaths | Kim specified new standalone animations drawn with GPT Image |
 | 151 | This commit | 11-28 | Tailmon | Add drawn entry, middle, and recovery poses and connect some adjacent idle routines | Kim requested more frames and smoother bridges between actions |
-| 152 | This commit | 11-28 | Tailmon | Carry the floor contact, not the box centre, through ghosted intervals; hold the neighbouring drawing when the halfway frame is clean | Kim found the new routines mostly awkward; 40 of 192 intervals cannot be interpolated |
+| 152 | `bd8589d` | 11-28 | Tailmon | Carry the floor contact, not the box centre, through ghosted intervals; hold the neighbouring drawing when the halfway frame is clean | Kim found the new routines mostly awkward; 40 of 192 intervals cannot be interpolated |
+| 153 | This commit | 11-28 | Tailmon | Use 40 drawn halfway poses in the gaps RIFE cannot follow, each fitted to its neighbours | Kim had GPT Image draw them after the routines still snapped |
 
 ## 5. Lessons learned: rules not to break
 
@@ -3570,7 +3587,7 @@ when the manifest changes.
   with Pillow, NumPy, and RIFE NCNN Vulkan 20221029. Compare the endpoints,
   in-betweens and loop seams, then check the shipped executable size. To
   assemble the standalone routines from their GPT Image sheets, run
-  `python tools/assemble_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/keyframes <rife-exe> <rife-v4.6-directory> <fresh-scratch> assets/tailmon/animations --bridges assets/tailmon/bridges`.
+  `python tools/assemble_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/keyframes <rife-exe> <rife-v4.6-directory> <fresh-scratch> assets/tailmon/animations --bridges assets/tailmon/bridges --midpoints assets/tailmon/midpoints`.
   Then run `python tools/pack_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/animations assets/tailmon/motion.bin`.
   Repeat the pack step after rebaking the base transitions. The packer reads
   the 33 ms or 50 ms cadence from the clips. Use `--frame-ms` to set it explicitly.

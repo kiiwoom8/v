@@ -107,6 +107,69 @@ def place_bridge(cel, before, after):
     return image
 
 
+def midpoint_drawings(folder):
+    """(action, interval) -> the drawn halfway pose of that interval. `midpoints.json` lists
+    each drawing with its action and 1-based gap; interval 0 is neutral -> entry drawing."""
+    drawings = {}
+    for row in json.loads((folder / "midpoints.json").read_text(encoding="utf-8")):
+        with Image.open(folder / row["png"]) as source:
+            cel = source.convert("RGBA")
+        drawings[(row["action"], row["gap"] - 1)] = cel.crop(alpha_box(cel))
+    return drawings
+
+
+def silhouette(image):
+    return np.asarray(image.getchannel("A")) >= 128
+
+
+def overlap(a, b):
+    return np.count_nonzero(a & b) / max(1, np.count_nonzero(a | b))
+
+
+def fit_halfway(cel, before, after):
+    """A drawn halfway pose on the canvas, sized and placed to overlap both of its neighbours
+    best: the drawings were made at their own scale, and the bridges' rule (the average box
+    height of the endpoints) left some of them 10-20 % smaller than the cat on either side,
+    so she shrank and grew back within a quarter second."""
+    base = place_bridge(cel, before, after)
+    box = alpha_box(base)
+    floor = box[3]
+    height = box[3] - box[1]
+    centre = (box[0] + box[2]) / 2
+    ends = [silhouette(before), silhouette(after)]
+    best = None
+    for step in range(-6, 11):
+        tall = round(height * (1 + step * .025))
+        if tall < 8 or tall > floor - 3:
+            continue
+        sized = cel.resize((max(1, round(cel.width * tall / cel.height)), tall), Image.Resampling.LANCZOS)
+        for dx in range(-12, 13, 2):
+            x = round(centre - sized.width / 2) + dx
+            if x < 3 or x + sized.width > before.width - 3:
+                continue
+            image = Image.new("RGBA", before.size)
+            image.alpha_composite(sized, (x, floor - tall))
+            shape = silhouette(image)
+            score = min(overlap(shape, end) for end in ends)
+            if best is None or score > best[0]:
+                best = (score, image)
+    return best[1] if best else base
+
+
+def halfway_frames(rife, model, work, pairs):
+    """RIFE's halfway frame of every (A, B) pair of same-sized drawings."""
+    if not pairs:
+        return []
+    poses = np.stack([to_bgra(image) for pair in pairs for image in pair])
+    keys = list(range(len(poses)))
+    work.mkdir(parents=True, exist_ok=True)
+    dark = infer(rife, model, work, poses, keys, 1, 0, pose_count=len(poses))
+    light = infer(rife, model, work, poses, keys, 1, 255, pose_count=len(poses))
+    # with one in-between, source i is output 2i + 1 and the frame after it 2i + 2
+    return [to_rgba(recover_frame(dark / f"{4 * i + 2:06d}.png", light / f"{4 * i + 2:06d}.png"))
+            for i in range(len(pairs))]
+
+
 def to_bgra(image):
     return np.asarray(image.convert("RGBa"))[..., [2, 1, 0, 3]]
 
@@ -152,7 +215,7 @@ def clean_inbetween(candidate, before, after, phase):
     return clean
 
 
-def assemble(base, sources, rife, model, work, output, bridges=None):
+def assemble(base, sources, rife, model, work, output, bridges=None, midpoints=None):
     pack = MotionPack(base)
     with CabinetCodec(5, decode=True) as decoder:
         rgba = pack.frame(decoder, 112)
@@ -183,10 +246,33 @@ def assemble(base, sources, rife, model, work, output, bridges=None):
     dark = infer(rife, model, work, pixels, keys, INBETWEENS, 0, pose_count=len(frames))
     light = infer(rife, model, work, pixels, keys, INBETWEENS, 255, pose_count=len(frames))
     output.mkdir(parents=True, exist_ok=True)
+    # An interval RIFE cannot follow (a roll, a bow, a pounce) gets a drawn halfway pose:
+    # RIFE then only covers the two short steps either side of it.
+    halfway = {}
+    if midpoints:
+        drawn = midpoint_drawings(midpoints)
+        for name, first, last in clips:
+            for position in range(first, last):
+                cel = drawn.pop((name, position - first), None)
+                if cel is not None:
+                    halfway[position] = fit_halfway(cel, frames[keys[position]], frames[keys[position + 1]])
+        if drawn:
+            raise ValueError(f"midpoint drawings for no interval: {sorted(drawn)}")
+        order = sorted(halfway)
+        steps = halfway_frames(rife, model, work / "midpoints", [
+            pair for p in order for pair in ((frames[keys[p]], halfway[p]), (halfway[p], frames[keys[p + 1]]))])
+        quarter = {p: steps[2 * k:2 * k + 2] for k, p in enumerate(order)}
     for name, first, last in clips:
         sequence = [neutral]
         for position in range(first, last):
             before, after = frames[keys[position]], frames[keys[position + 1]]
+            if position in halfway and INBETWEENS == 3:
+                middle = halfway[position]
+                first_step, second_step = quarter[position]
+                # a quarter step that still ghosts holds the drawing it leaves
+                sequence.extend([first_step if is_clean(first_step) else before, middle,
+                                 second_step if is_clean(second_step) else middle, after])
+                continue
             candidates = []
             for j in range(1, INBETWEENS + 1):
                 at = position * (INBETWEENS + 1) + j + 1
@@ -213,4 +299,5 @@ if __name__ == "__main__":
     for name in ("base", "sources", "rife", "model", "work", "output"):
         parser.add_argument(name, type=Path)
     parser.add_argument("--bridges", type=Path)
+    parser.add_argument("--midpoints", type=Path, help="drawn halfway poses (midpoints.json)")
     assemble(**vars(parser.parse_args()))

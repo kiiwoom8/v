@@ -1,0 +1,202 @@
+[
+ {
+  "action": "backward-stretch",
+  "gap": 2,
+  "png": "backward-stretch-gap-02.png"
+ },
+ {
+  "action": "backward-stretch",
+  "gap": 3,
+  "png": "backward-stretch-gap-03.png"
+ },
+ {
+  "action": "backward-stretch",
+  "gap": 6,
+  "png": "backward-stretch-gap-06.png"
+ },
+ {
+  "action": "belly-offer",
+  "gap": 3,
+  "png": "belly-offer-gap-03.png"
+ },
+ {
+  "action": "belly-offer",
+  "gap": 5,
+  "png": "belly-offer-gap-05.png"
+ },
+ {
+  "action": "belly-offer",
+  "gap": 6,
+  "png": "belly-offer-gap-06.png"
+ },
+ {
+  "action": "belly-offer",
+  "gap": 8,
+  "png": "belly-offer-gap-08.png"
+ },
+ {
+  "action": "ear-scratch",
+  "gap": 1,
+  "png": "ear-scratch-gap-01.png"
+ },
+ {
+  "action": "happy-hop",
+  "gap": 3,
+  "png": "happy-hop-gap-03.png"
+ },
+ {
+  "action": "happy-hop",
+  "gap": 8,
+  "png": "happy-hop-gap-08.png"
+ },
+ {
+  "action": "knead",
+  "gap": 2,
+  "png": "knead-gap-02.png"
+ },
+ {
+  "action": "nose-sniff",
+  "gap": 3,
+  "png": "nose-sniff-gap-03.png"
+ },
+ {
+  "action": "nose-sniff",
+  "gap": 6,
+  "png": "nose-sniff-gap-06.png"
+ },
+ {
+  "action": "play-bow",
+  "gap": 3,
+  "png": "play-bow-gap-03.png"
+ },
+ {
+  "action": "play-bow",
+  "gap": 4,
+  "png": "play-bow-gap-04.png"
+ },
+ {
+  "action": "play-bow",
+  "gap": 6,
+  "png": "play-bow-gap-06.png"
+ },
+ {
+  "action": "play-bow",
+  "gap": 8,
+  "png": "play-bow-gap-08.png"
+ },
+ {
+  "action": "pounce",
+  "gap": 1,
+  "png": "pounce-gap-01.png"
+ },
+ {
+  "action": "pounce",
+  "gap": 3,
+  "png": "pounce-gap-03.png"
+ },
+ {
+  "action": "pounce",
+  "gap": 5,
+  "png": "pounce-gap-05.png"
+ },
+ {
+  "action": "pounce",
+  "gap": 6,
+  "png": "pounce-gap-06.png"
+ },
+ {
+  "action": "pounce",
+  "gap": 7,
+  "png": "pounce-gap-07.png"
+ },
+ {
+  "action": "pounce",
+  "gap": 8,
+  "png": "pounce-gap-08.png"
+ },
+ {
+  "action": "side-tumble",
+  "gap": 3,
+  "png": "side-tumble-gap-03.png"
+ },
+ {
+  "action": "side-tumble",
+  "gap": 5,
+  "png": "side-tumble-gap-05.png"
+ },
+ {
+  "action": "side-tumble",
+  "gap": 6,
+  "png": "side-tumble-gap-06.png"
+ },
+ {
+  "action": "stretch-one-paw",
+  "gap": 1,
+  "png": "stretch-one-paw-gap-01.png"
+ },
+ {
+  "action": "stretch-one-paw",
+  "gap": 3,
+  "png": "stretch-one-paw-gap-03.png"
+ },
+ {
+  "action": "stretch-one-paw",
+  "gap": 5,
+  "png": "stretch-one-paw-gap-05.png"
+ },
+ {
+  "action": "stretch-one-paw",
+  "gap": 6,
+  "png": "stretch-one-paw-gap-06.png"
+ },
+ {
+  "action": "stretch-one-paw",
+  "gap": 8,
+  "png": "stretch-one-paw-gap-08.png"
+ },
+ {
+  "action": "surprised-backstep",
+  "gap": 6,
+  "png": "surprised-backstep-gap-06.png"
+ },
+ {
+  "action": "tail-chase",
+  "gap": 3,
+  "png": "tail-chase-gap-03.png"
+ },
+ {
+  "action": "tail-chase",
+  "gap": 5,
+  "png": "tail-chase-gap-05.png"
+ },
+ {
+  "action": "tail-chase",
+  "gap": 6,
+  "png": "tail-chase-gap-06.png"
+ },
+ {
+  "action": "tail-windmill",
+  "gap": 3,
+  "png": "tail-windmill-gap-03.png"
+ },
+ {
+  "action": "tail-windmill",
+  "gap": 4,
+  "png": "tail-windmill-gap-04.png"
+ },
+ {
+  "action": "twirl",
+  "gap": 3,
+  "png": "twirl-gap-03.png"
+ },
+ {
+  "action": "twirl",
+  "gap": 5,
+  "png": "twirl-gap-05.png"
+ },
+ {
+  "action": "twirl",
+  "gap": 6,
+  "png": "twirl-gap-06.png"
+ }
+]
