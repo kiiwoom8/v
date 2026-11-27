@@ -595,9 +595,20 @@ roam = 1
 react = 1
 play = 1
 shift_tap = 1
+sync_folder =
 1 = Claude | claude
-2 = Wiki | https://example.org/wiki
+2 = Wiki | https://z-app-514306.web.app/
 ```
+
+**Shared between PCs.** Slots 1-9 are mirrored to `vim mouse shortcuts.ini` in
+your Google Drive folder (Drive for desktop: `X:\My Drive`, `X:\내 드라이브` or
+`%USERPROFILE%\Google Drive`), so every PC with the same Google account has the
+same shortcuts, also after a reinstall or a fresh `vim.ini`. The newer of that
+file and `vim.ini` wins at start; every save writes it. `sync_folder` names
+another synced folder (OneDrive, Dropbox); `off` turns it off. Without Drive
+for desktop nothing is shared. The old Apps Script wiki address is read as the
+current one. A `vim.ini` that still says `key_center = Enter` (the first
+default) is read as `0`.
 
 The slot number and label are editable. A target is `claude` for the Windows
 Claude app or an HTTP(S) URL. A web shortcut switches to the tab of the open

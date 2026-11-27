@@ -518,6 +518,15 @@ Invariants stated in `common.h` and enforced by history:
   `app_has_uiaccess` logs the state at start, and the tray update refuses
   to replace that install with the unsigned release. Not yet run on the
   user's machine: the trust step needs the administrator prompt (section 7).
+- 2026-11-27, three fixes. (1) The wiki shortcut's address is now `https://z-app-514306.web.app/`
+  (new default `2 = Wiki`; the old Apps Script address is read as it). (2) Shortcuts
+  vanished on a PC with a fresh `vim.ini`: slots 1-9 are now mirrored to `vim mouse
+  shortcuts.ini` in the Google Drive folder (`sync_folder`, `sync_pull` / `sync_push`
+  in `config.c`; newer file wins; the pull also writes the slots into `vim.ini` so it
+  does not look newer next start). Needs Drive for desktop; a direct Google sign-in
+  would need an OAuth client the owner has to create. (3) "Centering is sometimes
+  Enter Enter": a `vim.ini` written before `45e8e6c` kept `key_center = Enter`;
+  that value is now read as `0`.
 - "Change centering shortcut from enter twice into 00." `key_center`
   defaults to `0` (was Enter); a digit also matches its number-pad key
   (`center_key_is`). A `vim.ini` written before keeps `key_center = Enter`

@@ -173,6 +173,7 @@ typedef struct {
     WCHAR secretary_sprite_sheet[MAX_PATH]; // custom 4x4 atlas, empty with image for bundled Tailmon
     WCHAR secretary_extra[SECRETARY_EXTRA_SHEETS][MAX_PATH];
     SecretaryShortcut secretary_shortcuts[SECRETARY_SLOTS];
+    WCHAR secretary_sync_folder[MAX_PATH]; // shortcuts are mirrored to <folder>\vim mouse shortcuts.ini; empty = find Google Drive, off = never
 
     // [mouse]  speeds in physical px per second; scroll in wheel-delta units per second
     double speed;              // default 600

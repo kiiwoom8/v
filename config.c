@@ -848,6 +848,15 @@ BOOL secretary_shortcut_valid(const SecretaryShortcut *slot)
     return TRUE;
 }
 
+#define DEFAULT_WIKI_URL L"https://z-app-514306.web.app/"
+
+// The wiki's old address was an Apps Script web app; the address moved.
+static void migrate_wiki_url(SecretaryShortcut *slot)
+{
+    if (wcsstr(slot->target, L"script.google.com/macros/") && wcsstr(slot->target, L"app=wiki"))
+        wcscpy(slot->target, DEFAULT_WIKI_URL);
+}
+
 static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
 {
     SecretaryShortcut *slot;
@@ -882,7 +891,8 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
         apply_bool(&c->secretary_shift_tap, line, key, val);
         return;
     }
-    if (_wcsicmp(key, L"image") == 0) path = c->secretary_image;
+    if (_wcsicmp(key, L"sync_folder") == 0) path = c->secretary_sync_folder;
+    else if (_wcsicmp(key, L"image") == 0) path = c->secretary_image;
     else if (_wcsicmp(key, L"sprite_sheet") == 0) path = c->secretary_sprite_sheet;
     else if (_wcsicmp(key, L"movement_sheet") == 0) path = c->secretary_extra[SECRETARY_MOVEMENT];
     else if (_wcsicmp(key, L"rest_sheet") == 0) path = c->secretary_extra[SECRETARY_REST];
@@ -918,6 +928,7 @@ static void process_secretary(Config *c, int line, const WCHAR *key, WCHAR *val)
             wcscpy(entry.label, val);
             wcscpy(entry.target, target);
             if (secretary_shortcut_valid(&entry)) {
+                migrate_wiki_url(&entry);
                 *slot = entry;
                 return;
             }
@@ -1074,8 +1085,12 @@ static void process_mouse(Config *c, int line, const WCHAR *key,
         apply_key(&c->key_scroll_right, line, key, val);
     else if (_wcsicmp(key, L"key_scroll_end") == 0)
         apply_key(&c->key_scroll_end, line, key, val);
-    else if (_wcsicmp(key, L"key_center") == 0)
-        apply_key(&c->key_center, line, key, val);
+    else if (_wcsicmp(key, L"key_center") == 0) {
+        // Enter twice was the first default; every file written then still says
+        // so, and the default became 0 0. Nobody chose Enter: read it as 0.
+        if (_wcsicmp(val, L"Enter") == 0) parse_key(L"0", &c->key_center);
+        else apply_key(&c->key_center, line, key, val);
+    }
     else if (_wcsicmp(key, L"key_hints") == 0)
         apply_key(&c->key_hints, line, key, val);
     else if (_wcsicmp(key, L"key_exit") == 0)
@@ -1732,8 +1747,11 @@ static void build_default_ini(WCHAR *buf, size_t cch)
             L"; Shift twice opens the shortcuts (in a text field: hold Alt, Shift twice); 0 = off.\r\n"
             L"shift_tap = 1\r\n"
             L"; Set slots 1 to 9 as label | claude or label | https://address.\r\n"
+            L"; Shortcuts are also kept in a Google Drive folder (Drive for desktop), so every\r\n"
+            L"; PC with the same Google account shares them. sync_folder = a folder, or off.\r\n"
+            L"sync_folder =\r\n"
             L"1 = Claude | claude\r\n"
-            L"; 2 = Wiki | https://example.org/wiki\r\n");
+            L"2 = Wiki | " DEFAULT_WIKI_URL L"\r\n");
     appendf(buf, cch, L"\r\n[mouse]\r\n");
     appendf(buf, cch, L"; Movement speeds in pixels per second. speed is where movement starts\r\n");
     appendf(buf, cch, L"; and max_speed is reached after accel_time seconds; accel_curve shapes it.\r\n");
@@ -2373,6 +2391,142 @@ static BOOL assignment_is(const WCHAR *first, const WCHAR *end, const WCHAR *key
            _wcsnicmp(first, key, (size_t)(equals - first)) == 0;
 }
 
+// ---------------------------------------------------------------------------
+// Shortcut sync: a copy of slots 1-9 in a folder that Google Drive for desktop
+// (or any synced folder) shares between PCs. The newer of the copy and
+// vim.ini wins at start; every save writes the copy.
+
+static BOOL is_dir(const WCHAR *p)
+{
+    DWORD a = GetFileAttributesW(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static BOOL sync_file_path(const Config *c, WCHAR *out, int cch)
+{
+    WCHAR dir[MAX_PATH], cand[MAX_PATH], home[MAX_PATH], drive;
+    int i;
+
+    dir[0] = 0;
+    if (_wcsicmp(c->secretary_sync_folder, L"off") == 0) return FALSE;
+    if (c->secretary_sync_folder[0]) {
+        wcscpy(dir, c->secretary_sync_folder);
+    } else {
+        static const WCHAR *names[] = {L"My Drive", L"\uB0B4 \uB4DC\uB77C\uC774\uBE0C"};
+        for (drive = L'D'; drive <= L'Z' && !dir[0]; ++drive)
+            for (i = 0; i < 2 && !dir[0]; ++i) {
+                _snwprintf(cand, MAX_PATH, L"%lc:\\%ls", drive, names[i]);
+                cand[MAX_PATH - 1] = 0;
+                if (is_dir(cand)) wcscpy(dir, cand);
+            }
+        if (!dir[0] && GetEnvironmentVariableW(L"USERPROFILE", home, MAX_PATH) > 0) {
+            for (i = 0; i < 2 && !dir[0]; ++i) {
+                _snwprintf(cand, MAX_PATH, L"%ls\\%ls", home, i ? L"Google Drive" : L"My Drive");
+                cand[MAX_PATH - 1] = 0;
+                if (is_dir(cand)) wcscpy(dir, cand);
+            }
+        }
+    }
+    if (!dir[0] || !is_dir(dir)) return FALSE;
+    _snwprintf(out, cch, L"%ls\\vim mouse shortcuts.ini", dir);
+    out[cch - 1] = 0;
+    return TRUE;
+}
+
+static BOOL g_sync_quiet;   // saving what the copy said: do not write it back
+
+static BOOL file_mtime(const WCHAR *path, FILETIME *ft)
+{
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &d)) return FALSE;
+    *ft = d.ftLastWriteTime;
+    return TRUE;
+}
+
+static void sync_write(const WCHAR *path, const SecretaryShortcut *slots)
+{
+    WBuf out = {0};
+    WCHAR key[2] = L"1";
+    int i;
+
+    wbuf_str(&out, L"; vim mouse (Tailmon) shortcuts, shared through this folder. Edit them in Tailmon.\r\n");
+    for (i = 0; i < SECRETARY_SLOTS; ++i) {
+        if (!slots[i].target[0]) continue;
+        key[0] = (WCHAR)(L'1' + i);
+        wbuf_str(&out, key);
+        wbuf_str(&out, L" = ");
+        wbuf_str(&out, slots[i].label);
+        wbuf_str(&out, L" | ");
+        wbuf_str(&out, slots[i].target);
+        wbuf_str(&out, L"\r\n");
+    }
+    if (!out.failed) write_text_file(path, out.s);
+    free(out.s);
+}
+
+// Called after the ini is read. ini_path NULL = the ini was just created.
+static void sync_pull(Config *c, const WCHAR *ini_path)
+{
+    WCHAR path[MAX_PATH], *text = NULL, *p;
+    FILETIME a, b;
+    SecretaryShortcut fresh[SECRETARY_SLOTS];
+    int n = 0;
+
+    if (!sync_file_path(c, path, MAX_PATH)) return;
+    if (!file_mtime(path, &a)) { sync_write(path, c->secretary_shortcuts); return; }
+    if (ini_path && file_mtime(ini_path, &b) && CompareFileTime(&a, &b) <= 0) {
+        sync_write(path, c->secretary_shortcuts);   // this PC is newer: publish it
+        return;
+    }
+    if (read_text_file(path, &text, FALSE) != READ_OK) return;
+    ZeroMemory(fresh, sizeof(fresh));
+    for (p = text; *p;) {
+        WCHAR *line = p, *e = p;
+        while (*e && *e != L'\r' && *e != L'\n') ++e;
+        if (*e == L'\r') { *e++ = 0; if (*e == L'\n') ++e; }
+        else if (*e == L'\n') *e++ = 0;
+        if (*line >= L'1' && *line <= L'9') {
+            WCHAR *eq = wcschr(line, L'='), *bar = eq ? wcschr(eq, L'|') : NULL;
+            if (bar) {
+                SecretaryShortcut s;
+                WCHAR *label = eq + 1, *target = bar + 1;
+                ZeroMemory(&s, sizeof(s));
+                *bar = 0;
+                trim(&label); trim(&target);
+                if (*label && wcslen(label) < sizeof(s.label) / sizeof(WCHAR) &&
+                    wcslen(target) < SECRETARY_TARGET_MAX) {
+                    wcscpy(s.label, label);
+                    wcscpy(s.target, target);
+                    migrate_wiki_url(&s);
+                    if (secretary_shortcut_valid(&s)) { fresh[*line - L'1'] = s; ++n; }
+                }
+            }
+        }
+        p = e;
+    }
+    free(text);
+    if (n > 0) {
+        int i;
+        CopyMemory(c->secretary_shortcuts, fresh, sizeof(fresh));
+        // vim.ini must say the same, or it would look newer next start and win.
+        g_sync_quiet = TRUE;
+        for (i = 0; i < SECRETARY_SLOTS; ++i)
+            secretary_save_setting(i, &c->secretary_shortcuts[i], 0);
+        g_sync_quiet = FALSE;
+    }
+}
+
+static void sync_push(int slot, const SecretaryShortcut *entry)
+{
+    WCHAR path[MAX_PATH];
+    SecretaryShortcut slots[SECRETARY_SLOTS];
+
+    if (!sync_file_path(&g_cfg, path, MAX_PATH)) return;
+    CopyMemory(slots, g_cfg.secretary_shortcuts, sizeof(slots));
+    slots[slot] = *entry;
+    sync_write(path, slots);
+}
+
 BOOL secretary_save_setting(int slot, const SecretaryShortcut *entry, int roam)
 {
     WCHAR key[8] = L"roam";
@@ -2418,6 +2572,7 @@ BOOL secretary_save_setting(int slot, const SecretaryShortcut *entry, int roam)
     free(text);
     ok = seen && replace_settings_file(path, &out);
     free(out.s);
+    if (ok && slot >= 0 && !g_sync_quiet) sync_push(slot, entry);
     return ok;
 }
 
@@ -2475,7 +2630,10 @@ BOOL config_load(Config *c, BOOL *created)
         c->secretary_animate = 1;
         wcscpy(c->secretary_shortcuts[0].label, L"Claude");
         wcscpy(c->secretary_shortcuts[0].target, L"claude");
+        wcscpy(c->secretary_shortcuts[1].label, L"Wiki");
+        wcscpy(c->secretary_shortcuts[1].target, DEFAULT_WIKI_URL);
         write_default_file(path);
+        sync_pull(c, NULL);
         sc_commit();
         return TRUE;
     case READ_OPEN_FAILED:
@@ -2510,6 +2668,7 @@ BOOL config_load(Config *c, BOOL *created)
         p = e;
     }
     free(text);
+    sync_pull(c, path);
     check_grid_key(c);
     sc_commit();
     return TRUE;
