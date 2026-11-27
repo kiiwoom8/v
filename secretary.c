@@ -1832,12 +1832,19 @@ static unsigned random_below(unsigned limit)
     return n % limit;
 }
 
+// Extra drawings increase the sampling rate within the original action time.
+static DWORD idle_routine_duration(SecretaryMotion routine, unsigned frame_ms)
+{
+    return (frame_ms == 33 ? 33 : routine.count + 2) * frame_ms;
+}
+
 static PoseCue natural_idle(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
     SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
     unsigned frame_ms = secretary_motion_routine_frame_ms();
-    DWORD duration = routine.count ? (routine.count + 2) * frame_ms : clip_length(clip.steps, clip.count);
+    DWORD duration = routine.count ? idle_routine_duration(routine, frame_ms)
+                                   : clip_length(clip.steps, clip.count);
     DWORD elapsed = (now - idle_motion.started) * idle_motion.tempo / 100;
     BOOL resumed = !idle_motion.tempo || now - idle_motion.seen > 100;
     idle_motion.seen = now;
@@ -1892,9 +1899,12 @@ static PoseCue natural_idle(DWORD now)
         clip = idle_clips[idle_motion.clip];
     }
     if (routine.count) {
-        DWORD frame = elapsed / frame_ms;
-        if (frame && frame <= routine.count)
-            return (PoseCue){IDLE_DETAIL_FIRST, (int)frame_ms, -1, frame - 1, idle_motion.routine};
+        DWORD drawing_ms = idle_routine_duration(routine, frame_ms) - 2 * frame_ms;
+        if (elapsed >= frame_ms && elapsed - frame_ms < drawing_ms) {
+            DWORD frame = (DWORD)((ULONGLONG)(elapsed - frame_ms) * routine.count / drawing_ms);
+            return (PoseCue){IDLE_DETAIL_FIRST, (int)(drawing_ms / routine.count),
+                             -1, frame, idle_motion.routine};
+        }
         return HOLD(IDLE_DETAIL_FIRST, (int)frame_ms);
     }
     return motion_at(clip.steps, clip.count, elapsed, FALSE);
@@ -1904,7 +1914,7 @@ static BOOL finishing_idle_gesture(DWORD now)
 {
     PoseClip clip = idle_clips[idle_motion.clip];
     SecretaryMotion routine = secretary_motion_routine(idle_motion.routine);
-    DWORD duration = routine.count ? (routine.count + 2) * secretary_motion_routine_frame_ms()
+    DWORD duration = routine.count ? idle_routine_duration(routine, secretary_motion_routine_frame_ms())
                                    : clip_length(clip.steps, clip.count);
     return (idle_motion.clip || routine.count) && now - idle_motion.seen <= 100 &&
            (now - idle_motion.started) * idle_motion.tempo / 100 < duration;

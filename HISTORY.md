@@ -2010,6 +2010,19 @@ Invariants stated in `common.h` and enforced by history:
   Windows renderer exercised all 552 ordered distinct pairs in both facing
   directions at 125% and 200% DPI. Older 50 ms routines retain their cadence.
 
+### More Tailmon in-betweens at the same pace (2026-11-28)
+
+- Kim found the previous pass better and requested more in-betweens. GPT Image
+  generated 48 drafts. Comparing the drawings in sequence kept 29 across 11
+  actions, adding 27 net frame samples. The roll and recovery, pounce takeoff,
+  play bow, and sniff received the most detailed changes.
+- The player fits the denser routines into their existing duration. It still
+  shows the same single seated frame between actions. The longest clip now
+  has 39 frames. The original 50 ms packs still play on their original clock.
+- Adjacent silhouette overlaps below 0.50 fell from eight to two, and the
+  worst overlap rose from 0.407 to 0.492. The Windows test replayed every frame
+  and all 552 ordered action pairs facing both ways at 125% and 200% DPI.
+
 ## 4. Complete commit log (non-merge, oldest first)
 
 ### Branches on `origin` (2026-10-30)
@@ -3611,6 +3624,8 @@ when the manifest changes.
   Apply the drawn quarter poses with
   `python tools/patch_tailmon_quarters.py assets/tailmon/animations assets/tailmon/quarters assets/tailmon/animations`.
 
+  Insert the denser transitions into those 33-sample clips with
+  `python tools/extend_tailmon_actions.py assets/tailmon/animations assets/tailmon/details assets/tailmon/animations`.
   Then run `python tools/pack_tailmon_routines.py assets/tailmon/motion.bin assets/tailmon/animations assets/tailmon/motion.bin`.
   Repeat the pack step after rebaking the base transitions. The packer reads
   the 33 ms or 50 ms cadence from the clips. Use `--frame-ms` to set it explicitly.

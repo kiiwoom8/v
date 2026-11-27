@@ -92,15 +92,16 @@ def bridge_rows(folder):
     return rows
 
 
-def place_bridge(cel, before, after):
+def place_bridge(cel, before, after, phase=.5):
     endpoints = [alpha_box(image) for image in (before, after)]
     anchors = [box[0] + contact_x(image.crop(box)) for image, box in zip((before, after), endpoints)]
     width = before.width
-    floor = round(sum(box[3] for box in endpoints) / 2)
-    height = sum(box[3] - box[1] for box in endpoints) / 2
+    weights = (1 - phase, phase)
+    floor = round(sum(box[3] * weight for box, weight in zip(endpoints, weights)))
+    height = sum((box[3] - box[1]) * weight for box, weight in zip(endpoints, weights))
     scale = min(height / cel.height, (width - 6) / cel.width, (floor - 3) / cel.height)
     cel = cel.resize((round(cel.width * scale), round(cel.height * scale)), Image.Resampling.LANCZOS)
-    x = round(sum(anchors) / 2 - contact_x(cel))
+    x = round(sum(anchor * weight for anchor, weight in zip(anchors, weights)) - contact_x(cel))
     x = max(3, min(x, width - cel.width - 3))
     image = Image.new("RGBA", before.size)
     image.alpha_composite(cel, (x, floor - cel.height))
@@ -126,12 +127,12 @@ def overlap(a, b):
     return np.count_nonzero(a & b) / max(1, np.count_nonzero(a | b))
 
 
-def fit_halfway(cel, before, after):
+def fit_halfway(cel, before, after, phase=.5):
     """A drawn halfway pose on the canvas, sized and placed to overlap both of its neighbours
     best: the drawings were made at their own scale, and the bridges' rule (the average box
     height of the endpoints) left some of them 10-20 % smaller than the cat on either side,
     so she shrank and grew back within a quarter second."""
-    base = place_bridge(cel, before, after)
+    base = place_bridge(cel, before, after, phase)
     box = alpha_box(base)
     floor = box[3]
     height = box[3] - box[1]

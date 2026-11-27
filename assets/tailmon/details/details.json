@@ -1,0 +1,185 @@
+[
+  {
+    "action": "belly-offer",
+    "start": 20,
+    "end": 21,
+    "pngs": [
+      "belly-offer-15.png"
+    ]
+  },
+  {
+    "action": "belly-offer",
+    "start": 21,
+    "end": 22,
+    "pngs": [
+      "belly-offer-16.png"
+    ]
+  },
+  {
+    "action": "belly-offer",
+    "start": 22,
+    "end": 24,
+    "pngs": [
+      "belly-offer-01.png",
+      "belly-offer-02.png",
+      "belly-offer-03.png"
+    ]
+  },
+  {
+    "action": "belly-offer",
+    "start": 29,
+    "end": 30,
+    "pngs": [
+      "belly-offer-13.png",
+      "belly-offer-14.png"
+    ]
+  },
+  {
+    "action": "happy-hop",
+    "start": 9,
+    "end": 10,
+    "pngs": [
+      "happy-hop-18.png"
+    ]
+  },
+  {
+    "action": "nose-sniff",
+    "start": 8,
+    "end": 9,
+    "pngs": [
+      "nose-sniff-11.png",
+      "nose-sniff-12.png"
+    ]
+  },
+  {
+    "action": "play-bow",
+    "start": 8,
+    "end": 10,
+    "pngs": [
+      "play-bow-06.png",
+      "play-bow-07.png",
+      "play-bow-08.png"
+    ]
+  },
+  {
+    "action": "play-bow",
+    "start": 29,
+    "end": 30,
+    "pngs": [
+      "play-bow-19.png"
+    ]
+  },
+  {
+    "action": "pounce",
+    "start": 8,
+    "end": 9,
+    "pngs": [
+      "pounce-04.png",
+      "pounce-05.png"
+    ]
+  },
+  {
+    "action": "pounce",
+    "start": 10,
+    "end": 11,
+    "pngs": [
+      "pounce-20.png"
+    ]
+  },
+  {
+    "action": "pounce",
+    "start": 18,
+    "end": 19,
+    "pngs": [
+      "pounce-21.png"
+    ]
+  },
+  {
+    "action": "pounce",
+    "start": 28,
+    "end": 29,
+    "pngs": [
+      "pounce-22.png"
+    ]
+  },
+  {
+    "action": "side-tumble",
+    "start": 23,
+    "end": 24,
+    "pngs": [
+      "side-tumble-24.png"
+    ]
+  },
+  {
+    "action": "stretch-one-paw",
+    "start": 8,
+    "end": 9,
+    "pngs": [
+      "stretch-one-paw-25.png"
+    ]
+  },
+  {
+    "action": "stretch-one-paw",
+    "start": 23,
+    "end": 24,
+    "pngs": [
+      "stretch-one-paw-10.png"
+    ]
+  },
+  {
+    "action": "surprised-backstep",
+    "start": 21,
+    "end": 22,
+    "pngs": [
+      "surprised-backstep-29.png"
+    ]
+  },
+  {
+    "action": "tail-chase",
+    "start": 8,
+    "end": 9,
+    "pngs": [
+      "tail-chase-30.png"
+    ]
+  },
+  {
+    "action": "tail-chase",
+    "start": 16,
+    "end": 17,
+    "pngs": [
+      "tail-chase-31.png"
+    ]
+  },
+  {
+    "action": "tail-chase",
+    "start": 17,
+    "end": 18,
+    "pngs": [
+      "tail-chase-32.png"
+    ]
+  },
+  {
+    "action": "tail-windmill",
+    "start": 9,
+    "end": 10,
+    "pngs": [
+      "tail-windmill-34.png"
+    ]
+  },
+  {
+    "action": "twirl",
+    "start": 16,
+    "end": 17,
+    "pngs": [
+      "twirl-35.png"
+    ]
+  },
+  {
+    "action": "twirl",
+    "start": 20,
+    "end": 21,
+    "pngs": [
+      "twirl-36.png"
+    ]
+  }
+]
